@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Timesheet → Wage Claim Calculator</title>
+<style>
+  :root {
+    --bg: #0f1115;
+    --panel: #171a21;
+    --border: #2a2f3a;
+    --text: #e6e8eb;
+    --muted: #8b93a1;
+    --accent: #4f8cff;
+    --warn-bg: #3a2a1a;
+    --warn-text: #f0b955;
+    --ok: #3fb950;
+    --err: #f85149;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    padding: 24px;
+    max-width: 720px;
+    margin: 0 auto;
+  }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .sub { color: var(--muted); font-size: 13px; margin-bottom: 24px; }
+  label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 6px; }
+  .field { margin-bottom: 20px; }
+  select {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 8px 10px;
+    border-radius: 6px;
+    font-size: 13px;
+  }
+  input[type="file"] {
+    width: 100%;
+    background: var(--panel);
+    border: 1px dashed var(--border);
+    color: var(--text);
+    padding: 16px;
+    border-radius: 8px;
+    font-size: 13px;
+  }
+  textarea {
+    width: 100%;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 10px;
+    border-radius: 6px;
+    font-size: 13px;
+    min-height: 80px;
+    resize: vertical;
+    font-family: inherit;
+  }
+  .file-list { margin-top: 8px; font-size: 12px; color: var(--muted); }
+  button {
+    background: var(--accent);
+    color: white;
+    border: none;
+    padding: 10px 20px;
+    border-radius: 6px;
+    font-size: 14px;
+    cursor: pointer;
+    font-weight: 600;
+  }
+  button:disabled { background: var(--border); color: var(--muted); cursor: not-allowed; }
+  .status { margin-top: 20px; font-size: 13px; }
+  .status.loading { color: var(--muted); }
+  .status.error { color: var(--err); }
+  .status.success { color: var(--ok); }
+  .month-summary {
+    list-style: none;
+    margin: 8px 0 0;
+    padding: 0;
+    font-size: 13px;
+  }
+  .month-summary li { color: var(--muted); }
+  .month-summary li.incomplete { color: var(--warn-text); }
+  .warnings {
+    margin-top: 16px;
+    background: var(--warn-bg);
+    border: 1px solid #5a4522;
+    border-radius: 8px;
+    padding: 12px 16px;
+  }
+  .warnings h3 { margin: 0 0 8px; font-size: 13px; color: var(--warn-text); }
+  .warnings ul { margin: 0; padding-left: 18px; font-size: 12px; color: var(--warn-text); }
+  .warnings li { margin-bottom: 4px; }
+  .spinner {
+    display: inline-block; width: 12px; height: 12px;
+    border: 2px solid var(--border); border-top-color: var(--accent);
+    border-radius: 50%; animation: spin 0.8s linear infinite; margin-right: 8px;
+    vertical-align: middle;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+
+<h1>Timesheet → Wage Claim Calculator</h1>
+<div class="sub">Upload one worker's handwritten timesheet PDFs (one or more months). Each page is read by Qwen and the hours worked get filled into calculation.xltx, ready to download.</div>
+
+<form id="form">
+  <div class="field">
+    <label for="pdfs">Timesheet PDFs</label>
+    <input type="file" id="pdfs" name="pdfs" accept="application/pdf" multiple required>
+    <div class="file-list" id="fileList"></div>
+  </div>
+
+  <div class="field">
+    <label for="year">Claim year</label>
+    <select id="year" name="year" required>
+      <option value="2026">2026</option>
+      <option value="2025">2025</option>
+    </select>
+    <div class="file-list">Handwritten years are often misread — the model only reads day/month off the page, this dropdown decides the year (and which sheet tab is used).</div>
+  </div>
+
+  <div class="field">
+    <label for="context">Additional context for the model (optional)</label>
+    <textarea id="context" name="context" placeholder='e.g. "these timesheets contain data by the worker over all 7 days of the week" or "clock-out times after midnight belong to the next calendar day"'></textarea>
+  </div>
+
+  <button type="submit" id="submitBtn">Process & Generate Claim</button>
+
+  <div class="status" id="status"></div>
+  <ul class="month-summary" id="monthSummary" style="display:none"></ul>
+  <div class="warnings" id="warnings" style="display:none">
+    <h3>Warnings</h3>
+    <ul id="warningsList"></ul>
+  </div>
+</form>
+
+<script>
+const form = document.getElementById('form');
+const pdfsInput = document.getElementById('pdfs');
+const fileList = document.getElementById('fileList');
+const submitBtn = document.getElementById('submitBtn');
+const statusEl = document.getElementById('status');
+const warningsEl = document.getElementById('warnings');
+const warningsList = document.getElementById('warningsList');
+const monthSummaryEl = document.getElementById('monthSummary');
+
+pdfsInput.addEventListener('change', () => {
+  const names = Array.from(pdfsInput.files).map(f => f.name);
+  fileList.textContent = names.length ? `${names.length} file(s): ${names.join(', ')}` : '';
+});
+
+form.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  warningsEl.style.display = 'none';
+  warningsList.innerHTML = '';
+  monthSummaryEl.style.display = 'none';
+  monthSummaryEl.innerHTML = '';
+
+  const formData = new FormData();
+  for (const file of pdfsInput.files) formData.append('pdfs', file);
+  formData.append('year', document.getElementById('year').value);
+  formData.append('context', document.getElementById('context').value);
+
+  submitBtn.disabled = true;
+  statusEl.className = 'status loading';
+  statusEl.innerHTML = '<span class="spinner"></span>Scanning pages and building claim… this can take a while for multiple PDFs.';
+
+  try {
+    const res = await fetch('/api/process', { method: 'POST', body: formData });
+    const data = await res.json();
+
+    if (!res.ok) {
+      throw new Error(data.error || `Server returned ${res.status}`);
+    }
+
+    statusEl.className = 'status success';
+    statusEl.textContent = `Done in ${formatDuration(data.durationMs)}`;
+
+    if (data.monthSummary && data.monthSummary.length > 0) {
+      monthSummaryEl.style.display = 'block';
+      monthSummaryEl.innerHTML = data.monthSummary
+        .map(m => `<li class="${m.filled < m.total ? 'incomplete' : ''}">- ${escapeHtml(m.label)} ${m.filled}/${m.total} day(s) filled</li>`)
+        .join('');
+    }
+
+    if (data.warnings && data.warnings.length > 0) {
+      warningsEl.style.display = 'block';
+      warningsList.innerHTML = data.warnings
+        .map(w => `<li><b>${escapeHtml(w.source)}:</b> ${escapeHtml(w.reason)}</li>`)
+        .join('');
+    }
+
+    const bytes = Uint8Array.from(atob(data.file), c => c.charCodeAt(0));
+    const blob = new Blob([bytes], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = data.filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  } catch (err) {
+    statusEl.className = 'status error';
+    statusEl.textContent = 'Error: ' + err.message;
+  } finally {
+    submitBtn.disabled = false;
+  }
+});
+
+function formatDuration(ms) {
+  const totalSeconds = Math.round((ms ?? 0) / 1000);
+  const mins = Math.floor(totalSeconds / 60);
+  const secs = totalSeconds % 60;
+  const secLabel = `${secs} second${secs === 1 ? '' : 's'}`;
+  return mins === 0 ? secLabel : `${mins} min ${secLabel}`;
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+  }[c]));
+}
+</script>
+</body>
+</html>

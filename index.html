@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Timesheet Viewer</title>
+<style>
+  :root {
+    --bg: #0f1115;
+    --panel: #171a21;
+    --border: #2a2f3a;
+    --text: #e6e8eb;
+    --muted: #8b93a1;
+    --accent: #4f8cff;
+    --warn-bg: #3a2a1a;
+    --warn-text: #f0b955;
+    --ok: #3fb950;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    padding: 24px;
+  }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .sub { color: var(--muted); font-size: 13px; margin-bottom: 20px; }
+  .controls {
+    display: flex; gap: 12px; flex-wrap: wrap; align-items: center;
+    margin-bottom: 16px;
+  }
+  input[type="text"], select {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 8px 10px;
+    border-radius: 6px;
+    font-size: 13px;
+  }
+  input[type="text"] { flex: 1; min-width: 200px; }
+  label.chk { font-size: 13px; color: var(--muted); display: flex; align-items: center; gap: 6px; }
+  .stats { display: flex; gap: 16px; margin-bottom: 16px; flex-wrap: wrap; }
+  .stat {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 8px; padding: 10px 16px; font-size: 13px;
+  }
+  .stat b { display: block; font-size: 18px; color: var(--accent); }
+  table {
+    width: 100%; border-collapse: collapse; background: var(--panel);
+    border: 1px solid var(--border); border-radius: 8px; overflow: hidden;
+    font-size: 13px;
+  }
+  th, td { text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--border); }
+  th {
+    background: #1c2029; color: var(--muted); font-weight: 600;
+    position: sticky; top: 0; cursor: pointer; user-select: none;
+  }
+  th:hover { color: var(--text); }
+  tr:hover td { background: #1c2029; }
+  .sheet-badge {
+    display: inline-block; background: #22262f; border: 1px solid var(--border);
+    color: var(--muted); border-radius: 4px; padding: 1px 6px; font-size: 11px;
+  }
+  .notes-flag { color: var(--warn-text); background: var(--warn-bg); padding: 2px 6px; border-radius: 4px; font-size: 12px; }
+  .notes-none { color: var(--muted); }
+  .err { color: #f85149; font-size: 13px; margin-top: 12px; }
+  tbody tr.flagged td { background: rgba(240,185,85,0.06); }
+</style>
+</head>
+<body>
+
+<h1>Timesheet Viewer</h1>
+<div class="sub" id="subtitle">Loading output.json…</div>
+
+<div class="stats" id="stats"></div>
+
+<div class="controls">
+  <input type="text" id="search" placeholder="Filter by date or notes…">
+  <select id="sheetFilter"><option value="">All sheets</option></select>
+  <label class="chk"><input type="checkbox" id="flaggedOnly"> Flagged notes only</label>
+</div>
+
+<table id="tbl">
+  <thead>
+    <tr>
+      <th data-key="sheet">Sheet</th>
+      <th data-key="date">Date</th>
+      <th data-key="clock_in">Clock In</th>
+      <th data-key="clock_out">Clock Out</th>
+      <th data-key="notes">Notes</th>
+    </tr>
+  </thead>
+  <tbody id="tbody"></tbody>
+</table>
+
+<div class="err" id="err"></div>
+
+<script>
+let rows = [];
+let sortKey = null, sortAsc = true;
+
+function extractJsonBlock(str) {
+  const m = str.match(/```json\s*([\s\S]*?)\s*```/);
+  return m ? m[1] : str;
+}
+
+async function load() {
+  const errEl = document.getElementById('err');
+  try {
+    const res = await fetch('output.json');
+    const data = await res.json();
+    data.forEach((entryStr, i) => {
+      try {
+        const body = extractJsonBlock(entryStr);
+        const arr = JSON.parse(body);
+        arr.forEach(r => rows.push({
+          sheet: i + 1,
+          date: r.date ?? '',
+          clock_in: r.clock_in ?? '',
+          clock_out: r.clock_out ?? '',
+          notes: r.notes ?? null
+        }));
+      } catch (e) {
+        errEl.textContent += `Sheet ${i + 1} failed to parse: ${e.message}\n`;
+      }
+    });
+    document.getElementById('subtitle').textContent =
+      `${rows.length} records across ${data.length} sheets`;
+    populateSheetFilter(data.length);
+    renderStats();
+    render();
+  } catch (e) {
+    document.getElementById('subtitle').textContent = 'Failed to load output.json';
+    errEl.textContent = e.message + ' — serve this page over http:// (e.g. python3 -m http.server) rather than opening the file directly.';
+  }
+}
+
+function populateSheetFilter(n) {
+  const sel = document.getElementById('sheetFilter');
+  for (let i = 1; i <= n; i++) {
+    const opt = document.createElement('option');
+    opt.value = i;
+    opt.textContent = 'Sheet ' + i;
+    sel.appendChild(opt);
+  }
+}
+
+function renderStats() {
+  const flagged = rows.filter(r => r.notes).length;
+  const statsEl = document.getElementById('stats');
+  statsEl.innerHTML = `
+    <div class="stat"><b>${rows.length}</b>Total records</div>
+    <div class="stat"><b>${flagged}</b>Flagged (has notes)</div>
+    <div class="stat"><b>${rows.length - flagged}</b>Clean</div>
+  `;
+}
+
+function currentFilters() {
+  const q = document.getElementById('search').value.toLowerCase();
+  const sheet = document.getElementById('sheetFilter').value;
+  const flaggedOnly = document.getElementById('flaggedOnly').checked;
+  return rows.filter(r => {
+    if (sheet && String(r.sheet) !== sheet) return false;
+    if (flaggedOnly && !r.notes) return false;
+    if (q) {
+      const hay = `${r.date} ${r.notes ?? ''}`.toLowerCase();
+      if (!hay.includes(q)) return false;
+    }
+    return true;
+  });
+}
+
+function render() {
+  let filtered = currentFilters();
+  if (sortKey) {
+    filtered.sort((a, b) => {
+      const av = (a[sortKey] ?? '').toString();
+      const bv = (b[sortKey] ?? '').toString();
+      return sortAsc ? av.localeCompare(bv) : bv.localeCompare(av);
+    });
+  }
+  const tbody = document.getElementById('tbody');
+  tbody.innerHTML = filtered.map(r => `
+    <tr class="${r.notes ? 'flagged' : ''}">
+      <td><span class="sheet-badge">#${r.sheet}</span></td>
+      <td>${escapeHtml(r.date)}</td>
+      <td>${escapeHtml(r.clock_in)}</td>
+      <td>${escapeHtml(r.clock_out)}</td>
+      <td>${r.notes ? `<span class="notes-flag">${escapeHtml(r.notes)}</span>` : '<span class="notes-none">—</span>'}</td>
+    </tr>
+  `).join('');
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+  }[c]));
+}
+
+document.getElementById('search').addEventListener('input', render);
+document.getElementById('sheetFilter').addEventListener('change', render);
+document.getElementById('flaggedOnly').addEventListener('change', render);
+document.querySelectorAll('th[data-key]').forEach(th => {
+  th.addEventListener('click', () => {
+    const key = th.dataset.key;
+    sortAsc = sortKey === key ? !sortAsc : true;
+    sortKey = key;
+    render();
+  });
+});
+
+load();
+</script>
+</body>
+</html>
