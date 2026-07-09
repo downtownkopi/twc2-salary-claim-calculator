@@ -1,7 +1,7 @@
 import express from "express";
 import multer from "multer";
 import * as path from "path";
-import { pdfToImages, scanPageImage, extractJsonBlock } from "./lib/ocr";
+import { pdfToImages, scanPageImage, extractJsonBlock, cropIntoBands, extractPageContext } from "./lib/ocr";
 import { fillTimesheet, MONTH_ABBR, type TimeEntry, type FillWarning } from "./lib/xlsx";
 import { inferMissingDays, type RestDay } from "./lib/gapfill";
 import { reconcileAttempts, type ParsedEntry } from "./lib/reconcile";
@@ -23,15 +23,22 @@ const SCAN_TEMPERATURES: { temperature: number; seed: number }[] = [
     { temperature: 0.3, seed: 43 },
     { temperature: 0.5, seed: 44 },
 ];
-const SCAN_ATTEMPTS_PER_PAGE = SCAN_TEMPERATURES.length;
+// Temperature/seed variation alone doesn't help when a model's degenerate-repetition failure
+// (anchoring on an earlier row and pattern-completing later similar-looking ones) reproduces
+// identically across every attempt — all attempts agree with each other, so reconciliation's
+// disagreement-detection has nothing to catch. Cropping each page into fewer, smaller vertical
+// bands directly reduces the dense visual stimulus that triggers it (see cropIntoBands in
+// lib/ocr.ts). Each band gets its own full SCAN_TEMPERATURES reconciliation, then bands are
+// reconciled again against each other (same function, reused) to merge back into one page result.
+const BANDS_PER_PAGE = 2;
 
 const upload = multer({
     storage: multer.memoryStorage(),
     limits: { fileSize: 20 * 1024 * 1024, files: 10 },
 });
 
-// Fanning out SCAN_ATTEMPTS_PER_PAGE parallel calls per page means far more surface area for a
-// flaky upstream response. Our own try/catch around each scanPageImage call assumes SDK failures
+// Fanning out many parallel scan calls per page (bands x temperatures) means far more surface
+// area for a flaky upstream response. Our own try/catch around each scanPageImage call assumes SDK failures
 // always surface as a rejected promise we're awaiting — but a malformed/truncated network
 // response can throw inside the SDK's internals detached from that chain (an unhandled rejection
 // or uncaught exception), which by default kills the entire Node process and drops every
@@ -48,8 +55,10 @@ process.on("uncaughtException", (err) => {
 // Handwritten years are frequently misread by OCR (e.g. "2023" instead of "2026"), and since
 // this template only has sheets for SUPPORTED_YEARS, we don't trust the model's year at all —
 // the caller picks it explicitly, and we only ask the model for day/month/clock times.
-function buildPrompt(context: string, year: number): string {
+function buildPrompt(context: string, year: number, pageContext: string): string {
     return `This is one page of a handwritten daily timesheet, used to fill a wage-claim spreadsheet for the year ${year}.
+
+Page-level context (extracted separately from the full page before this image was cropped, since this image you're looking at now may be only part of the page and might not show a header/title that exists elsewhere on the page): ${pageContext || "none found"}. If this names a specific month, treat it as authoritative for every date row you report below — use that month even if this particular cropped image doesn't show the header itself, UNLESS a row on THIS image explicitly and clearly indicates a different month.
 
 For each calendar date row on this page, your job is simply to list EVERY clock time value written on that row, left to right, in the order they appear — do NOT try to decide how many shifts they represent or group them into clock-in/clock-out pairs yourself. That grouping happens automatically downstream from the count and order of values you report, so your only job is accurate, complete enumeration.
 
@@ -78,7 +87,7 @@ If a date is explicitly marked as a rest day, day off, public holiday, or simila
 
 For every date row visible on this page, output:
 - day: day of month, integer 1-31
-- month: month, integer 1-12 (this page is for the year ${year} — ignore any year written on the page, it is not needed)
+- month: month, integer 1-12. Use the page-level context above if it names a month, unless this specific row clearly indicates otherwise (this page is for the year ${year} — ignore any year written on the page, it is not needed)
 - times: array of every clock time value on this row as described above, in left-to-right order, or null if illegible/not determinable/rest day. Length should normally be even (2, 4, 6...) since shifts come in in/out pairs.
 - guessed: true if times is your best-guess estimate rather than values read directly off the page, false otherwise
 - rest_day: true if this date is explicitly marked as a rest day/off/holiday on the page, false otherwise
@@ -105,7 +114,6 @@ app.post("/api/process", upload.array("pdfs", 10), async (req, res) => {
     }
 
     const context = (req.body.context as string) ?? "";
-    const prompt = buildPrompt(context, year);
 
     const timeEntries: TimeEntry[] = [];
     const restDays: RestDay[] = [];
@@ -123,48 +131,85 @@ app.post("/api/process", upload.array("pdfs", 10), async (req, res) => {
         for (let i = 0; i < images.length; i++) {
             const source = `${file.originalname} p${i + 1}`;
 
+            // Read the full, uncropped page once for page-level context (e.g. a month header)
+            // before cropping into bands — a header can sit anywhere on the page depending on
+            // the source layout, and once cropped into bands, whichever band doesn't happen to
+            // include it would otherwise have no way to know what month its rows belong to.
+            let pageContext = "";
+            try {
+                pageContext = await extractPageContext(images[i]);
+            } catch (e: any) {
+                warnings.push({ source, reason: `could not extract page-level context (e.g. month header): ${e.message} — bands will rely on per-row reading only` });
+            }
+            const prompt = buildPrompt(context, year, pageContext);
+
+            const bands = await cropIntoBands(images[i], BANDS_PER_PAGE);
+
+            // flatten band x temperature into one parallel batch for max concurrency — all
+            // bands' attempts fire together rather than band-by-band, so wall-clock time stays
+            // close to a single batch's latency despite more total calls.
+            const jobs = bands.flatMap((bandImage, b) =>
+                SCAN_TEMPERATURES.map(({ temperature, seed }) => ({ bandImage, b, temperature, seed }))
+            );
             const results = await Promise.allSettled(
-                SCAN_TEMPERATURES.map(({ temperature, seed }) => scanPageImage(images[i], prompt, temperature, seed))
+                jobs.map(({ bandImage, temperature, seed }) => scanPageImage(bandImage, prompt, temperature, seed))
             );
 
-            const attempts: ParsedEntry[][] = [];
+            const attemptsByBand: ParsedEntry[][][] = bands.map(() => []);
             let truncatedCount = 0;
             let failedCount = 0;
-            for (const result of results) {
+            results.forEach((result, idx) => {
+                const { b } = jobs[idx];
                 if (result.status === "rejected") {
                     failedCount++;
-                    continue;
+                    return;
                 }
                 const { content, truncated } = result.value;
                 if (truncated) truncatedCount++;
                 try {
                     const parsed = JSON.parse(extractJsonBlock(content));
                     if (!Array.isArray(parsed)) throw new Error("not a JSON array");
-                    attempts.push(parsed);
+                    attemptsByBand[b].push(parsed);
                 } catch {
                     failedCount++;
                 }
-            }
+            });
 
+            const totalAttempts = jobs.length;
             if (truncatedCount > 0) {
                 warnings.push({
                     source,
-                    reason: `${truncatedCount}/${SCAN_ATTEMPTS_PER_PAGE} scan attempts were truncated (hit token limit) — this page may still be missing rows, please review carefully`,
+                    reason: `${truncatedCount}/${totalAttempts} scan attempts were truncated (hit token limit) — this page may still be missing rows, please review carefully`,
                 });
             }
             if (failedCount > 0) {
                 warnings.push({
                     source,
-                    reason: `${failedCount}/${SCAN_ATTEMPTS_PER_PAGE} scan attempts failed or returned unparseable output${attempts.length > 0 ? " (used the remaining attempts)" : ""}`,
+                    reason: `${failedCount}/${totalAttempts} scan attempts failed or returned unparseable output`,
                 });
             }
-            if (attempts.length === 0) {
+
+            // Reconcile WITHIN each band first (its own SCAN_TEMPERATURES attempts), then
+            // reconcile ACROSS bands — each band's own clean result treated as one more
+            // "attempt" for the same reconcileAttempts function, reused as-is. A band that
+            // fully failed contributes nothing (skipped, not pushed as an empty attempt) so it
+            // doesn't dilute the "X/N attempts agreed" bookkeeping for bands that did report.
+            const bandResults: ParsedEntry[][] = [];
+            for (let b = 0; b < bands.length; b++) {
+                if (attemptsByBand[b].length === 0) continue;
+                const bandSource = bands.length > 1 ? `${source} (band ${b + 1}/${bands.length})` : source;
+                const { entries: bandEntries, warnings: bandWarnings } = reconcileAttempts(attemptsByBand[b], bandSource);
+                bandResults.push(bandEntries);
+                warnings.push(...bandWarnings);
+            }
+
+            if (bandResults.length === 0) {
                 warnings.push({ source, reason: "all scan attempts for this page failed — page was skipped entirely" });
                 continue;
             }
 
-            const { entries: parsed, warnings: reconcileWarnings } = reconcileAttempts(attempts, source);
-            warnings.push(...reconcileWarnings);
+            const { entries: parsed, warnings: crossBandWarnings } = reconcileAttempts(bandResults, source);
+            warnings.push(...crossBandWarnings);
 
             for (const entry of parsed) {
                 if (entry.day === null || entry.month === null) {
