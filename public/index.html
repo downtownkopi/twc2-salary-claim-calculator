@@ -84,6 +84,14 @@
   }
   .month-summary li { color: var(--muted); }
   .month-summary li.incomplete { color: var(--warn-text); }
+  .scan-output-link {
+    display: block;
+    margin-top: 12px;
+    font-size: 12px;
+    color: var(--accent);
+    text-decoration: none;
+  }
+  .scan-output-link:hover { text-decoration: underline; }
   .warnings {
     margin-top: 16px;
     background: var(--warn-bg);
@@ -133,6 +141,7 @@
 
   <div class="status" id="status"></div>
   <ul class="month-summary" id="monthSummary" style="display:none"></ul>
+  <a href="#" id="scanOutputLink" class="scan-output-link" style="display:none">Download scan output (JSON) — every entry with its exact source, for debugging</a>
   <div class="warnings" id="warnings" style="display:none">
     <h3>Warnings</h3>
     <ul id="warningsList"></ul>
@@ -148,6 +157,8 @@ const statusEl = document.getElementById('status');
 const warningsEl = document.getElementById('warnings');
 const warningsList = document.getElementById('warningsList');
 const monthSummaryEl = document.getElementById('monthSummary');
+const scanOutputLink = document.getElementById('scanOutputLink');
+let scanOutputBlobUrl = null;
 
 pdfsInput.addEventListener('change', () => {
   const names = Array.from(pdfsInput.files).map(f => f.name);
@@ -160,6 +171,8 @@ form.addEventListener('submit', async (e) => {
   warningsList.innerHTML = '';
   monthSummaryEl.style.display = 'none';
   monthSummaryEl.innerHTML = '';
+  scanOutputLink.style.display = 'none';
+  if (scanOutputBlobUrl) { URL.revokeObjectURL(scanOutputBlobUrl); scanOutputBlobUrl = null; }
 
   const formData = new FormData();
   for (const file of pdfsInput.files) formData.append('pdfs', file);
@@ -193,6 +206,14 @@ form.addEventListener('submit', async (e) => {
       warningsList.innerHTML = data.warnings
         .map(w => `<li><b>${escapeHtml(w.source)}:</b> ${escapeHtml(w.reason)}</li>`)
         .join('');
+    }
+
+    if (data.scanOutput) {
+      const scanBlob = new Blob([JSON.stringify(data.scanOutput, null, 2)], { type: 'application/json' });
+      scanOutputBlobUrl = URL.createObjectURL(scanBlob);
+      scanOutputLink.href = scanOutputBlobUrl;
+      scanOutputLink.download = data.filename.replace(/\.xlsx$/, '') + '-scan-output.json';
+      scanOutputLink.style.display = 'block';
     }
 
     const bytes = Uint8Array.from(atob(data.file), c => c.charCodeAt(0));

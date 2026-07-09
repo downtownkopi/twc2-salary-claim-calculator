@@ -1,9 +1,8 @@
 import express from "express";
 import multer from "multer";
 import * as path from "path";
-import { pdfToImages, scanPageImage, extractJsonBlock, cropIntoBands, extractPageContext } from "./lib/ocr";
-import { fillTimesheet, MONTH_ABBR, type TimeEntry, type FillWarning } from "./lib/xlsx";
-import { inferMissingDays, type RestDay } from "./lib/gapfill";
+import { pdfToImages, scanPageImage, extractJsonBlock, cropIntoBands, extractPageContext, verifyDatesOnPage } from "./lib/ocr";
+import { fillTimesheet, MONTH_ABBR, type TimeEntry, type FillWarning, type RestDay } from "./lib/xlsx";
 import { reconcileAttempts, type ParsedEntry } from "./lib/reconcile";
 
 const TEMPLATE_PATH = path.join(__dirname, "calculation.xltx");
@@ -23,14 +22,14 @@ const SCAN_TEMPERATURES: { temperature: number; seed: number }[] = [
     { temperature: 0.3, seed: 43 },
     { temperature: 0.5, seed: 44 },
 ];
-// Temperature/seed variation alone doesn't help when a model's degenerate-repetition failure
-// (anchoring on an earlier row and pattern-completing later similar-looking ones) reproduces
-// identically across every attempt — all attempts agree with each other, so reconciliation's
-// disagreement-detection has nothing to catch. Cropping each page into fewer, smaller vertical
-// bands directly reduces the dense visual stimulus that triggers it (see cropIntoBands in
-// lib/ocr.ts). Each band gets its own full SCAN_TEMPERATURES reconciliation, then bands are
-// reconciled again against each other (same function, reused) to merge back into one page result.
-const BANDS_PER_PAGE = 2;
+// Band-cropping (splitting a page into smaller vertical strips before OCR, each scanned
+// independently) was an attempt at reducing dense-table repetition/row-merging failures. Tried 2
+// bands, then 3 — neither reliably fixed the specific failure it was meant to address, so it's
+// off for now (1 = cropIntoBands short-circuits and returns the page uncropped, see lib/ocr.ts).
+// The two-level (within-band, then cross-band) reconciliation structure in the loop below still
+// runs either way — with 1 band it's just reconciling a single "band" against nothing else,
+// which is a no-op pass-through, so no separate code path was needed to disable it cleanly.
+const BANDS_PER_PAGE = 1;
 
 const upload = multer({
     storage: multer.memoryStorage(),
@@ -77,21 +76,23 @@ Hard constraint — no human can work 24 hours or more in a single calendar day.
 
 Total hours worked must tally strictly. If the page shows both raw clock times AND a separately written total/duration for the same day, what you report must be consistent with that written total (accounting for any marked meal break). If they don't agree, do not silently pick one — explain the discrepancy in notes so a human can review it.
 
-This page may contain many rows (up to 31, one per day of the month). Transcribe EVERY row visible on the page, top to bottom — do not skip, merge, or summarize any row, even if the page is dense or some rows look repetitive.
+This page may contain many rows (up to 31, one per day of the month) — but do NOT assume every day of the month must appear. Only report a date if that date's row genuinely exists on the page with some kind of mark, entry, or handwriting in it. Transcribe EVERY row that is actually present, top to bottom — do not skip, merge, or summarize any row, even if the page is dense or some rows look repetitive.
+
+CRITICAL — pay special attention to the LAST row that has any handwritten content on it, especially when it's followed by several blank/empty rows before the page ends. It is a common mistake to see a run of blank rows coming up and treat that as a signal that the data has "ended" a row early, causing the last real row to get skipped even though it clearly has content. The last populated row is exactly as real as every row before it — verify you have included it.
 
 CRITICAL — many rows on a timesheet look nearly identical at a glance (e.g. the same clock-in time and same mid-day break time repeated every day), but that does NOT mean every row is identical. Do not let an earlier row you already read confidently influence how you read a later row that merely looks similar. You must independently re-examine and read the actual handwritten digits on EVERY row, especially any values later in the row — it is extremely common for only a later time value to differ between otherwise similar-looking rows, and copying a previous row's values here instead of reading this row's own digits is a serious, easy-to-make error. Treat each row as a completely separate read, as if you had never seen any other row on the page.
 
-By right, every calendar date that falls within this page's date range should end up with an entry. If a date's row is blank, smudged, or its times aren't clearly legible, but OTHER rows on this same page show a clear, consistent pattern (e.g. the same values repeated on most other workdays), use that pattern to make your best guess for the missing date instead of leaving it null. When you output a best-guess estimate rather than values read directly off the page, set guessed to true and explain the basis for the guess in notes (e.g. "no entry visible, inferred from the 8am-5pm pattern seen on surrounding weekdays").
+NEVER guess or invent time values, for any reason. If a row's clock times are smudged, blurry, or otherwise too unclear to read with confidence, output times as null for that row and briefly explain why in notes — do not use a pattern from other rows on the page to fill it in, even if the pattern looks obvious or consistent. And if a date simply has no row on the page at all (no marks, nothing written for it), do not output an entry for it at all. Every value you report must be something you actually read directly off the page, never inferred, pattern-matched, or guessed.
 
-If a date is explicitly marked as a rest day, day off, public holiday, or similar, still output a row for it — set rest_day to true and times to null. Do NOT guess times for a confirmed rest day. This lets a downstream system tell "confirmed day off" apart from "data missing entirely", so only genuinely missing days get inferred later, never real rest days.
+If a date is explicitly marked as a rest day, day off, public holiday, or similar, still output a row for it — set rest_day to true and times to null. Do NOT guess times for a confirmed rest day.
 
 For every date row visible on this page, output:
 - day: day of month, integer 1-31
 - month: month, integer 1-12. Use the page-level context above if it names a month, unless this specific row clearly indicates otherwise (this page is for the year ${year} — ignore any year written on the page, it is not needed)
 - times: array of every clock time value on this row as described above, in left-to-right order, or null if illegible/not determinable/rest day. Length should normally be even (2, 4, 6...) since shifts come in in/out pairs.
-- guessed: true if times is your best-guess estimate rather than values read directly off the page, false otherwise
+- guessed: always false. You must never guess or invent values (see above) — this field exists only for schema consistency.
 - rest_day: true if this date is explicitly marked as a rest day/off/holiday on the page, false otherwise
-- notes: null normally. If times is null, OR guessed is true, OR anything about this row doesn't make sense (e.g. an odd number of values, unclear handwriting, unusual format, implied 24h+ span), explain briefly here so a human can review — do not guess wildly.
+- notes: null normally. If times is null, OR anything about this row doesn't make sense (e.g. an odd number of values, unclear handwriting, unusual format, implied 24h+ span), explain briefly here so a human can review.
 
 Additional context from the person submitting this form: ${context || "None provided."}
 
@@ -189,11 +190,12 @@ app.post("/api/process", upload.array("pdfs", 10), async (req, res) => {
                 });
             }
 
-            // Reconcile WITHIN each band first (its own SCAN_TEMPERATURES attempts), then
-            // reconcile ACROSS bands — each band's own clean result treated as one more
-            // "attempt" for the same reconcileAttempts function, reused as-is. A band that
-            // fully failed contributes nothing (skipped, not pushed as an empty attempt) so it
-            // doesn't dilute the "X/N attempts agreed" bookkeeping for bands that did report.
+            // Reconcile WITHIN each band first (its own SCAN_TEMPERATURES attempts, all looking
+            // at the exact same cropped image — full participation required here, since a lone
+            // attempt hallucinating something the other attempts of the SAME image never mention
+            // is a genuine disagreement about the same source material). A band that fully
+            // failed contributes nothing (skipped, not pushed as an empty attempt) so it doesn't
+            // dilute the "X/N attempts agreed" bookkeeping for bands that did report.
             const bandResults: ParsedEntry[][] = [];
             for (let b = 0; b < bands.length; b++) {
                 if (attemptsByBand[b].length === 0) continue;
@@ -208,8 +210,42 @@ app.post("/api/process", upload.array("pdfs", 10), async (req, res) => {
                 continue;
             }
 
-            const { entries: parsed, warnings: crossBandWarnings } = reconcileAttempts(bandResults, source);
+            // Reconcile ACROSS bands leniently (requireFullParticipation=false): bands see
+            // genuinely different, only partially overlapping crops by design, so a day sitting
+            // in one band's region and outside another's isn't disagreement, it's expected
+            // non-coverage. Only reject when multiple bands DO report the same day with
+            // conflicting values — that's a real disagreement, not a coverage gap.
+            const { entries: reconciled, warnings: crossBandWarnings } = reconcileAttempts(bandResults, source, false);
             warnings.push(...crossBandWarnings);
+
+            // Strict cross-attempt unanimity (lib/reconcile.ts) only catches disagreement — it
+            // can't catch the model confidently, consistently hallucinating the same fabricated
+            // date on every attempt, since there's nothing for reconciliation to disagree about.
+            // One extra focused call per page (not per date) asks specifically "does this date's
+            // row actually exist on the page", against the full uncropped image, and drops
+            // anything not confirmed rather than trusting transcription alone.
+            let parsed = reconciled;
+            const candidates = reconciled
+                .filter((e): e is ParsedEntry & { day: number; month: number } => e.day !== null && e.month !== null)
+                .map(e => ({ day: e.day, month: e.month }));
+            if (candidates.length > 0) {
+                try {
+                    const confirmed = await verifyDatesOnPage(images[i], candidates);
+                    parsed = reconciled.filter(e => {
+                        if (e.day === null || e.month === null) return true; // let existing validation handle it
+                        const isConfirmed = confirmed.has(`${e.month}-${e.day}`);
+                        if (!isConfirmed) {
+                            warnings.push({
+                                source,
+                                reason: `day=${e.day} month=${e.month}: failed page-level verification (no genuine row found for this date on a full-page recheck) — dropped, please check the source PDF for this date directly`,
+                            });
+                        }
+                        return isConfirmed;
+                    });
+                } catch (e: any) {
+                    warnings.push({ source, reason: `date verification pass failed (${e.message}) — entries for this page were NOT independently verified, please review carefully` });
+                }
+            }
 
             for (const entry of parsed) {
                 if (entry.day === null || entry.month === null) {
@@ -237,7 +273,7 @@ app.post("/api/process", upload.array("pdfs", 10), async (req, res) => {
                     continue;
                 }
                 if (entry.rest_day === true) {
-                    restDays.push({ year, month: entry.month, day: entry.day });
+                    restDays.push({ year, month: entry.month, day: entry.day, source });
                     continue;
                 }
                 if (!entry.times || entry.times.length === 0) {
@@ -276,13 +312,12 @@ app.post("/api/process", upload.array("pdfs", 10), async (req, res) => {
         }
     }
 
-    // Each page above was scanned independently (no cross-page memory during OCR), so a day that
-    // no page covered at all is a true gap, not necessarily a rest day. Now that every page's
-    // results are aggregated, look for a recurring pattern on that weekday elsewhere in the month
-    // and infer the gap from it — same guessed/highlighted treatment as a per-page guess.
-    const { inferred, warnings: gapWarnings } = inferMissingDays(timeEntries, restDays, year);
-    timeEntries.push(...inferred);
-    warnings.push(...gapWarnings);
+    // No cross-page/weekday-pattern inference of missing days — a day with no entry anywhere
+    // stays uncovered and gets flagged below (coverage check), rather than having hours
+    // fabricated from a same-weekday pattern elsewhere in the month. Previously this inferred
+    // gaps from weekday patterns, but that produced entries for days the source PDF never
+    // actually showed (e.g. a day before the earliest page any file covered) — a wrong entry on
+    // a wage claim is worse than a visible, honest gap.
 
     let buffer: Buffer;
     let fillWarnings: FillWarning[];
@@ -308,12 +343,13 @@ app.post("/api/process", upload.array("pdfs", 10), async (req, res) => {
         (coveredByMonth.get(k) ?? coveredByMonth.set(k, new Set()).get(k)!).add(r.day);
     }
 
-    // Final coverage check: every skip path above (reconcile, gap-fill, fillTimesheet) is
-    // supposed to leave a warning behind — but a page whose model output is a successfully
-    // parsed, genuinely empty array isn't a "failure" by any check above, so if that happens on
-    // every attempt for a page, a day can vanish with zero trail. Walk every calendar day of
-    // every month actually touched by this upload and loudly flag anything still uncovered,
-    // regardless of which step (or bug) caused it, so a day is never silently missing again.
+    // Final coverage check: every skip path above (reconcile, fillTimesheet) is supposed to
+    // leave a warning behind — but a page whose model output is a successfully parsed, genuinely
+    // empty array isn't a "failure" by any check above, so if that happens on every attempt for
+    // a page, a day can vanish with zero trail. Walk every calendar day of every month actually
+    // touched by this upload and loudly flag anything still uncovered, regardless of which step
+    // (or bug) caused it, so a day is never silently missing again. No inference happens here —
+    // an uncovered day just stays uncovered and gets flagged for the user to check manually.
     const monthSummary: { label: string; filled: number; total: number }[] = [];
     for (const [key, daysCovered] of [...coveredByMonth].sort()) {
         const [y, monthIndex0] = key.split("-").map(Number);
@@ -323,11 +359,38 @@ app.post("/api/process", upload.array("pdfs", 10), async (req, res) => {
             const date = new Date(y, monthIndex0, day);
             warnings.push({
                 source: "coverage check",
-                reason: `${date.toDateString()} has no entry anywhere — not read by any scan attempt on any page, not a confirmed rest day, and gap-fill could not infer it. Please check the source PDF for this date directly.`,
+                reason: `${date.toDateString()} has no entry anywhere — not read by any scan attempt on any page, and not a confirmed rest day. Please check the source PDF for this date directly.`,
             });
         }
         monthSummary.push({ label: `${MONTH_ABBR[monthIndex0]} ${y}`, filled: daysCovered.size, total: daysInMonth });
     }
+
+    // Every entry that was attempted, with its exact origin (a specific page/band scan), so a
+    // wrong result (e.g. dates appearing that the source PDF never showed) can be traced back
+    // without needing to reproduce the run to find out.
+    //
+    // toLocalDateString, not toISOString: .toISOString() converts to UTC, which silently shifts
+    // the calendar date by a day in timezones ahead of UTC (e.g. a local-midnight Sept 11 becomes
+    // "2025-09-10") — exactly the class of date bug this debug output exists to help catch, so
+    // shipping that here would be self-defeating. Every date elsewhere in this codebase is
+    // constructed and read in local time (new Date(year, month, day)), so this matches that.
+    const toLocalDateString = (d: Date) =>
+        `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+    const scanOutput = [
+        ...timeEntries.map(e => ({
+            date: toLocalDateString(e.date),
+            type: "worked" as const,
+            clockIn: e.clockIn,
+            clockOut: e.clockOut,
+            guessed: e.guessed,
+            source: e.source,
+        })),
+        ...restDays.map(r => ({
+            date: `${r.year}-${String(r.month).padStart(2, "0")}-${String(r.day).padStart(2, "0")}`,
+            type: "rest_day" as const,
+            source: r.source,
+        })),
+    ].sort((a, b) => a.date.localeCompare(b.date));
 
     res.json({
         success: true,
@@ -336,6 +399,7 @@ app.post("/api/process", upload.array("pdfs", 10), async (req, res) => {
         warnings: [...warnings, ...fillWarnings],
         entriesWritten: writtenDates.length,
         monthSummary,
+        scanOutput,
         durationMs: Date.now() - startedAt,
     });
 });

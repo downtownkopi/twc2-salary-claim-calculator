@@ -14,6 +14,10 @@ export type FillWarning = {
     reason: string;
 };
 
+// A day explicitly marked as a rest day/off/holiday on the actual page — genuine observed data
+// (the model read and reported it directly), not something inferred or fabricated.
+export type RestDay = { year: number; month: number; day: number; source: string }; // month is 1-12
+
 export const MONTH_ABBR = [
     "Jan", "Feb", "Mar", "Apr", "May", "Jun",
     "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",

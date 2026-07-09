@@ -106,17 +106,25 @@ async function sendVisionRequest(
         try {
             const response = await getClient().chat.send({
                 chatRequest: {
-                    model: "qwen/qwen3-vl-235b-a22b-instruct",
+                    // Switched from google/gemini-2.5-flash after user side-by-side testing found
+                    // it underperformed on dense handwritten timesheets. nex-agi/nex-n2-pro is a
+                    // MoE model (17B active / 397B total, Qwen3.5 arch) with two OpenRouter
+                    // endpoints: Nex AGI (fp8) and SiliconFlow (unknown quantization). Filtering to
+                    // known, higher-precision quant tiers only (same reasoning as the earlier Qwen
+                    // setup) to avoid the lower-confidence unknown-quant provider.
+                    // Switched from nex-n2-pro per user request to try qwen3-vl-32b-instruct.
+                    // reasoning: effort "none" is kept as a harmless no-op for non-reasoning
+                    // models (confirmed via a live call — response comes back with
+                    // reasoning: null, doesn't error) so we don't need to special-case it per
+                    // model. qwen3-vl-32b-instruct has only one OpenRouter endpoint (Alibaba,
+                    // quantization "unknown") — the fp8/fp16/bf16/fp32 filter used for Qwen's
+                    // larger models would exclude that one endpoint entirely and leave nothing to
+                    // route to, so it's dropped here (same reasoning as the earlier Gemini swap).
+                    reasoning: { effort: "none" },
+                    model: "qwen/qwen3-vl-32b-instruct",
                     maxTokens,
                     temperature,
                     seed,
-                    // OpenRouter auto-routes this model across multiple backend providers, which
-                    // can silently serve different quantizations of "the same" model. Unlike the
-                    // old qwen2.5-vl-72b (no fp16+ endpoint existed at all), this model has a
-                    // bf16 provider available — exclude only the most degraded tiers
-                    // (int4/int8/fp4/fp6) that most hurt fine-detail reading like dense
-                    // handwriting, keep fp8/bf16/fp32 in play.
-                    provider: { quantizations: ["fp8", "fp16", "bf16", "fp32"] },
                     messages: [
                         {
                             role: "user",
@@ -174,6 +182,37 @@ export async function extractPageContext(base64Image: string): Promise<string> {
 Reply with ONE short plain-text sentence stating what you found, e.g. "Header indicates December" or "No month header found, but page appears to be for a worker named Ahmad" or "No page-level context found." Do not transcribe any individual rows or times — this is only about page-level context, not row data. Keep it brief.`;
     const { content } = await sendVisionRequest(base64Image, prompt, 0, 42, 200);
     return content.trim();
+}
+
+// Even with strict cross-attempt unanimity (lib/reconcile.ts), the underlying model can still
+// consistently, confidently report a date that simply isn't on the page at all — e.g. it
+// hallucinates the same fabricated entry on every one of the 3 temperature-varied attempts, so
+// there's no disagreement for reconciliation to catch. This is a genuinely different, narrower
+// question than "transcribe every row correctly" (the task that's been failing): for each date
+// the main pass already agreed on, does that date's row actually exist on the page at all? A
+// single batch call handles every candidate date at once rather than one call per date, keeping
+// the cost to one extra call per page regardless of how many dates were reported.
+export async function verifyDatesOnPage(
+    base64Image: string,
+    candidates: { day: number; month: number }[]
+): Promise<Set<string>> {
+    if (candidates.length === 0) return new Set();
+
+    const dateList = candidates.map(c => `${c.day}/${c.month}`).join(", ");
+    const prompt = `This is the full page of a handwritten timesheet. A previous pass claimed to find a row with actual handwritten content (times, marks, something written) for each of these dates on this page: ${dateList} (format is day/month).
+
+Your ONLY job is to verify, for EACH date in that list, whether that date's row genuinely exists on the page with real handwritten content in it — not to re-transcribe any times. Look carefully: is there an actual row for this date, with something written in it? If a date's row is blank, or that date doesn't appear on the page at all, that date should be marked NOT confirmed.
+
+Output ONLY a JSON array with exactly one object per date in the list, in the same order, as {day, month, confirmed}, where confirmed is true only if you can see genuine handwritten content for that date's row. No other text, no markdown fences.`;
+
+    const { content } = await sendVisionRequest(base64Image, prompt, 0, 42, 2000);
+    const parsed = JSON.parse(extractJsonBlock(content)) as { day: number; month: number; confirmed: boolean }[];
+
+    const confirmed = new Set<string>();
+    for (const r of parsed) {
+        if (r.confirmed === true) confirmed.add(`${r.month}-${r.day}`);
+    }
+    return confirmed;
 }
 
 // Model replies are usually markdown-fenced (```json ... ```) but sometimes prefix/suffix the
