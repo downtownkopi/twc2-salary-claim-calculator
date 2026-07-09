@@ -1,4 +1,5 @@
 import ExcelJS from "exceljs";
+import JSZip from "jszip";
 
 export type TimeEntry = {
     date: Date; // year already resolved by caller (OCR'd year is unreliable, see server.ts)
@@ -35,6 +36,65 @@ function sheetNameFor(date: Date): string {
     return `2-${MONTH_ABBR[date.getMonth()]} ${date.getFullYear()}`;
 }
 
+function colLettersToNum(letters: string): number {
+    let n = 0;
+    for (const ch of letters) n = n * 26 + (ch.charCodeAt(0) - 64);
+    return n;
+}
+
+function colNumToLetters(num: number): string {
+    let letters = "";
+    while (num > 0) {
+        const rem = (num - 1) % 26;
+        letters = String.fromCharCode(65 + rem) + letters;
+        num = Math.floor((num - 1) / 26);
+    }
+    return letters;
+}
+
+// exceljs has a real bug (independent of anything we write) where the <dimension> element it
+// serializes for some worksheets in this template undershoots the actual used range — e.g.
+// declaring "Q1:V44" when the sheet's real data spans "A1:V44". That's a schema-level
+// inconsistency Excel's file-format validator rejects outright ("problem with content..."),
+// reproduces even with zero modifications (confirmed: load calculation.xltx, write it straight
+// back out, several sheets already show the wrong dimension). exceljs's `dimensions` is
+// read-only, so there's no supported way to override it through the object model — this patches
+// the actual XML after writeBuffer(), recomputing each worksheet's true min/max row and column
+// straight from its own <c r="..."> cell references and correcting the declared range.
+async function fixWorksheetDimensions(buffer: Buffer): Promise<Buffer> {
+    const zip = await JSZip.loadAsync(buffer);
+    const sheetFiles = Object.keys(zip.files).filter(name => /^xl\/worksheets\/sheet\d+\.xml$/.test(name));
+
+    for (const name of sheetFiles) {
+        const file = zip.file(name);
+        if (!file) continue;
+        const xml = await file.async("string");
+
+        let minCol = Infinity, maxCol = -Infinity, minRow = Infinity, maxRow = -Infinity;
+        const cellRefRegex = /<c r="([A-Z]+)(\d+)"/g;
+        let match: RegExpExecArray | null;
+        while ((match = cellRefRegex.exec(xml)) !== null) {
+            const col = colLettersToNum(match[1]);
+            const row = parseInt(match[2], 10);
+            if (col < minCol) minCol = col;
+            if (col > maxCol) maxCol = col;
+            if (row < minRow) minRow = row;
+            if (row > maxRow) maxRow = row;
+        }
+        if (minCol === Infinity) continue; // no cells at all, nothing to fix
+
+        const correctRange = `${colNumToLetters(minCol)}${minRow}:${colNumToLetters(maxCol)}${maxRow}`;
+        const fixedXml = xml.replace(/<dimension ref="[^"]*"\s*\/>/, `<dimension ref="${correctRange}"/>`);
+        zip.file(name, fixedXml);
+    }
+
+    // jszip defaults to STORE (no compression) on regenerate, unlike exceljs's original DEFLATE
+    // output — match it explicitly rather than leave the container-level format silently
+    // different from what a real xlsx normally looks like.
+    const fixedBuffer = await zip.generateAsync({ type: "nodebuffer", compression: "DEFLATE" });
+    return fixedBuffer;
+}
+
 // HHMM (e.g. 800, 2200, 2400) -> minutes since midnight
 function toMinutes(hhmm: number): number {
     return Math.trunc(hhmm / 100) * 60 + (hhmm % 100);
@@ -63,6 +123,39 @@ export async function fillTimesheet(
     const workbook = new ExcelJS.Workbook();
     await workbook.xlsx.readFile(templatePath);
     workbook.calcProperties.fullCalcOnLoad = true; // force Excel to recompute formulas on open
+
+    // Two independent pre-existing defects in how this template's formulas round-trip through
+    // ExcelJS, both confirmed to reproduce with zero modifications (load calculation.xltx, write
+    // it straight back out) and both flagged by Excel's "problem with some content" repair
+    // dialog:
+    //
+    // 1. Shared formulas. The template's daily-row formulas are Excel "shared formulas" (one
+    //    master cell + a range of dependents that inherit it). ExcelJS's writer can assign a
+    //    dependent cell a shared-formula group ID whose declared range doesn't actually cover
+    //    it — a hard schema violation. Fixed by expanding every shared-formula cell to a fully
+    //    standalone one: `.formula` already resolves the correctly-translated per-cell text, so
+    //    reassigning it drops the shared-group metadata entirely.
+    //
+    // 2. Stale cached formula results. Some formula cells (e.g. VLOOKUPs on "1-Calc- Monthly Pay"
+    //    keyed off the intentionally-blank "Worker Details" sheet) cache a result — error
+    //    (t="e", <v>#N/A</v>) or plain string (t="str") alike — straight from the template. That
+    //    exact cell is byte-identical in the pristine, untouched .xltx — but a .xltx is normally
+    //    opened via Excel's "new from template" flow, which may never expose this to the
+    //    stricter validation a direct .xlsx open goes through (confirmed via a completely
+    //    independent library, openpyxl: its round-trip of the same cells drops the cached value
+    //    and type marker entirely, keeping only the formula). Since we already set
+    //    fullCalcOnLoad above (Excel recomputes everything on open regardless), every cached
+    //    formula result is functionally redundant — dropped unconditionally rather than ship a
+    //    value Excel may reject outright.
+    workbook.eachSheet(ws => {
+        ws.eachRow({ includeEmpty: false }, row => {
+            row.eachCell({ includeEmpty: false }, cell => {
+                if (cell.formula) {
+                    cell.value = { formula: cell.formula }; // de-share (if applicable) + drop cached result
+                }
+            });
+        });
+    });
 
     const warnings: FillWarning[] = [];
     type Shift = { clockIn: number; clockOut: number; source: string; guessed: boolean };
@@ -184,5 +277,6 @@ export async function fillTimesheet(
     }
 
     const arrayBuffer = await workbook.xlsx.writeBuffer();
-    return { buffer: Buffer.from(arrayBuffer), warnings, writtenDates };
+    const buffer = await fixWorksheetDimensions(Buffer.from(arrayBuffer));
+    return { buffer, warnings, writtenDates };
 }
