@@ -16,7 +16,12 @@ function getClient(): OpenRouter {
 // Convert a PDF (path or in-memory buffer) into an array of base64 PNG images, one per page
 export async function pdfToImages(input: string | Buffer): Promise<string[]> {
     const images: string[] = [];
-    const document = await pdf(input, { scale: 2.0 }); // scale up for better OCR
+    // Bumped from 2.0 after a systematic (unanimous-across-attempts) misread of dense, small
+    // handwritten digits — the failure wasn't inconsistency between attempts (which the
+    // multi-attempt reconciliation in lib/reconcile.ts is designed to catch), it was the same
+    // legibility limit hit every time. Higher scale trades more tokens/latency per page for
+    // clearer source pixels.
+    const document = await pdf(input, { scale: 3.0 });
     for await (const pageBuffer of document) {
         images.push(pageBuffer.toString("base64"));
     }
@@ -36,9 +41,19 @@ function sleep(ms: number): Promise<void> {
 // A dense timesheet page (e.g. 24+ rows) can produce a long JSON response — without an
 // explicit maxTokens the provider default can cut it off mid-array, silently dropping the
 // tail rows. We set a generous cap and flag it if the model still hit that limit.
+//
+// temperature/seed are caller-supplied rather than hardcoded: transcription is mostly
+// deterministic work, but temperature=0 across every reconciliation attempt (lib/reconcile.ts)
+// means a systematic model bias — e.g. lazily repeating a previous row's value on a dense,
+// visually-repetitive table instead of re-reading each row — gets reproduced identically on
+// every attempt, giving reconciliation's disagreement-detection nothing to catch. Varying
+// temperature/seed across attempts (server.ts) gives each pass a real chance to diverge when
+// the model's reading is actually uncertain.
 export async function scanPageImage(
     base64Image: string,
-    prompt: string
+    prompt: string,
+    temperature = 0,
+    seed = 42
 ): Promise<{ content: string; truncated: boolean }> {
     const MAX_ATTEMPTS = 3;
     for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
@@ -47,11 +62,8 @@ export async function scanPageImage(
                 chatRequest: {
                     model: "qwen/qwen2.5-vl-72b-instruct",
                     maxTokens: 8000,
-                    // This is transcription, not creative writing — the same page should read the
-                    // same way every time. Without this the provider's default (non-zero)
-                    // temperature makes row-count and legibility calls vary run to run.
-                    temperature: 0,
-                    seed: 42,
+                    temperature,
+                    seed,
                     // OpenRouter auto-routes this model across multiple backend providers, which
                     // can silently serve different quantizations of "the same" model. No fp16+
                     // endpoint is currently available for this model at all (every provider

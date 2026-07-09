@@ -107,13 +107,35 @@ function shiftHours(clockIn: number, clockOut: number): number {
     return minutes / 60;
 }
 
+type Shift = { clockIn: number; clockOut: number; source: string; guessed: boolean };
+
+// A day with 2+ distinct shifts (e.g. a morning block and an evening block) collapses to one
+// row: full span = first clock-in to last clock-out, and the gap(s) between shifts become the
+// meal break (summed if there are 3+ shifts, i.e. 2+ gaps). This lets the day still go through
+// N/O like a normal single-shift day, just with the template's default meal-break (column G)
+// overridden by the actual observed gap instead of assumed.
+function computeSpanAndBreak(sortedShifts: Shift[]): { start: number; end: number; spanHours: number; breakHours: number } {
+    const start = sortedShifts[0].clockIn;
+    const end = sortedShifts[sortedShifts.length - 1].clockOut;
+    const spanHours = shiftHours(start, end);
+
+    let breakMinutes = 0;
+    for (let i = 1; i < sortedShifts.length; i++) {
+        let gap = toMinutes(sortedShifts[i].clockIn) - toMinutes(sortedShifts[i - 1].clockOut);
+        if (gap < 0) gap += 24 * 60; // gap crosses midnight
+        breakMinutes += gap;
+    }
+    return { start, end, spanHours, breakHours: breakMinutes / 60 };
+}
+
 // Loads calculation.xltx and fills each date's row.
-// - A single shift on a day goes into "Start Time w/o :" (N) / "End Time w/o :" (O), which feed
-//   the template's own B/C/D/E/I/L formulas.
-// - Multiple distinct shifts on the same day (e.g. split day/night shift) can't fit one N/O pair,
-//   so per the template's own instructions (Definitions-formulas!B11: "fill in daily start and
-//   end times, OR work-hours including meal-times") their durations are summed into
-//   "Enter Timecard Hours" (M) instead, which bypasses N/O/B/C entirely.
+// - Every day, single- or multi-shift alike, goes into "Start Time w/o :" (N) / "End Time w/o :"
+//   (O), which feed the template's own B/C/D/E/I/L formulas. A single shift writes its clock-in/
+//   out directly, leaving the template's default "Meal Time hrs" (G) untouched. 2+ shifts (e.g.
+//   a morning block and an evening block) collapse to one row: N/O become the first clock-in and
+//   last clock-out, and the gap(s) between shifts are summed into G, overriding the default with
+//   the actual observed break — the template's D/I formulas then compute hours/overtime
+//   correctly off the real break instead of the assumed one.
 // - Any shift the model marked as a best-guess (rather than read directly) gets a "Remarks" note
 //   and a highlighted fill so it's obvious at a glance which cells need double-checking.
 export async function fillTimesheet(
@@ -158,7 +180,6 @@ export async function fillTimesheet(
     });
 
     const warnings: FillWarning[] = [];
-    type Shift = { clockIn: number; clockOut: number; source: string; guessed: boolean };
     type Cell = { sheetName: string; row: number; date: Date; shifts: Shift[] };
     const byCell = new Map<string, Cell>();
 
@@ -234,10 +255,9 @@ export async function fillTimesheet(
         if (validShifts.length === 0) continue;
 
         const anyGuessed = validShifts.some(s => s.guessed);
+        const sourceList = validShifts.map(s => s.source).join(", ");
 
         if (validShifts.length === 1) {
-            const totalHours = shiftHours(validShifts[0].clockIn, validShifts[0].clockOut);
-            if (totalHours >= MAX_DAILY_HOURS) continue; // filtered above, but keep the invariant explicit
             const nCell = worksheet.getCell(`N${row}`);
             const oCell = worksheet.getCell(`O${row}`);
             setCell(nCell, validShifts[0].clockIn);
@@ -249,25 +269,39 @@ export async function fillTimesheet(
                 setRemark(worksheet, row, sheetName, "Model-derived guess — please double check", true);
             }
         } else {
-            const totalHours = validShifts.reduce((sum, s) => sum + shiftHours(s.clockIn, s.clockOut), 0);
-            const breakdown = validShifts.map(s => `${s.clockIn}-${s.clockOut}`).join(", ");
-            if (totalHours >= MAX_DAILY_HOURS) {
+            // 2+ shifts (e.g. a morning block and an evening block) collapse to one row: full
+            // span = first clock-in to last clock-out, and the gap(s) between shifts become the
+            // meal break (column G), overriding the template's default — the same N/O columns
+            // a single-shift day uses, just with the real break instead of the assumed one.
+            const sorted = [...validShifts].sort((a, b) => toMinutes(a.clockIn) - toMinutes(b.clockIn));
+            const breakdown = sorted.map(s => `${s.clockIn}-${s.clockOut}`).join(", ");
+            const { start, end, spanHours, breakHours } = computeSpanAndBreak(sorted);
+
+            if (spanHours >= MAX_DAILY_HOURS || breakHours < 0 || breakHours >= spanHours) {
                 warnings.push({
-                    source: validShifts.map(s => s.source).join(", "),
-                    reason: `shifts for ${date.toDateString()} (${breakdown}) sum to ${totalHours}h, which is >= 24h in one day — skipped entirely, please verify against the original page`,
+                    source: sourceList,
+                    reason: `shifts for ${date.toDateString()} (${breakdown}) span ${spanHours}h with ${breakHours}h break — implausible, skipped entirely, please verify against the original page`,
                 });
                 continue;
             }
-            const mCell = worksheet.getCell(`M${row}`);
-            setCell(mCell, totalHours);
+
+            const nCell = worksheet.getCell(`N${row}`);
+            const oCell = worksheet.getCell(`O${row}`);
+            const gCell = worksheet.getCell(`G${row}`);
+            setCell(nCell, start);
+            setCell(oCell, end);
+            setCell(gCell, breakHours);
             writtenDates.push(date);
-            const remarkText = `${validShifts.length} shifts (${breakdown}) summed to ${totalHours}h — verify`
-                + (anyGuessed ? " (includes a model-derived guess — please double check)" : "");
-            setRemark(worksheet, row, sheetName, remarkText, anyGuessed);
-            if (anyGuessed) highlightCell(mCell);
+
+            const remarkText = `${validShifts.length} shifts (${breakdown}) — treated as ${start}-${end} with ${breakHours}h break (meal time overridden from default), please verify`
+                + (anyGuessed ? " (includes a model-derived guess)" : "");
+            setRemark(worksheet, row, sheetName, remarkText, true);
+            highlightCell(nCell);
+            highlightCell(oCell);
+            highlightCell(gCell);
             warnings.push({
-                source: validShifts.map(s => s.source).join(", "),
-                reason: `${validShifts.length} shifts detected for ${date.toDateString()} (${breakdown}) — summed to ${totalHours}h in "Enter Timecard Hours", please verify`,
+                source: sourceList,
+                reason: `${validShifts.length} shifts detected for ${date.toDateString()} (${breakdown}) — treated as single span ${start}-${end} with ${breakHours}h meal break, please verify`,
             });
         }
     }

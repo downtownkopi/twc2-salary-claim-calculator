@@ -9,10 +9,21 @@ import { reconcileAttempts, type ParsedEntry } from "./lib/reconcile";
 const TEMPLATE_PATH = path.join(__dirname, "calculation.xltx");
 const PORT = process.env.PORT || 3000;
 const SUPPORTED_YEARS = [2025, 2026];
-// Even at temperature 0, a single scan of a dense page can genuinely miss rows differently
-// between identical requests. Scanning each page this many times independently and reconciling
-// (lib/reconcile.ts) trades latency/cost for much more reliable full-month coverage.
-const SCAN_ATTEMPTS_PER_PAGE = 3;
+// A single scan of a dense page can genuinely miss/misread rows. Scanning each page this many
+// times independently and reconciling (lib/reconcile.ts) trades latency/cost for much more
+// reliable coverage — one deterministic (temperature=0) pass for consistency, plus two
+// higher-temperature passes. Identical settings on every attempt would mean a systematic model
+// bias (e.g. lazily repeating a previous row's value on a dense, visually-repetitive table)
+// reproduces identically every time, leaving reconciliation's disagreement-detection nothing to
+// catch since all attempts agree with each other. Varied temperature/seed gives each pass a
+// real chance to diverge when the model's reading is actually uncertain, instead of just being
+// confidently wrong every time.
+const SCAN_TEMPERATURES: { temperature: number; seed: number }[] = [
+    { temperature: 0, seed: 42 },
+    { temperature: 0.3, seed: 43 },
+    { temperature: 0.5, seed: 44 },
+];
+const SCAN_ATTEMPTS_PER_PAGE = SCAN_TEMPERATURES.length;
 
 const upload = multer({
     storage: multer.memoryStorage(),
@@ -40,34 +51,42 @@ process.on("uncaughtException", (err) => {
 function buildPrompt(context: string, year: number): string {
     return `This is one page of a handwritten daily timesheet, used to fill a wage-claim spreadsheet for the year ${year}.
 
-The spreadsheet this feeds has one row per calendar day with these relevant columns:
-- "Start Time w/o :" — the clock-in time as a bare number, e.g. 800 means 8:00am, 1330 means 1:30pm, 2200 means 10:00pm. Always 24-hour, no colon.
-- "End Time w/o :" — the clock-out time, same numeric format.
-These two numbers are later converted into real times by the spreadsheet — so give the actual clock times shown on the page (when the worker started and stopped), NOT a duration or total hours worked.
-Note: an overnight shift (e.g. start 2200, end 0600) is expected and handled correctly downstream — do not try to "fix" an end time that is numerically smaller than the start time.
+For each calendar date row on this page, your job is simply to list EVERY clock time value written on that row, left to right, in the order they appear — do NOT try to decide how many shifts they represent or group them into clock-in/clock-out pairs yourself. That grouping happens automatically downstream from the count and order of values you report, so your only job is accurate, complete enumeration.
 
-Hard constraint — no human can work 24 hours or more in a single calendar day. A shift's duration, and the sum of all shifts on the same day if there is more than one, must always be strictly less than 24 hours. If your reading of the clock-in/clock-out times would imply 24 hours or more (e.g. clock_in and clock_out being the same time, or shifts that overlap), you have misread the image — look again. If you still cannot resolve it to something under 24 hours, output null for that row's clock_in/clock_out and explain the conflict in notes. Never output times that imply a 24-hour-or-longer shift.
+- A normal day with one shift has 2 values: [clock_in, clock_out].
+- A split day with a morning shift and an evening shift has 4 values: [in1, out1, in2, out2].
+- A day with three shifts has 6 values, and so on.
+Report the values as bare 24-hour numbers, no colon, e.g. 800 means 8:00am, 1330 means 1:30pm, 2200 means 10:00pm.
 
-Total hours worked must tally strictly. If the page shows both raw clock-in/clock-out times AND a separately written total/duration for the same day, the clock times you output must be consistent with that written total (accounting for any marked meal break). If they don't agree, do not silently pick one — explain the discrepancy in notes so a human can review it.
+CRITICAL — always scan the FULL WIDTH of a row before deciding it only has 2 values. It is a common and serious error to read only the first clock-in/clock-out pair and stop, when the row actually has 4 (or more) values further right representing a second shift. If you see more than 2 time values anywhere on a row, report ALL of them — never silently drop the later ones.
+
+Watch out for the 12am/12pm ambiguity — it's a common mistake. 12pm = noon = 1200. 12am = midnight = 0 (or 2400 if it's the last value of the day, ending a shift that started earlier). These are NOT the same time, even though both are written as "12". Do not convert 12am the same way you'd convert 12pm.
+
+Note: an overnight-spanning value (a time that's numerically smaller than the one before it, e.g. a shift running from 2200 to 0600) is expected and handled correctly downstream — do not try to "fix" it or reorder the values, just report them in the order they appear on the page.
+
+Hard constraint — no human can work 24 hours or more in a single calendar day. The span from the first time to the last time you report for a row must always be strictly less than 24 hours. If your reading would imply 24 hours or more, you have misread the image — look again. If you still cannot resolve it, output null for times on that row and explain the conflict in notes.
+
+Total hours worked must tally strictly. If the page shows both raw clock times AND a separately written total/duration for the same day, what you report must be consistent with that written total (accounting for any marked meal break). If they don't agree, do not silently pick one — explain the discrepancy in notes so a human can review it.
 
 This page may contain many rows (up to 31, one per day of the month). Transcribe EVERY row visible on the page, top to bottom — do not skip, merge, or summarize any row, even if the page is dense or some rows look repetitive.
 
-By right, every calendar date that falls within this page's date range should end up with an entry. If a date's row is blank, smudged, or its times aren't clearly legible, but OTHER rows on this same page show a clear, consistent pattern (e.g. the same start/end time repeated on most other workdays), use that pattern to make your best guess for the missing date instead of leaving it null. When you output a best-guess estimate rather than a time read directly off the page, set guessed to true and explain the basis for the guess in notes (e.g. "no entry visible, inferred from the 8am-5pm pattern seen on surrounding weekdays").
+CRITICAL — many rows on a timesheet look nearly identical at a glance (e.g. the same clock-in time and same mid-day break time repeated every day), but that does NOT mean every row is identical. Do not let an earlier row you already read confidently influence how you read a later row that merely looks similar. You must independently re-examine and read the actual handwritten digits on EVERY row, especially any values later in the row — it is extremely common for only a later time value to differ between otherwise similar-looking rows, and copying a previous row's values here instead of reading this row's own digits is a serious, easy-to-make error. Treat each row as a completely separate read, as if you had never seen any other row on the page.
 
-If a date is explicitly marked as a rest day, day off, public holiday, or similar, still output a row for it — set rest_day to true and clock_in/clock_out to null. Do NOT guess a clock-in/out for a confirmed rest day. This lets a downstream system tell "confirmed day off" apart from "data missing entirely", so only genuinely missing days get inferred later, never real rest days.
+By right, every calendar date that falls within this page's date range should end up with an entry. If a date's row is blank, smudged, or its times aren't clearly legible, but OTHER rows on this same page show a clear, consistent pattern (e.g. the same values repeated on most other workdays), use that pattern to make your best guess for the missing date instead of leaving it null. When you output a best-guess estimate rather than values read directly off the page, set guessed to true and explain the basis for the guess in notes (e.g. "no entry visible, inferred from the 8am-5pm pattern seen on surrounding weekdays").
+
+If a date is explicitly marked as a rest day, day off, public holiday, or similar, still output a row for it — set rest_day to true and times to null. Do NOT guess times for a confirmed rest day. This lets a downstream system tell "confirmed day off" apart from "data missing entirely", so only genuinely missing days get inferred later, never real rest days.
 
 For every date row visible on this page, output:
 - day: day of month, integer 1-31
 - month: month, integer 1-12 (this page is for the year ${year} — ignore any year written on the page, it is not needed)
-- clock_in: start time as described above, integer, or null if illegible/not determinable/rest day
-- clock_out: end time as described above, integer, or null if illegible/not determinable/rest day
-- guessed: true if clock_in/clock_out is your best-guess estimate rather than a value read directly off the page, false otherwise
+- times: array of every clock time value on this row as described above, in left-to-right order, or null if illegible/not determinable/rest day. Length should normally be even (2, 4, 6...) since shifts come in in/out pairs.
+- guessed: true if times is your best-guess estimate rather than values read directly off the page, false otherwise
 - rest_day: true if this date is explicitly marked as a rest day/off/holiday on the page, false otherwise
-- notes: null normally. If clock_in or clock_out is null, OR guessed is true, OR anything about this row doesn't make sense (e.g. conflicting times, unclear handwriting, unusual format, implied 24h+ shift), explain briefly here so a human can review — do not guess wildly.
+- notes: null normally. If times is null, OR guessed is true, OR anything about this row doesn't make sense (e.g. an odd number of values, unclear handwriting, unusual format, implied 24h+ span), explain briefly here so a human can review — do not guess wildly.
 
 Additional context from the person submitting this form: ${context || "None provided."}
 
-Output ONLY a valid JSON array of {day, month, clock_in, clock_out, guessed, rest_day, notes} objects for this page. No other text, no markdown fences.`;
+Output ONLY a valid JSON array of {day, month, times, guessed, rest_day, notes} objects for this page. No other text, no markdown fences.`;
 }
 
 const app = express();
@@ -105,7 +124,7 @@ app.post("/api/process", upload.array("pdfs", 10), async (req, res) => {
             const source = `${file.originalname} p${i + 1}`;
 
             const results = await Promise.allSettled(
-                Array.from({ length: SCAN_ATTEMPTS_PER_PAGE }, () => scanPageImage(images[i], prompt))
+                SCAN_TEMPERATURES.map(({ temperature, seed }) => scanPageImage(images[i], prompt, temperature, seed))
             );
 
             const attempts: ParsedEntry[][] = [];
@@ -151,7 +170,7 @@ app.post("/api/process", upload.array("pdfs", 10), async (req, res) => {
                 if (entry.day === null || entry.month === null) {
                     warnings.push({
                         source,
-                        reason: `skipped a row with no determinable date (clock_in=${entry.clock_in}, clock_out=${entry.clock_out})${entry.notes ? `: ${entry.notes}` : ""}`,
+                        reason: `skipped a row with no determinable date (times=${entry.times ? entry.times.join(",") : entry.times})${entry.notes ? `: ${entry.notes}` : ""}`,
                     });
                     continue;
                 }
@@ -159,30 +178,55 @@ app.post("/api/process", upload.array("pdfs", 10), async (req, res) => {
                     warnings.push({ source, reason: `implausible date day=${entry.day} month=${entry.month}, skipped` });
                     continue;
                 }
+                // Generic 1-31 above isn't month-aware (e.g. April 31 doesn't exist). Entries
+                // that build a real Date (timeEntries) get this correction for free via JS's own
+                // rollover — but restDays are stored as raw numbers with no Date construction at
+                // all, so an invalid day here would silently inflate that month's day count with
+                // no bounds check downstream. Catch it here for every entry type uniformly.
+                const daysInThisMonth = new Date(year, entry.month, 0).getDate();
+                if (entry.day > daysInThisMonth) {
+                    warnings.push({
+                        source,
+                        reason: `day=${entry.day} does not exist in month=${entry.month}/${year} (only has ${daysInThisMonth} days), skipped`,
+                    });
+                    continue;
+                }
                 if (entry.rest_day === true) {
                     restDays.push({ year, month: entry.month, day: entry.day });
                     continue;
                 }
-                if (entry.clock_in === null || entry.clock_out === null) {
+                if (!entry.times || entry.times.length === 0) {
                     warnings.push({
                         source,
-                        reason: `skipped day=${entry.day} month=${entry.month} (clock_in=${entry.clock_in}, clock_out=${entry.clock_out})${entry.notes ? `: ${entry.notes}` : " — please provide more context and re-upload"}`,
+                        reason: `skipped day=${entry.day} month=${entry.month} (no times detected)${entry.notes ? `: ${entry.notes}` : " — please provide more context and re-upload"}`,
+                    });
+                    continue;
+                }
+                if (entry.times.length % 2 !== 0) {
+                    warnings.push({
+                        source,
+                        reason: `day=${entry.day} month=${entry.month}: odd number of time values (${entry.times.join(", ")}) — cannot pair into clock-in/out shifts, skipped, please verify against the original page`,
                     });
                     continue;
                 }
                 if (entry.guessed === true) {
                     warnings.push({
                         source,
-                        reason: `day=${entry.day} month=${entry.month} is a model-derived guess (${entry.clock_in}-${entry.clock_out})${entry.notes ? `: ${entry.notes}` : ""} — please double check`,
+                        reason: `day=${entry.day} month=${entry.month} is a model-derived guess (${entry.times.join(", ")})${entry.notes ? `: ${entry.notes}` : ""} — please double check`,
                     });
                 }
-                timeEntries.push({
-                    date: new Date(year, entry.month - 1, entry.day),
-                    clockIn: entry.clock_in,
-                    clockOut: entry.clock_out,
-                    source,
-                    guessed: entry.guessed === true,
-                });
+                // Pair consecutive values into shifts: [in1,out1,in2,out2,...] -> shift per pair.
+                // Multiple TimeEntry objects sharing the same date is exactly how lib/xlsx.ts
+                // already recognizes and handles a multi-shift day (see byCell grouping there).
+                for (let i = 0; i < entry.times.length; i += 2) {
+                    timeEntries.push({
+                        date: new Date(year, entry.month - 1, entry.day),
+                        clockIn: entry.times[i],
+                        clockOut: entry.times[i + 1],
+                        source,
+                        guessed: entry.guessed === true,
+                    });
+                }
             }
         }
     }
