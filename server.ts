@@ -54,7 +54,7 @@ process.on("uncaughtException", (err) => {
 // Handwritten years are frequently misread by OCR (e.g. "2023" instead of "2026"), and since
 // this template only has sheets for SUPPORTED_YEARS, we don't trust the model's year at all —
 // the caller picks it explicitly, and we only ask the model for day/month/clock times.
-function buildPrompt(context: string, year: number, pageContext: string): string {
+function buildPrompt(year: number, pageContext: string): string {
     return `This is one page of a handwritten daily timesheet, used to fill a wage-claim spreadsheet for the year ${year}.
 
 Page-level context (extracted separately from the full page before this image was cropped, since this image you're looking at now may be only part of the page and might not show a header/title that exists elsewhere on the page): ${pageContext || "none found"}. If this names a specific month, treat it as authoritative for every date row you report below — use that month even if this particular cropped image doesn't show the header itself, UNLESS a row on THIS image explicitly and clearly indicates a different month.
@@ -94,8 +94,6 @@ For every date row visible on this page, output:
 - rest_day: true if this date is explicitly marked as a rest day/off/holiday on the page, false otherwise
 - notes: null normally. If times is null, OR anything about this row doesn't make sense (e.g. an odd number of values, unclear handwriting, unusual format, implied 24h+ span), explain briefly here so a human can review.
 
-Additional context from the person submitting this form: ${context || "None provided."}
-
 Output ONLY a valid JSON array of {day, month, times, guessed, rest_day, notes} objects for this page. No other text, no markdown fences.`;
 }
 
@@ -113,8 +111,6 @@ app.post("/api/process", upload.array("pdfs", 10), async (req, res) => {
     if (!SUPPORTED_YEARS.includes(year)) {
         return res.status(400).json({ error: `year must be one of: ${SUPPORTED_YEARS.join(", ")}` });
     }
-
-    const context = (req.body.context as string) ?? "";
 
     const timeEntries: TimeEntry[] = [];
     const restDays: RestDay[] = [];
@@ -142,7 +138,7 @@ app.post("/api/process", upload.array("pdfs", 10), async (req, res) => {
             } catch (e: any) {
                 warnings.push({ source, reason: `could not extract page-level context (e.g. month header): ${e.message} — bands will rely on per-row reading only` });
             }
-            const prompt = buildPrompt(context, year, pageContext);
+            const prompt = buildPrompt(year, pageContext);
 
             const bands = await cropIntoBands(images[i], BANDS_PER_PAGE);
 
@@ -279,7 +275,7 @@ app.post("/api/process", upload.array("pdfs", 10), async (req, res) => {
                 if (!entry.times || entry.times.length === 0) {
                     warnings.push({
                         source,
-                        reason: `skipped day=${entry.day} month=${entry.month} (no times detected)${entry.notes ? `: ${entry.notes}` : " — please provide more context and re-upload"}`,
+                        reason: `skipped day=${entry.day} month=${entry.month} (no times detected)${entry.notes ? `: ${entry.notes}` : " — please check the source PDF for this date directly"}`,
                     });
                     continue;
                 }

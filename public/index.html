@@ -132,11 +132,6 @@
     <div class="file-list">Handwritten years are often misread — the model only reads day/month off the page, this dropdown decides the year (and which sheet tab is used).</div>
   </div>
 
-  <div class="field">
-    <label for="context">Additional context for the model (optional)</label>
-    <textarea id="context" name="context" placeholder='e.g. "these timesheets contain data by the worker over all 7 days of the week" or "clock-out times after midnight belong to the next calendar day"'></textarea>
-  </div>
-
   <button type="submit" id="submitBtn">Process & Generate Claim</button>
 
   <div class="status" id="status"></div>
@@ -177,7 +172,6 @@ form.addEventListener('submit', async (e) => {
   const formData = new FormData();
   for (const file of pdfsInput.files) formData.append('pdfs', file);
   formData.append('year', document.getElementById('year').value);
-  formData.append('context', document.getElementById('context').value);
 
   submitBtn.disabled = true;
   statusEl.className = 'status loading';
