@@ -53,7 +53,11 @@ function isPlausibleTime(t: number): boolean {
 export function reconcileAttempts(
     attempts: ParsedEntry[][],
     source: string,
-    requireFullParticipation = true
+    requireFullParticipation = true,
+    // Only used to build the `date` field on warnings (so the UI/server can dedupe against a
+    // later generic "no data for this day" warning about the same date) — reconciliation itself
+    // never needs the year, since day/month alone is enough to group attempts.
+    year?: number
 ): { entries: ParsedEntry[]; warnings: FillWarning[] } {
     const warnings: FillWarning[] = [];
     const dayKeys = new Set<string>();
@@ -142,6 +146,8 @@ export function reconcileAttempts(
             warnings.push({
                 source,
                 reason: `day=${day} month=${month}: not unanimous across scan attempts (${reasons.join("; ")}) — dropped rather than guessed, please check the source PDF for this date directly`,
+                category: "dropped_disagreement",
+                date: year ? `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}` : undefined,
             });
         }
         // else: no attempt produced usable data for this day — left out entirely, surfaces later

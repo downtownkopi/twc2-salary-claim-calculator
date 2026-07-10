@@ -121,7 +121,7 @@ app.post("/api/process", upload.array("pdfs", 10), async (req, res) => {
         try {
             images = await pdfToImages(file.buffer);
         } catch (e: any) {
-            warnings.push({ source: file.originalname, reason: `could not read PDF: ${e.message}` });
+            warnings.push({ source: file.originalname, reason: `could not read PDF: ${e.message}`, category: "system" });
             continue;
         }
 
@@ -136,7 +136,7 @@ app.post("/api/process", upload.array("pdfs", 10), async (req, res) => {
             try {
                 pageContext = await extractPageContext(images[i]);
             } catch (e: any) {
-                warnings.push({ source, reason: `could not extract page-level context (e.g. month header): ${e.message} — bands will rely on per-row reading only` });
+                warnings.push({ source, reason: `could not extract page-level context (e.g. month header): ${e.message} — bands will rely on per-row reading only`, category: "scan_quality" });
             }
             const prompt = buildPrompt(year, pageContext);
 
@@ -177,12 +177,14 @@ app.post("/api/process", upload.array("pdfs", 10), async (req, res) => {
                 warnings.push({
                     source,
                     reason: `${truncatedCount}/${totalAttempts} scan attempts were truncated (hit token limit) — this page may still be missing rows, please review carefully`,
+                    category: "scan_quality",
                 });
             }
             if (failedCount > 0) {
                 warnings.push({
                     source,
                     reason: `${failedCount}/${totalAttempts} scan attempts failed or returned unparseable output`,
+                    category: "scan_quality",
                 });
             }
 
@@ -196,13 +198,13 @@ app.post("/api/process", upload.array("pdfs", 10), async (req, res) => {
             for (let b = 0; b < bands.length; b++) {
                 if (attemptsByBand[b].length === 0) continue;
                 const bandSource = bands.length > 1 ? `${source} (band ${b + 1}/${bands.length})` : source;
-                const { entries: bandEntries, warnings: bandWarnings } = reconcileAttempts(attemptsByBand[b], bandSource);
+                const { entries: bandEntries, warnings: bandWarnings } = reconcileAttempts(attemptsByBand[b], bandSource, true, year);
                 bandResults.push(bandEntries);
                 warnings.push(...bandWarnings);
             }
 
             if (bandResults.length === 0) {
-                warnings.push({ source, reason: "all scan attempts for this page failed — page was skipped entirely" });
+                warnings.push({ source, reason: "all scan attempts for this page failed — page was skipped entirely", category: "scan_quality" });
                 continue;
             }
 
@@ -211,7 +213,7 @@ app.post("/api/process", upload.array("pdfs", 10), async (req, res) => {
             // in one band's region and outside another's isn't disagreement, it's expected
             // non-coverage. Only reject when multiple bands DO report the same day with
             // conflicting values — that's a real disagreement, not a coverage gap.
-            const { entries: reconciled, warnings: crossBandWarnings } = reconcileAttempts(bandResults, source, false);
+            const { entries: reconciled, warnings: crossBandWarnings } = reconcileAttempts(bandResults, source, false, year);
             warnings.push(...crossBandWarnings);
 
             // Strict cross-attempt unanimity (lib/reconcile.ts) only catches disagreement — it
@@ -234,12 +236,14 @@ app.post("/api/process", upload.array("pdfs", 10), async (req, res) => {
                             warnings.push({
                                 source,
                                 reason: `day=${e.day} month=${e.month}: failed page-level verification (no genuine row found for this date on a full-page recheck) — dropped, please check the source PDF for this date directly`,
+                                category: "dropped_disagreement",
+                                date: `${year}-${String(e.month).padStart(2, "0")}-${String(e.day).padStart(2, "0")}`,
                             });
                         }
                         return isConfirmed;
                     });
                 } catch (e: any) {
-                    warnings.push({ source, reason: `date verification pass failed (${e.message}) — entries for this page were NOT independently verified, please review carefully` });
+                    warnings.push({ source, reason: `date verification pass failed (${e.message}) — entries for this page were NOT independently verified, please review carefully`, category: "scan_quality" });
                 }
             }
 
@@ -248,11 +252,12 @@ app.post("/api/process", upload.array("pdfs", 10), async (req, res) => {
                     warnings.push({
                         source,
                         reason: `skipped a row with no determinable date (times=${entry.times ? entry.times.join(",") : entry.times})${entry.notes ? `: ${entry.notes}` : ""}`,
+                        category: "skipped_invalid",
                     });
                     continue;
                 }
                 if (entry.month < 1 || entry.month > 12 || entry.day < 1 || entry.day > 31) {
-                    warnings.push({ source, reason: `implausible date day=${entry.day} month=${entry.month}, skipped` });
+                    warnings.push({ source, reason: `implausible date day=${entry.day} month=${entry.month}, skipped`, category: "skipped_invalid" });
                     continue;
                 }
                 // Generic 1-31 above isn't month-aware (e.g. April 31 doesn't exist). Entries
@@ -265,6 +270,7 @@ app.post("/api/process", upload.array("pdfs", 10), async (req, res) => {
                     warnings.push({
                         source,
                         reason: `day=${entry.day} does not exist in month=${entry.month}/${year} (only has ${daysInThisMonth} days), skipped`,
+                        category: "skipped_invalid",
                     });
                     continue;
                 }
@@ -272,10 +278,13 @@ app.post("/api/process", upload.array("pdfs", 10), async (req, res) => {
                     restDays.push({ year, month: entry.month, day: entry.day, source });
                     continue;
                 }
+                const entryDate = `${year}-${String(entry.month).padStart(2, "0")}-${String(entry.day).padStart(2, "0")}`;
                 if (!entry.times || entry.times.length === 0) {
                     warnings.push({
                         source,
                         reason: `skipped day=${entry.day} month=${entry.month} (no times detected)${entry.notes ? `: ${entry.notes}` : " — please check the source PDF for this date directly"}`,
+                        category: "skipped_invalid",
+                        date: entryDate,
                     });
                     continue;
                 }
@@ -283,6 +292,8 @@ app.post("/api/process", upload.array("pdfs", 10), async (req, res) => {
                     warnings.push({
                         source,
                         reason: `day=${entry.day} month=${entry.month}: odd number of time values (${entry.times.join(", ")}) — cannot pair into clock-in/out shifts, skipped, please verify against the original page`,
+                        category: "skipped_invalid",
+                        date: entryDate,
                     });
                     continue;
                 }
@@ -290,6 +301,8 @@ app.post("/api/process", upload.array("pdfs", 10), async (req, res) => {
                     warnings.push({
                         source,
                         reason: `day=${entry.day} month=${entry.month} is a model-derived guess (${entry.times.join(", ")})${entry.notes ? `: ${entry.notes}` : ""} — please double check`,
+                        category: "flagged_review",
+                        date: entryDate,
                     });
                 }
                 // Pair consecutive values into shifts: [in1,out1,in2,out2,...] -> shift per pair.
@@ -339,6 +352,14 @@ app.post("/api/process", upload.array("pdfs", 10), async (req, res) => {
         (coveredByMonth.get(k) ?? coveredByMonth.set(k, new Set()).get(k)!).add(r.day);
     }
 
+    // A day that reconciliation/fillTimesheet already explained with a specific warning (e.g.
+    // "dropped due to conflicting reads") doesn't need this generic catch-all repeating "no entry
+    // anywhere" for the exact same date — that's the duplication that made the warnings list feel
+    // long-winded. Only dates with zero explanation anywhere get the generic message.
+    const explainedDates = new Set(
+        [...warnings, ...fillWarnings].map(w => w.date).filter((d): d is string => d !== undefined)
+    );
+
     // Final coverage check: every skip path above (reconcile, fillTimesheet) is supposed to
     // leave a warning behind — but a page whose model output is a successfully parsed, genuinely
     // empty array isn't a "failure" by any check above, so if that happens on every attempt for
@@ -352,10 +373,14 @@ app.post("/api/process", upload.array("pdfs", 10), async (req, res) => {
         const daysInMonth = new Date(y, monthIndex0 + 1, 0).getDate();
         for (let day = 1; day <= daysInMonth; day++) {
             if (daysCovered.has(day)) continue;
+            const dateStr = `${y}-${String(monthIndex0 + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+            if (explainedDates.has(dateStr)) continue;
             const date = new Date(y, monthIndex0, day);
             warnings.push({
                 source: "coverage check",
                 reason: `${date.toDateString()} has no entry anywhere — not read by any scan attempt on any page, and not a confirmed rest day. Please check the source PDF for this date directly.`,
+                category: "missing_data",
+                date: dateStr,
             });
         }
         monthSummary.push({ label: `${MONTH_ABBR[monthIndex0]} ${y}`, filled: daysCovered.size, total: daysInMonth });

@@ -102,6 +102,17 @@
   .warnings h3 { margin: 0 0 8px; font-size: 13px; color: var(--warn-text); }
   .warnings ul { margin: 0; padding-left: 18px; font-size: 12px; color: var(--warn-text); }
   .warnings li { margin-bottom: 4px; }
+  .warning-group { margin-bottom: 10px; }
+  .warning-group:last-child { margin-bottom: 0; }
+  .warning-group summary {
+    cursor: pointer;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--warn-text);
+    margin-bottom: 6px;
+  }
+  .warning-group summary .count { color: var(--muted); font-weight: 400; }
+  .warning-group ul { margin-top: 6px; }
   .spinner {
     display: inline-block; width: 12px; height: 12px;
     border: 2px solid var(--border); border-top-color: var(--accent);
@@ -139,7 +150,7 @@
   <a href="#" id="scanOutputLink" class="scan-output-link" style="display:none">Download scan output (JSON) — every entry with its exact source, for debugging</a>
   <div class="warnings" id="warnings" style="display:none">
     <h3>Warnings</h3>
-    <ul id="warningsList"></ul>
+    <div id="warningGroups"></div>
   </div>
 </form>
 
@@ -150,7 +161,17 @@ const fileList = document.getElementById('fileList');
 const submitBtn = document.getElementById('submitBtn');
 const statusEl = document.getElementById('status');
 const warningsEl = document.getElementById('warnings');
-const warningsList = document.getElementById('warningsList');
+const warningGroups = document.getElementById('warningGroups');
+
+// Order = roughly most-actionable-first. Labels match lib/xlsx.ts's WarningCategory values.
+const WARNING_CATEGORY_ORDER = [
+  { key: 'dropped_disagreement', label: 'Dropped — conflicting reads' },
+  { key: 'missing_data', label: 'Missing — no data found' },
+  { key: 'flagged_review', label: 'Written but flagged for review' },
+  { key: 'skipped_invalid', label: 'Skipped — invalid data' },
+  { key: 'scan_quality', label: 'Scan quality issues' },
+  { key: 'system', label: 'File / system errors' },
+];
 const monthSummaryEl = document.getElementById('monthSummary');
 const scanOutputLink = document.getElementById('scanOutputLink');
 let scanOutputBlobUrl = null;
@@ -163,7 +184,7 @@ pdfsInput.addEventListener('change', () => {
 form.addEventListener('submit', async (e) => {
   e.preventDefault();
   warningsEl.style.display = 'none';
-  warningsList.innerHTML = '';
+  warningGroups.innerHTML = '';
   monthSummaryEl.style.display = 'none';
   monthSummaryEl.innerHTML = '';
   scanOutputLink.style.display = 'none';
@@ -197,9 +218,7 @@ form.addEventListener('submit', async (e) => {
 
     if (data.warnings && data.warnings.length > 0) {
       warningsEl.style.display = 'block';
-      warningsList.innerHTML = data.warnings
-        .map(w => `<li><b>${escapeHtml(w.source)}:</b> ${escapeHtml(w.reason)}</li>`)
-        .join('');
+      warningGroups.innerHTML = renderWarningGroups(data.warnings);
     }
 
     if (data.scanOutput) {
@@ -227,6 +246,28 @@ form.addEventListener('submit', async (e) => {
     submitBtn.disabled = false;
   }
 });
+
+function renderWarningGroups(warnings) {
+  const byCategory = new Map();
+  for (const w of warnings) {
+    const key = w.category || 'other';
+    if (!byCategory.has(key)) byCategory.set(key, []);
+    byCategory.get(key).push(w);
+  }
+
+  const order = [...WARNING_CATEGORY_ORDER, { key: 'other', label: 'Other' }];
+  return order
+    .filter(({ key }) => byCategory.has(key))
+    .map(({ key, label }) => {
+      const items = byCategory.get(key);
+      const list = items.map(w => `<li><b>${escapeHtml(w.source)}:</b> ${escapeHtml(w.reason)}</li>`).join('');
+      return `<details class="warning-group" open>
+        <summary>${escapeHtml(label)} <span class="count">(${items.length})</span></summary>
+        <ul>${list}</ul>
+      </details>`;
+    })
+    .join('');
+}
 
 function formatDuration(ms) {
   const totalSeconds = Math.round((ms ?? 0) / 1000);

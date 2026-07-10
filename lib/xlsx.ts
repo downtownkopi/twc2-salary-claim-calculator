@@ -9,10 +9,28 @@ export type TimeEntry = {
     guessed: boolean; // true if the model inferred this rather than reading it directly
 };
 
+// Every warning is tagged with a category so the UI can group a long, otherwise-flat list into
+// something scannable, and a date (YYYY-MM-DD) when it's about one specific day, so a generic
+// catch-all warning about that same day (e.g. the coverage check) can be suppressed instead of
+// repeating what a more specific warning already said.
+export type WarningCategory =
+    | "dropped_disagreement" // reconciliation/verification rejected a day due to conflicting reads
+    | "missing_data" // coverage check: nothing usable found anywhere for this day
+    | "flagged_review" // written to the sheet, but flagged (guess, implausible-but-kept, multi-shift collapse)
+    | "skipped_invalid" // skipped due to structurally invalid data (bad date, odd time count, etc.)
+    | "scan_quality" // page/attempt-level issues (truncation, failed calls, verification pass itself failing)
+    | "system"; // file-level errors (couldn't read a PDF, etc.)
+
 export type FillWarning = {
     source: string;
     reason: string;
+    category: WarningCategory;
+    date?: string; // YYYY-MM-DD, when this warning concerns one specific date
 };
+
+function toLocalDateString(d: Date): string {
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
 
 // A day explicitly marked as a rest day/off/holiday on the actual page — genuine observed data
 // (the model read and reported it directly), not something inferred or fabricated.
@@ -194,6 +212,8 @@ export async function fillTimesheet(
             warnings.push({
                 source: entry.source,
                 reason: `${entry.date.toDateString()} falls outside the template's supported range (no sheet "${sheetName}")`,
+                category: "skipped_invalid",
+                date: toLocalDateString(entry.date),
             });
             continue;
         }
@@ -256,6 +276,8 @@ export async function fillTimesheet(
                 warnings.push({
                     source: s.source,
                     reason: `implausible shift ${s.clockIn}-${s.clockOut} on ${date.toDateString()} (${hours}h) — written to the sheet anyway and flagged for review, please verify against the original page`,
+                    category: "flagged_review",
+                    date: toLocalDateString(date),
                 });
                 return { ...s, implausible: true };
             }
@@ -293,6 +315,8 @@ export async function fillTimesheet(
                 warnings.push({
                     source: sourceList,
                     reason: `shifts for ${date.toDateString()} (${breakdown}) span ${spanHours}h with ${breakHours}h break — implausible, skipped entirely, please verify against the original page`,
+                    category: "skipped_invalid",
+                    date: toLocalDateString(date),
                 });
                 continue;
             }
@@ -315,6 +339,8 @@ export async function fillTimesheet(
             warnings.push({
                 source: sourceList,
                 reason: `${validShifts.length} shifts detected for ${date.toDateString()} (${breakdown}) — treated as single span ${start}-${end} with ${breakHours}h meal break, please verify`,
+                category: "flagged_review",
+                date: toLocalDateString(date),
             });
         }
     }
