@@ -1,0 +1,9 @@
+node_modules
+.env
+*.pdf
+test.pdf
+output.json
+test.ts
+index.html
+.git
+.claude
