@@ -312,9 +312,21 @@ export async function fillTimesheet(
             const { start, end, spanHours, breakHours } = computeSpanAndBreak(sorted);
 
             if (spanHours >= MAX_DAILY_HOURS || breakHours < 0 || breakHours >= spanHours) {
+                // A very common OCR failure: the row's final value is a "12am" (midnight, ending
+                // the last shift) that gets misread as 1200 (noon) instead of the 0/2400 midnight
+                // sentinel — the same visual "12" converted the same wrong way twice. Detectable
+                // as: the last shift's clock-out is exactly 1200, and an earlier shift in the same
+                // day also clocked out at 1200. Flagged explicitly here (not auto-corrected — we
+                // can't know for certain without re-reading the page) so it's immediately
+                // diagnosable instead of a generic "implausible" message.
+                const possibleMidnightMisread =
+                    end === 1200 && sorted.slice(0, -1).some(s => s.clockOut === 1200);
+                const explanation = possibleMidnightMisread
+                    ? "likely a 12am/12pm misread (the last shift's end time was probably midnight, not noon — should likely be 2400 or 0, not 1200)"
+                    : "implausible";
                 warnings.push({
                     source: sourceList,
-                    reason: `shifts for ${date.toDateString()} (${breakdown}) span ${spanHours}h with ${breakHours}h break — implausible, skipped entirely, please verify against the original page`,
+                    reason: `shifts for ${date.toDateString()} (${breakdown}) span ${spanHours}h with ${breakHours}h break — ${explanation}, skipped entirely, please verify against the original page`,
                     category: "skipped_invalid",
                     date: toLocalDateString(date),
                 });
