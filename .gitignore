@@ -4,5 +4,6 @@ node_modules/
 # real scanned timesheet data — may contain worker PII, never commit
 test.pdf
 output.json
+*.pdf
 
 .claude/settings.local.json

@@ -15,6 +15,19 @@ export type ParsedEntry = {
     notes: string | null;
 };
 
+// A clock time is stored as a bare HHMM integer (e.g. 800 = 8:00am). The minutes component
+// (the value mod 100) must be 00-59 — anything else (e.g. 1074, which would mean "10:74") is not
+// a different opinion about what the digits say, it's a value that cannot represent any real
+// clock time at all. Treating it as a normal vote lets it "disagree" with a genuinely correct
+// reading from another attempt and drop an otherwise-recoverable day. 2400 is allowed as the
+// documented sentinel for a shift ending exactly at midnight.
+function isPlausibleTime(t: number): boolean {
+    if (t < 0) return false;
+    if (t === 2400) return true;
+    const minutes = t % 100;
+    return minutes < 60;
+}
+
 // Even at temperature 0 with a fixed seed, a single scan of a dense handwritten page isn't
 // reliably complete — the model can genuinely miss/skip rows differently between identical
 // requests (seed isn't strictly honored by every backend, and long dense generations can drift).
@@ -58,16 +71,31 @@ export function reconcileAttempts(
         const timesVotes: number[][] = [];
         let restVotes = 0;
         let attemptsThatMentionedDay = 0;
+        let implausibleCount = 0;
+        const implausibleValues: number[] = [];
 
         for (const attempt of attempts) {
             const rowForDay = attempt.find(e => e.day === day && e.month === month);
             if (!rowForDay) continue;
-            attemptsThatMentionedDay++;
 
             if (rowForDay.times && rowForDay.times.length > 0) {
+                const bad = rowForDay.times.filter(t => !isPlausibleTime(t));
+                if (bad.length > 0) {
+                    // An impossible clock time (e.g. 1074 = "10:74") isn't a competing opinion
+                    // about the digits, it's an unreadable value — exclude this attempt from
+                    // voting on this day entirely rather than letting it "disagree" with a
+                    // genuinely correct reading from another attempt.
+                    implausibleCount++;
+                    implausibleValues.push(...bad);
+                    continue;
+                }
+                attemptsThatMentionedDay++;
                 timesVotes.push(rowForDay.times);
             } else if (rowForDay.rest_day === true) {
+                attemptsThatMentionedDay++;
                 restVotes++;
+            } else {
+                attemptsThatMentionedDay++;
             }
         }
 
@@ -78,24 +106,37 @@ export function reconcileAttempts(
         // each other, ignoring that a third attempt disagreed about the day's nature entirely.
         const allAgreeOnTimes = timesVotes.length > 0 && timesVotes.length === attemptsThatMentionedDay && distinctTimeSignatures.size === 1;
         const allAgreeOnRest = restVotes > 0 && restVotes === attemptsThatMentionedDay;
-        const fullyParticipated = !requireFullParticipation || attemptsThatMentionedDay === attempts.length;
-        const unanimous = fullyParticipated && (allAgreeOnTimes || allAgreeOnRest);
+        // Attempts that produced an impossible value for this day are excluded from the
+        // participation total too — they didn't produce a usable reading, so they shouldn't
+        // count against "did everyone weigh in". Still requires at least 2 valid attempts to
+        // agree (not just 1) so a day isn't accepted off a single surviving attempt when the
+        // other two were both unreadable — that's too little redundancy to trust unguessed.
+        const effectiveTotal = attempts.length - implausibleCount;
+        const fullyParticipated = !requireFullParticipation || attemptsThatMentionedDay === effectiveTotal;
+        const sufficientRedundancy = !requireFullParticipation || attemptsThatMentionedDay >= 2;
+        const unanimous = fullyParticipated && sufficientRedundancy && (allAgreeOnTimes || allAgreeOnRest);
 
         if (unanimous && allAgreeOnTimes) {
             entries.push({ day, month, times: timesVotes[0], guessed: false, rest_day: false, notes: null });
         } else if (unanimous && allAgreeOnRest) {
             entries.push({ day, month, times: null, guessed: false, rest_day: true, notes: null });
-        } else if (attemptsThatMentionedDay > 0) {
+        } else if (attemptsThatMentionedDay > 0 || implausibleCount > 0) {
             // something was reported, but not unanimously — dropped rather than guessed
             const reasons: string[] = [];
-            if (requireFullParticipation && attemptsThatMentionedDay < attempts.length) {
-                reasons.push(`only ${attemptsThatMentionedDay}/${attempts.length} attempts reported anything for this day`);
+            if (requireFullParticipation && attemptsThatMentionedDay < effectiveTotal) {
+                reasons.push(`only ${attemptsThatMentionedDay}/${effectiveTotal} valid attempts reported anything for this day`);
+            }
+            if (requireFullParticipation && !sufficientRedundancy && attemptsThatMentionedDay > 0) {
+                reasons.push(`only 1 valid attempt remained after discarding unreadable values, not enough redundancy to trust unguessed`);
             }
             if (distinctTimeSignatures.size > 1) {
                 reasons.push(`conflicting time readings (${[...distinctTimeSignatures].join(" vs ")})`);
             }
             if (timesVotes.length > 0 && restVotes > 0) {
                 reasons.push(`some attempts saw clock times, others saw a rest day`);
+            }
+            if (implausibleCount > 0) {
+                reasons.push(`${implausibleCount} attempt(s) reported an impossible clock time (${implausibleValues.join(", ")}) and were excluded from voting`);
             }
             if (reasons.length === 0) continue; // e.g. lenient mode, single non-conflicting mention already accepted above
             warnings.push({

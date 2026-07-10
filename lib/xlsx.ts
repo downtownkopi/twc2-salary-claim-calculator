@@ -111,7 +111,7 @@ function shiftHours(clockIn: number, clockOut: number): number {
     return minutes / 60;
 }
 
-type Shift = { clockIn: number; clockOut: number; source: string; guessed: boolean };
+type Shift = { clockIn: number; clockOut: number; source: string; guessed: boolean; implausible?: boolean };
 
 // A day with 2+ distinct shifts (e.g. a morning block and an evening block) collapses to one
 // row: full span = first clock-in to last clock-out, and the gap(s) between shifts become the
@@ -244,21 +244,26 @@ export async function fillTimesheet(
     for (const { sheetName, row, date, shifts } of byCell.values()) {
         const worksheet = workbook.getWorksheet(sheetName)!;
 
-        // drop any individual shift with a zero or 24h+ duration — can't be real
-        const validShifts = shifts.filter(s => {
+        // A zero or 24h+ duration shift can't be real as a literal reading, but it's still
+        // written to the sheet (rather than silently skipped) since the raw digits themselves
+        // were genuinely read off the page — dropping it entirely hides real data a human might
+        // need to interpret themselves (e.g. a shorthand or convention specific to this worker's
+        // handwriting). Flagged the same way a model-guess is: highlighted + remarked, so it's
+        // obvious in the sheet itself that this needs a manual check, not just in the warnings.
+        const validShifts = shifts.map(s => {
             const hours = shiftHours(s.clockIn, s.clockOut);
             if (hours <= 0 || hours >= MAX_DAILY_HOURS) {
                 warnings.push({
                     source: s.source,
-                    reason: `implausible shift ${s.clockIn}-${s.clockOut} on ${date.toDateString()} (${hours}h) — skipped, please verify against the original page`,
+                    reason: `implausible shift ${s.clockIn}-${s.clockOut} on ${date.toDateString()} (${hours}h) — written to the sheet anyway and flagged for review, please verify against the original page`,
                 });
-                return false;
+                return { ...s, implausible: true };
             }
-            return true;
+            return s;
         });
-        if (validShifts.length === 0) continue;
 
         const anyGuessed = validShifts.some(s => s.guessed);
+        const anyImplausible = validShifts.some(s => s.implausible);
         const sourceList = validShifts.map(s => s.source).join(", ");
 
         if (validShifts.length === 1) {
@@ -267,10 +272,13 @@ export async function fillTimesheet(
             setCell(nCell, validShifts[0].clockIn);
             setCell(oCell, validShifts[0].clockOut);
             writtenDates.push(date);
-            if (anyGuessed) {
+            if (anyGuessed || anyImplausible) {
                 highlightCell(nCell);
                 highlightCell(oCell);
-                setRemark(worksheet, row, sheetName, "Model-derived guess — please double check", true);
+                const reasons: string[] = [];
+                if (anyGuessed) reasons.push("model-derived guess");
+                if (anyImplausible) reasons.push("implausible shift duration (0h or 24h+)");
+                setRemark(worksheet, row, sheetName, `${reasons.join(" + ")} — please double check`, true);
             }
         } else {
             // 2+ shifts (e.g. a morning block and an evening block) collapse to one row: full
@@ -298,7 +306,8 @@ export async function fillTimesheet(
             writtenDates.push(date);
 
             const remarkText = `${validShifts.length} shifts (${breakdown}) — treated as ${start}-${end} with ${breakHours}h break (meal time overridden from default), please verify`
-                + (anyGuessed ? " (includes a model-derived guess)" : "");
+                + (anyGuessed ? " (includes a model-derived guess)" : "")
+                + (anyImplausible ? " (includes a shift with implausible 0h/24h+ duration)" : "");
             setRemark(worksheet, row, sheetName, remarkText, true);
             highlightCell(nCell);
             highlightCell(oCell);
