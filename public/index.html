@@ -207,7 +207,7 @@ form.addEventListener('submit', async (e) => {
     }
 
     statusEl.className = 'status success';
-    statusEl.textContent = `Done in ${formatDuration(data.durationMs)}`;
+    statusEl.textContent = `Done in ${formatDuration(data.durationMs)}${formatCost(data.costUsd)}`;
 
     if (data.monthSummary && data.monthSummary.length > 0) {
       monthSummaryEl.style.display = 'block';
@@ -275,6 +275,13 @@ function formatDuration(ms) {
   const secs = totalSeconds % 60;
   const secLabel = `${secs} second${secs === 1 ? '' : 's'}`;
   return mins === 0 ? secLabel : `${mins} min ${secLabel}`;
+}
+
+function formatCost(usd) {
+  if (usd === undefined || usd === null) return '';
+  // Costs per request are typically fractions of a cent — 4 decimal places keeps it meaningful
+  // instead of rounding everything down to "$0.00".
+  return ` — $${usd.toFixed(4)} in model credits`;
 }
 
 function escapeHtml(s) {

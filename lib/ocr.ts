@@ -100,12 +100,17 @@ async function sendVisionRequest(
     temperature: number,
     seed: number,
     maxTokens: number
-): Promise<{ content: string; truncated: boolean }> {
+): Promise<{ content: string; truncated: boolean; cost: number }> {
     const MAX_ATTEMPTS = 3;
     for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
         try {
             const response = await getClient().chat.send({
                 chatRequest: {
+                    // Asks OpenRouter to report the actual USD cost of this specific call back in
+                    // the response (response.usage.cost) rather than us estimating it from
+                    // published per-token pricing — exact and correct even if a request happens to
+                    // route to a different-priced provider/quantization tier than expected.
+                    usage: { include: true },
                     // Switched from google/gemini-2.5-flash after user side-by-side testing found
                     // it underperformed on dense handwritten timesheets. nex-agi/nex-n2-pro is a
                     // MoE model (17B active / 397B total, Qwen3.5 arch) with two OpenRouter
@@ -139,13 +144,18 @@ async function sendVisionRequest(
                             ],
                         },
                     ],
-                },
+                    // `usage` isn't in the SDK's TS type for ChatRequest, but OpenRouter's API
+                    // accepts and honors it (confirmed via a live call) — cast to bypass the
+                    // stale type, matching the `response as any` cast already used below for the
+                    // same reason on the response side.
+                } as any,
             });
 
             const choice = (response as any).choices[0];
             return {
                 content: choice.message.content,
                 truncated: choice.finishReason === "length",
+                cost: (response as any).usage?.cost ?? 0,
             };
         } catch (err) {
             if (isRateLimited(err) && attempt < MAX_ATTEMPTS) {
@@ -163,7 +173,7 @@ export async function scanPageImage(
     prompt: string,
     temperature = 0,
     seed = 42
-): Promise<{ content: string; truncated: boolean }> {
+): Promise<{ content: string; truncated: boolean; cost: number }> {
     return sendVisionRequest(base64Image, prompt, temperature, seed, 8000);
 }
 
@@ -176,12 +186,12 @@ export async function scanPageImage(
 // is a much simpler read (one label, not dozens of ambiguous handwritten digits) than the
 // per-row transcription, so it doesn't need the multi-attempt reconciliation the row-by-row
 // scan gets — one confident read is enough for a single label.
-export async function extractPageContext(base64Image: string): Promise<string> {
+export async function extractPageContext(base64Image: string): Promise<{ context: string; cost: number }> {
     const prompt = `Look at this ENTIRE page of a handwritten timesheet. Somewhere on the page — top, bottom, a corner, a margin, anywhere — there may be a title, header, label, or filename-like text indicating which calendar month (and possibly year) the date rows on this page belong to. There may also be other useful page-level context, like a worker's name.
 
 Reply with ONE short plain-text sentence stating what you found, e.g. "Header indicates December" or "No month header found, but page appears to be for a worker named Ahmad" or "No page-level context found." Do not transcribe any individual rows or times — this is only about page-level context, not row data. Keep it brief.`;
-    const { content } = await sendVisionRequest(base64Image, prompt, 0, 42, 200);
-    return content.trim();
+    const { content, cost } = await sendVisionRequest(base64Image, prompt, 0, 42, 200);
+    return { context: content.trim(), cost };
 }
 
 // Even with strict cross-attempt unanimity (lib/reconcile.ts), the underlying model can still
@@ -195,8 +205,8 @@ Reply with ONE short plain-text sentence stating what you found, e.g. "Header in
 export async function verifyDatesOnPage(
     base64Image: string,
     candidates: { day: number; month: number }[]
-): Promise<Set<string>> {
-    if (candidates.length === 0) return new Set();
+): Promise<{ confirmed: Set<string>; cost: number }> {
+    if (candidates.length === 0) return { confirmed: new Set(), cost: 0 };
 
     const dateList = candidates.map(c => `${c.day}/${c.month}`).join(", ");
     const prompt = `This is the full page of a handwritten timesheet. A previous pass claimed to find a row with actual handwritten content (times, marks, something written) for each of these dates on this page: ${dateList} (format is day/month).
@@ -205,14 +215,14 @@ Your ONLY job is to verify, for EACH date in that list, whether that date's row 
 
 Output ONLY a JSON array with exactly one object per date in the list, in the same order, as {day, month, confirmed}, where confirmed is true only if you can see genuine handwritten content for that date's row. No other text, no markdown fences.`;
 
-    const { content } = await sendVisionRequest(base64Image, prompt, 0, 42, 2000);
+    const { content, cost } = await sendVisionRequest(base64Image, prompt, 0, 42, 2000);
     const parsed = JSON.parse(extractJsonBlock(content)) as { day: number; month: number; confirmed: boolean }[];
 
     const confirmed = new Set<string>();
     for (const r of parsed) {
         if (r.confirmed === true) confirmed.add(`${r.month}-${r.day}`);
     }
-    return confirmed;
+    return { confirmed, cost };
 }
 
 // Model replies are usually markdown-fenced (```json ... ```) but sometimes prefix/suffix the

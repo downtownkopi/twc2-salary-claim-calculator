@@ -117,6 +117,7 @@ app.post("/api/process", upload.array("pdfs", 10), async (req, res) => {
     const timeEntries: TimeEntry[] = [];
     const restDays: RestDay[] = [];
     const warnings: FillWarning[] = [];
+    let totalCostUsd = 0; // sums OpenRouter's own reported usage.cost across every call this request makes
 
     for (const file of files) {
         let images: string[];
@@ -136,7 +137,9 @@ app.post("/api/process", upload.array("pdfs", 10), async (req, res) => {
             // include it would otherwise have no way to know what month its rows belong to.
             let pageContext = "";
             try {
-                pageContext = await extractPageContext(images[i]);
+                const result = await extractPageContext(images[i]);
+                pageContext = result.context;
+                totalCostUsd += result.cost;
             } catch (e: any) {
                 warnings.push({ source, reason: `could not extract page-level context (e.g. month header): ${e.message} — bands will rely on per-row reading only`, category: "scan_quality" });
             }
@@ -163,7 +166,8 @@ app.post("/api/process", upload.array("pdfs", 10), async (req, res) => {
                     failedCount++;
                     return;
                 }
-                const { content, truncated } = result.value;
+                const { content, truncated, cost } = result.value;
+                totalCostUsd += cost;
                 if (truncated) truncatedCount++;
                 try {
                     const parsed = JSON.parse(extractJsonBlock(content));
@@ -230,7 +234,8 @@ app.post("/api/process", upload.array("pdfs", 10), async (req, res) => {
                 .map(e => ({ day: e.day, month: e.month }));
             if (candidates.length > 0) {
                 try {
-                    const confirmed = await verifyDatesOnPage(images[i], candidates);
+                    const { confirmed, cost } = await verifyDatesOnPage(images[i], candidates);
+                    totalCostUsd += cost;
                     parsed = reconciled.filter(e => {
                         if (e.day === null || e.month === null) return true; // let existing validation handle it
                         const isConfirmed = confirmed.has(`${e.month}-${e.day}`);
@@ -423,6 +428,7 @@ app.post("/api/process", upload.array("pdfs", 10), async (req, res) => {
         entriesWritten: writtenDates.length,
         monthSummary,
         scanOutput,
+        costUsd: totalCostUsd,
         durationMs: Date.now() - startedAt,
     });
 });
