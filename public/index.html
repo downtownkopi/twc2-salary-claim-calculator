@@ -24,9 +24,10 @@
     background: var(--bg);
     color: var(--text);
     padding: 24px;
-    max-width: 720px;
+    max-width: 1100px;
     margin: 0 auto;
   }
+  .container { max-width: 720px; margin: 0 auto; }
   h1 { font-size: 20px; margin: 0 0 4px; }
   .sub { color: var(--muted); font-size: 13px; margin-bottom: 24px; }
   label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 6px; }
@@ -113,6 +114,30 @@
   }
   .warning-group summary .count { color: var(--muted); font-weight: 400; }
   .warning-group ul { margin-top: 6px; }
+  .page-reviews { margin-top: 32px; }
+  .page-reviews h2 { font-size: 16px; margin: 0 0 4px; }
+  .page-reviews .sub { margin-bottom: 16px; }
+  .page-review-row {
+    display: flex;
+    gap: 16px;
+    margin-bottom: 20px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px;
+    background: var(--panel);
+    align-items: flex-start;
+  }
+  .page-review-image { flex: 0 0 45%; max-width: 480px; }
+  .page-review-image img { width: 100%; border-radius: 6px; display: block; }
+  .page-review-details { flex: 1; min-width: 0; }
+  .page-review-source { font-size: 12px; color: var(--muted); margin-bottom: 8px; word-break: break-all; }
+  .page-review-entries { list-style: none; margin: 0 0 10px; padding: 0; font-size: 13px; }
+  .page-review-entries li { padding: 4px 0; border-bottom: 1px solid var(--border); }
+  .page-review-entries li:last-child { border-bottom: none; }
+  .page-review-entries .guessed { color: var(--warn-text); }
+  .page-review-entries .empty { color: var(--muted); font-style: italic; }
+  .page-review-warnings { margin: 0; padding-left: 18px; font-size: 12px; color: var(--warn-text); }
+  .page-review-warnings li { margin-bottom: 4px; }
   .spinner {
     display: inline-block; width: 12px; height: 12px;
     border: 2px solid var(--border); border-top-color: var(--accent);
@@ -124,6 +149,7 @@
 </head>
 <body>
 
+<div class="container">
 <h1>Timesheet → Wage Claim Calculator</h1>
 <div class="sub">Upload one worker's handwritten timesheet PDFs (one or more months). Each page is read by Qwen and the hours worked get filled into calculation.xltx, ready to download.</div>
 
@@ -149,10 +175,18 @@
   <ul class="month-summary" id="monthSummary" style="display:none"></ul>
   <a href="#" id="scanOutputLink" class="scan-output-link" style="display:none">Download scan output (JSON) — every entry with its exact source, for debugging</a>
   <div class="warnings" id="warnings" style="display:none">
-    <h3>Warnings</h3>
+    <h3>General warnings</h3>
+    <div class="file-list" style="margin-bottom:8px">Not tied to a specific page — e.g. a day nothing on any page accounted for, or a file that couldn't be read. Page-specific warnings appear alongside their page below.</div>
     <div id="warningGroups"></div>
   </div>
 </form>
+</div>
+
+<div class="page-reviews" id="pageReviews" style="display:none">
+  <h2>Page-by-page review</h2>
+  <div class="sub">Compare each source page against what was extracted from it.</div>
+  <div id="pageReviewList"></div>
+</div>
 
 <script>
 const form = document.getElementById('form');
@@ -174,6 +208,8 @@ const WARNING_CATEGORY_ORDER = [
 ];
 const monthSummaryEl = document.getElementById('monthSummary');
 const scanOutputLink = document.getElementById('scanOutputLink');
+const pageReviewsEl = document.getElementById('pageReviews');
+const pageReviewList = document.getElementById('pageReviewList');
 let scanOutputBlobUrl = null;
 
 pdfsInput.addEventListener('change', () => {
@@ -188,6 +224,8 @@ form.addEventListener('submit', async (e) => {
   monthSummaryEl.style.display = 'none';
   monthSummaryEl.innerHTML = '';
   scanOutputLink.style.display = 'none';
+  pageReviewsEl.style.display = 'none';
+  pageReviewList.innerHTML = '';
   if (scanOutputBlobUrl) { URL.revokeObjectURL(scanOutputBlobUrl); scanOutputBlobUrl = null; }
 
   const formData = new FormData();
@@ -229,6 +267,11 @@ form.addEventListener('submit', async (e) => {
       scanOutputLink.style.display = 'block';
     }
 
+    if (data.pageReviews && data.pageReviews.length > 0) {
+      pageReviewsEl.style.display = 'block';
+      pageReviewList.innerHTML = data.pageReviews.map(renderPageReview).join('');
+    }
+
     const bytes = Uint8Array.from(atob(data.file), c => c.charCodeAt(0));
     const blob = new Blob([bytes], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
     const url = URL.createObjectURL(blob);
@@ -267,6 +310,33 @@ function renderWarningGroups(warnings) {
       </details>`;
     })
     .join('');
+}
+
+function renderPageReview(page) {
+  const entriesHtml = page.entries.length === 0
+    ? '<li class="empty">No entries extracted from this page</li>'
+    : page.entries.map(e => {
+        if (e.type === 'rest_day') return `<li>${escapeHtml(e.date)} — rest day</li>`;
+        const clockIn = String(e.clockIn).padStart(4, '0');
+        const clockOut = String(e.clockOut).padStart(4, '0');
+        const cls = e.guessed ? ' class="guessed"' : '';
+        return `<li${cls}>${escapeHtml(e.date)} — ${clockIn} to ${clockOut}${e.guessed ? ' (flagged)' : ''}</li>`;
+      }).join('');
+
+  const warningsHtml = page.warnings.length === 0 ? '' : `
+    <ul class="page-review-warnings">
+      ${page.warnings.map(w => `<li>${escapeHtml(w.reason)}</li>`).join('')}
+    </ul>`;
+
+  return `
+    <div class="page-review-row">
+      <div class="page-review-image"><img src="data:image/png;base64,${page.image}" alt="${escapeHtml(page.source)}"></div>
+      <div class="page-review-details">
+        <div class="page-review-source">${escapeHtml(page.source)}</div>
+        <ul class="page-review-entries">${entriesHtml}</ul>
+        ${warningsHtml}
+      </div>
+    </div>`;
 }
 
 function formatDuration(ms) {

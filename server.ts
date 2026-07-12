@@ -1,7 +1,7 @@
 import express from "express";
 import multer from "multer";
 import * as path from "path";
-import { pdfToImages, scanPageImage, extractJsonBlock, cropIntoBands, extractPageContext, verifyDatesOnPage } from "./lib/ocr";
+import { pdfToImages, scanPageImage, extractJsonBlock, cropIntoBands, extractPageContext, verifyDatesOnPage, resizeForDisplay } from "./lib/ocr";
 import { fillTimesheet, MONTH_ABBR, type TimeEntry, type FillWarning, type RestDay } from "./lib/xlsx";
 import { reconcileAttempts, type ParsedEntry } from "./lib/reconcile";
 
@@ -118,6 +118,9 @@ app.post("/api/process", upload.array("pdfs", 10), async (req, res) => {
     const restDays: RestDay[] = [];
     const warnings: FillWarning[] = [];
     let totalCostUsd = 0; // sums OpenRouter's own reported usage.cost across every call this request makes
+    // Display-only (downscaled) copy of every page, for the side-by-side review UI — keyed by the
+    // same `source` string ("file.pdf p2") already used to tag every entry/warning from that page.
+    const pageImages: { source: string; image: string }[] = [];
 
     for (const file of files) {
         let images: string[];
@@ -130,6 +133,7 @@ app.post("/api/process", upload.array("pdfs", 10), async (req, res) => {
 
         for (let i = 0; i < images.length; i++) {
             const source = `${file.originalname} p${i + 1}`;
+            pageImages.push({ source, image: await resizeForDisplay(images[i]) });
 
             // Read the full, uncropped page once for page-level context (e.g. a month header)
             // before cropping into bands — a header can sit anywhere on the page depending on
@@ -420,14 +424,99 @@ app.post("/api/process", upload.array("pdfs", 10), async (req, res) => {
         })),
     ].sort((a, b) => a.date.localeCompare(b.date));
 
+    // Side-by-side review data: each page's (downscaled) image next to everything relevant to
+    // it — every entry attempted from that page (written, flagged, or guessed) plus every warning
+    // about it, so a user can visually compare the source handwriting against what the pipeline
+    // produced without needing the separate scan-output JSON download.
+    //
+    // Every warning attached to a page here is tracked in `assignedWarnings` and excluded from the
+    // top-level `warnings` field below — a warning about a specific page belongs next to that page,
+    // not duplicated in a separate general list. Only warnings with no page to attach to (e.g. the
+    // coverage check for a day nothing ever read, or a file-level "could not read PDF" error) stay
+    // in the general list.
+    const allWarnings = [...warnings, ...fillWarnings];
+    const assignedWarnings = new Set<FillWarning>();
+    const pageReviews = pageImages.map(({ source, image }) => {
+        const entries = [
+            ...timeEntries
+                .filter(e => e.source === source)
+                .map(e => ({
+                    date: toLocalDateString(e.date),
+                    type: "worked" as const,
+                    clockIn: e.clockIn,
+                    clockOut: e.clockOut,
+                    guessed: e.guessed,
+                })),
+            ...restDays
+                .filter(r => r.source === source)
+                .map(r => ({
+                    date: `${r.year}-${String(r.month).padStart(2, "0")}-${String(r.day).padStart(2, "0")}`,
+                    type: "rest_day" as const,
+                })),
+        ].sort((a, b) => a.date.localeCompare(b.date));
+
+        // Some warnings combine multiple sources into one comma-joined string (e.g. a multi-shift
+        // day's shifts collapsing into one row) — split-and-match avoids a prefix false-positive
+        // like "file.pdf p1" wrongly matching a warning actually about "file.pdf p10".
+        const pageWarnings = allWarnings.filter(w => w.source.split(", ").includes(source));
+        pageWarnings.forEach(w => assignedWarnings.add(w));
+
+        return { source, image, entries, warnings: pageWarnings };
+    });
+
+    // A warning with no specific page source (e.g. the coverage check for a day nothing read at
+    // all) still carries a date — matched to whichever page's actual entries sit closest to that
+    // day, so it lands next to the page it would have appeared on if the data existed, rather
+    // than a generic top-level list. Matched by nearest day-of-month, not just "any page sharing
+    // that month" — matters when a month spans multiple pages (e.g. Dec 1-18 on page 1, Dec 19-29
+    // on page 2), where a missing day near the end of the month belongs with the page covering
+    // that range, not whichever page happens to come first.
+    const pageMonthRanges = pageReviews.map(pr => {
+        const ranges = new Map<string, { minDay: number; maxDay: number }>(); // "YYYY-MM" -> day range
+        for (const e of pr.entries) {
+            const ym = e.date.slice(0, 7);
+            const day = Number(e.date.slice(8, 10));
+            const existing = ranges.get(ym);
+            if (!existing) ranges.set(ym, { minDay: day, maxDay: day });
+            else {
+                existing.minDay = Math.min(existing.minDay, day);
+                existing.maxDay = Math.max(existing.maxDay, day);
+            }
+        }
+        return ranges;
+    });
+    for (const w of allWarnings) {
+        if (assignedWarnings.has(w) || !w.date) continue;
+        const ym = w.date.slice(0, 7);
+        const day = Number(w.date.slice(8, 10));
+        let bestIdx = -1;
+        let bestDistance = Infinity;
+        pageMonthRanges.forEach((ranges, idx) => {
+            const range = ranges.get(ym);
+            if (!range) return;
+            const distance = day < range.minDay ? range.minDay - day : day > range.maxDay ? day - range.maxDay : 0;
+            if (distance < bestDistance) {
+                bestDistance = distance;
+                bestIdx = idx;
+            }
+        });
+        if (bestIdx !== -1) {
+            pageReviews[bestIdx].warnings.push(w);
+            assignedWarnings.add(w);
+        }
+    }
+
+    const generalWarnings = allWarnings.filter(w => !assignedWarnings.has(w));
+
     res.json({
         success: true,
         filename: `calculation-filled-${Date.now()}.xlsx`,
         file: buffer.toString("base64"),
-        warnings: [...warnings, ...fillWarnings],
+        warnings: generalWarnings,
         entriesWritten: writtenDates.length,
         monthSummary,
         scanOutput,
+        pageReviews,
         costUsd: totalCostUsd,
         durationMs: Date.now() - startedAt,
     });

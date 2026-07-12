@@ -73,6 +73,19 @@ export async function cropIntoBands(
     return bands;
 }
 
+// The OCR pipeline needs the page rendered at scale 3.0 for legible digits, but shipping that
+// same full-resolution image back to the browser for every page (for the side-by-side review UI)
+// would bloat the JSON response — a single page can be 1-1.5MB at that scale. Downscaled
+// separately, display-only, so the OCR-quality image never leaves the server.
+export async function resizeForDisplay(base64Image: string, maxWidth = 1400): Promise<string> {
+    const buffer = Buffer.from(base64Image, "base64");
+    const resized = await sharp(buffer)
+        .resize({ width: maxWidth, withoutEnlargement: true })
+        .png()
+        .toBuffer();
+    return resized.toString("base64");
+}
+
 function isRateLimited(err: any): boolean {
     const code = err?.error?.code ?? err?.statusCode ?? err?.status;
     return code === 429;
