@@ -29,6 +29,27 @@ export async function pdfToImages(input: string | Buffer): Promise<string[]> {
     return images;
 }
 
+// A single photographed/scanned timesheet (jpg/png/etc, common in real-world uploads — phone
+// photos of a physical card) is already "one page" — normalize it into the same
+// array-of-base64-PNG shape pdfToImages returns so callers don't need to branch downstream.
+// `.rotate()` with no args applies the image's own EXIF orientation tag before stripping it —
+// phone cameras commonly save landscape-held shots as portrait pixels + an EXIF rotation flag,
+// and without this the page (and any handwriting on it) would be scanned sideways.
+//
+// A modern phone photo is commonly 3000-4000px on its long side — converted to PNG (no lossy
+// compression, unlike the source JPEG) that balloons to 15MB+, which the model provider outright
+// rejects ("Multimodal file size is too large"), failing every scan attempt for the page. Capped
+// to roughly the same resolution pdfToImages produces for a rendered PDF page (~1800-2500px) —
+// already proven legible for OCR there, and comfortably under the provider's limit.
+export async function imageToPages(input: Buffer): Promise<string[]> {
+    const png = await sharp(input)
+        .rotate()
+        .resize({ width: 2500, height: 2500, fit: "inside", withoutEnlargement: true })
+        .png()
+        .toBuffer();
+    return [png.toString("base64")];
+}
+
 // Splits one page image into vertically overlapping bands (top/bottom by default). A single
 // generation transcribing many visually-similar handwritten rows in one shot is prone to
 // degenerate repetition — the model anchors on an earlier confidently-read row and starts
@@ -190,6 +211,8 @@ export async function scanPageImage(
     return sendVisionRequest(base64Image, prompt, temperature, seed, 8000);
 }
 
+export type PageDataModel = "clock_times" | "hours_total" | "unclear";
+
 // Reads the FULL, uncropped page once to find any page-level context (most importantly, a
 // header/title naming the month all rows on the page belong to) before it gets cropped into
 // bands for the actual row-by-row transcription. A month header can sit anywhere on the page
@@ -199,12 +222,41 @@ export async function scanPageImage(
 // is a much simpler read (one label, not dozens of ambiguous handwritten digits) than the
 // per-row transcription, so it doesn't need the multi-attempt reconciliation the row-by-row
 // scan gets — one confident read is enough for a single label.
-export async function extractPageContext(base64Image: string): Promise<{ context: string; cost: number }> {
-    const prompt = `Look at this ENTIRE page of a handwritten timesheet. Somewhere on the page — top, bottom, a corner, a margin, anywhere — there may be a title, header, label, or filename-like text indicating which calendar month (and possibly year) the date rows on this page belong to. There may also be other useful page-level context, like a worker's name.
+//
+// Also does two cheap classification jobs on the same call (avoids a separate model round-trip
+// per page): whether this page is a work time/attendance record at all (a real-world upload batch
+// mixes in ID-card cover pages with no date rows, and even entirely unrelated documents), and
+// which of the observed data models it uses — plain clock in/out times, or only a total-hours(+OT)
+// figure per day with no clock times anywhere. The per-row scan prompt (server.ts) uses this as a
+// hint, not a hard rule, since a single page can occasionally mix both.
+export async function extractPageContext(
+    base64Image: string
+): Promise<{ context: string; isTimesheet: boolean; dataModel: PageDataModel; cost: number }> {
+    const prompt = `Look at this ENTIRE page of a worker's daily time/attendance record. It may be handwritten or typed, in any language, and in any layout — a row-per-day table, a calendar grid, a free-form list, a punch card, etc.
 
-Reply with ONE short plain-text sentence stating what you found, e.g. "Header indicates December" or "No month header found, but page appears to be for a worker named Ahmad" or "No page-level context found." Do not transcribe any individual rows or times — this is only about page-level context, not row data. Keep it brief.`;
-    const { content, cost } = await sendVisionRequest(base64Image, prompt, 0, 42, 200);
-    return { context: content.trim(), cost };
+Answer three things:
+1. context: Somewhere on the page — top, bottom, a corner, a margin, anywhere — there may be a title, header, label, or filename-like text indicating which calendar month (and possibly year) the date rows on this page belong to. There may also be other useful page-level context, like a worker's name. Reply with ONE short plain-text sentence stating what you found, e.g. "Header indicates December" or "No month header found, but page appears to be for a worker named Ahmad" or "No page-level context found."
+2. isTimesheet: true if this page genuinely contains a work time/attendance record for one or more calendar dates, in any format. false if this page is something else entirely — e.g. a blank ID-card cover with no date rows, a driving-school log, a signature-only page, or an unrelated document.
+3. dataModel: what's actually recorded per date on THIS page — "clock_times" if actual clock in/out times are shown (e.g. "8:00", "8am-5pm"), "hours_total" if only a total number of hours worked (and/or separate overtime hours) is shown per day with NO clock in/out times anywhere, or "unclear" if you can't tell, it's mixed, or no rows are populated yet.
+
+Output ONLY a JSON object: {"context": string, "isTimesheet": boolean, "dataModel": "clock_times" | "hours_total" | "unclear"}. No markdown fences, no other text.`;
+    const { content, cost } = await sendVisionRequest(base64Image, prompt, 0, 42, 300);
+    try {
+        const parsed = JSON.parse(extractJsonBlock(content));
+        const dataModel: PageDataModel =
+            parsed.dataModel === "clock_times" || parsed.dataModel === "hours_total" ? parsed.dataModel : "unclear";
+        return {
+            context: typeof parsed.context === "string" ? parsed.context : "",
+            isTimesheet: parsed.isTimesheet !== false,
+            dataModel,
+            cost,
+        };
+    } catch {
+        // A malformed classification response shouldn't block the page from being scanned at all
+        // — fall back permissively (assume it IS a timesheet, data model unclear) rather than
+        // silently dropping a page over a JSON parsing hiccup in this secondary classification.
+        return { context: content.trim(), isTimesheet: true, dataModel: "unclear", cost };
+    }
 }
 
 // Even with strict cross-attempt unanimity (lib/reconcile.ts), the underlying model can still
@@ -240,15 +292,21 @@ Output ONLY a JSON array with exactly one object per date in the list, in the sa
 
 // Model replies are usually markdown-fenced (```json ... ```) but sometimes prefix/suffix the
 // JSON with stray characters or prose (e.g. a leading ">"). Strip fences if present, otherwise
-// fall back to slicing from the first "[" to the last "]" so junk around the array is dropped.
+// fall back to slicing from the first "[" to the last "]" (array responses) or "{" to "}" (object
+// responses, e.g. extractPageContext's classification reply) so junk around the JSON is dropped.
 export function extractJsonBlock(text: string): string {
     const fenced = text.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
     if (fenced) return fenced[1];
 
-    const start = text.indexOf("[");
-    const end = text.lastIndexOf("]");
-    if (start !== -1 && end !== -1 && end > start) {
-        return text.slice(start, end + 1);
+    const arrStart = text.indexOf("[");
+    const arrEnd = text.lastIndexOf("]");
+    if (arrStart !== -1 && arrEnd !== -1 && arrEnd > arrStart) {
+        return text.slice(arrStart, arrEnd + 1);
+    }
+    const objStart = text.indexOf("{");
+    const objEnd = text.lastIndexOf("}");
+    if (objStart !== -1 && objEnd !== -1 && objEnd > objStart) {
+        return text.slice(objStart, objEnd + 1);
     }
     return text;
 }

@@ -36,17 +36,26 @@ function toLocalDateString(d: Date): string {
 // (the model read and reported it directly), not something inferred or fabricated.
 export type RestDay = { year: number; month: number; day: number; source: string }; // month is 1-12
 
+// One row per calendar date, already collapsed to a single start/end/lunch-break — the shape the
+// human-review step (public/index.html) edits before generating the final spreadsheet. Multi-shift
+// days are pre-collapsed into this same shape (span + observed gap as the break) so the review UI
+// only ever needs to show three plain fields per date, matching how a person would actually
+// describe a single day's work.
+export type ReviewRow = {
+    date: string; // YYYY-MM-DD
+    clockIn: number | null; // HHMM 24hr, null only when restDay
+    clockOut: number | null;
+    lunchBreakHours: number | null; // null only when restDay
+    restDay: boolean;
+    guessed: boolean; // true if any underlying shift was a model guess or an implausible reading — surfaced as a "please double-check" hint, not enforced
+    notes: string | null;
+    source: string;
+};
+
 export const MONTH_ABBR = [
     "Jan", "Feb", "Mar", "Apr", "May", "Jun",
     "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
 ];
-
-// Highlight fill for any cell the model derived by best-guess rather than reading directly
-const GUESS_FILL: ExcelJS.Fill = {
-    type: "pattern",
-    pattern: "solid",
-    fgColor: { argb: "FFFFF2A6" }, // light yellow
-};
 
 // Matches the template's own data-row font (verified on N/O/M cells). Applied explicitly to
 // every cell we write, since ExcelJS doesn't resolve column/row-inherited formatting the way
@@ -150,19 +159,97 @@ function computeSpanAndBreak(sortedShifts: Shift[]): { start: number; end: numbe
     return { start, end, spanHours, breakHours: breakMinutes / 60 };
 }
 
-// Loads calculation.xltx and fills each date's row.
-// - Every day, single- or multi-shift alike, goes into "Start Time w/o :" (N) / "End Time w/o :"
-//   (O), which feed the template's own B/C/D/E/I/L formulas. A single shift writes its clock-in/
-//   out directly, leaving the template's default "Meal Time hrs" (G) untouched. 2+ shifts (e.g.
-//   a morning block and an evening block) collapse to one row: N/O become the first clock-in and
-//   last clock-out, and the gap(s) between shifts are summed into G, overriding the default with
-//   the actual observed break — the template's D/I formulas then compute hours/overtime
-//   correctly off the real break instead of the assumed one.
-// - Any shift the model marked as a best-guess (rather than read directly) gets a "Remarks" note
-//   and a highlighted fill so it's obvious at a glance which cells need double-checking.
-export async function fillTimesheet(
+// The template's own default "Meal Time hrs" (column G) baked into every row — used to pre-fill
+// the review row's lunch-break field for a single, unremarkable shift so the edit UI shows a
+// sensible starting number instead of blank/zero.
+const DEFAULT_LUNCH_BREAK_HOURS = 1;
+
+// Groups raw scanned TimeEntry rows into ONE ReviewRow per calendar date — collapsing 2+ shifts
+// (e.g. a morning block and an evening block) into a single span + observed gap-as-break, exactly
+// like the spreadsheet write step used to do internally. Pulled out on its own (rather than fused
+// into the write step) so the result can be shown to a human for editing BEFORE anything is
+// written to the spreadsheet — the whole point of the review step this feeds.
+//
+// Deliberately more lenient than the old direct-to-spreadsheet path: an implausible reading (0h,
+// 24h+, a bad multi-shift span) still produces a best-effort row rather than being silently
+// dropped, since a human reviewing the row can fix or discard it themselves — dropping it here
+// would hide the very thing the review step exists to catch.
+export function buildReviewRows(entries: TimeEntry[], restDays: RestDay[]): ReviewRow[] {
+    type Cell = { date: Date; shifts: Shift[]; source: string };
+    const byDate = new Map<string, Cell>();
+
+    for (const entry of entries) {
+        const key = toLocalDateString(entry.date);
+        const cell = byDate.get(key) ?? { date: entry.date, shifts: [], source: entry.source };
+        const isDuplicate = cell.shifts.some(s => s.clockIn === entry.clockIn && s.clockOut === entry.clockOut);
+        if (!isDuplicate) {
+            cell.shifts.push({ clockIn: entry.clockIn, clockOut: entry.clockOut, source: entry.source, guessed: entry.guessed });
+        }
+        byDate.set(key, cell);
+    }
+
+    const rows: ReviewRow[] = [];
+    for (const { date, shifts } of byDate.values()) {
+        const anyGuessed = shifts.some(s => s.guessed);
+        const sourceList = [...new Set(shifts.map(s => s.source))].join(", ");
+
+        if (shifts.length === 1) {
+            const hours = shiftHours(shifts[0].clockIn, shifts[0].clockOut);
+            const implausible = hours <= 0 || hours >= 24;
+            rows.push({
+                date: toLocalDateString(date),
+                clockIn: shifts[0].clockIn,
+                clockOut: shifts[0].clockOut,
+                lunchBreakHours: DEFAULT_LUNCH_BREAK_HOURS,
+                restDay: false,
+                guessed: anyGuessed || implausible,
+                notes: implausible ? `implausible shift duration (${hours}h) as originally scanned — please verify` : null,
+                source: sourceList,
+            });
+        } else {
+            const sorted = [...shifts].sort((a, b) => toMinutes(a.clockIn) - toMinutes(b.clockIn));
+            const { start, end, spanHours, breakHours } = computeSpanAndBreak(sorted);
+            const implausible = spanHours >= 24 || breakHours < 0 || breakHours >= spanHours;
+            rows.push({
+                date: toLocalDateString(date),
+                clockIn: start,
+                clockOut: end,
+                lunchBreakHours: implausible ? DEFAULT_LUNCH_BREAK_HOURS : Math.round(breakHours * 100) / 100,
+                restDay: false,
+                guessed: true, // a multi-shift collapse always needs a human glance, even when internally consistent
+                notes: `${shifts.length} shifts originally scanned (${sorted.map(s => `${s.clockIn}-${s.clockOut}`).join(", ")}) collapsed into one span — please verify`,
+                source: sourceList,
+            });
+        }
+    }
+
+    for (const r of restDays) {
+        rows.push({
+            date: `${r.year}-${String(r.month).padStart(2, "0")}-${String(r.day).padStart(2, "0")}`,
+            clockIn: null,
+            clockOut: null,
+            lunchBreakHours: null,
+            restDay: true,
+            guessed: false,
+            notes: null,
+            source: r.source,
+        });
+    }
+
+    return rows.sort((a, b) => a.date.localeCompare(b.date));
+}
+
+// Loads calculation.xltx and writes each (already human-reviewed) row directly.
+// - Every day, goes into "Start Time w/o :" (N) / "End Time w/o :" (O), which feed the template's
+//   own B/C/D/E/I/L formulas. The lunch break (column G) is always written from the row's
+//   lunchBreakHours — every row carries an explicit value (defaulted by buildReviewRows, editable
+//   by the human reviewer), so there's no separate "leave the template default" case to handle
+//   here.
+// - A row still marked `guessed` (the human reviewer didn't clear it) gets a "Remarks" note and a
+//   highlighted fill so it's obvious at a glance which cells were flagged as needing a look.
+export async function fillTimesheetFromRows(
     templatePath: string,
-    entries: TimeEntry[]
+    rows: ReviewRow[]
 ): Promise<{ buffer: Buffer; warnings: FillWarning[]; writtenDates: Date[] }> {
     const workbook = new ExcelJS.Workbook();
     await workbook.xlsx.readFile(templatePath);
@@ -202,163 +289,60 @@ export async function fillTimesheet(
     });
 
     const warnings: FillWarning[] = [];
-    type Cell = { sheetName: string; row: number; date: Date; shifts: Shift[] };
-    const byCell = new Map<string, Cell>();
 
-    for (const entry of entries) {
-        const sheetName = sheetNameFor(entry.date);
-        const worksheet = workbook.getWorksheet(sheetName);
-        if (!worksheet) {
-            warnings.push({
-                source: entry.source,
-                reason: `${entry.date.toDateString()} falls outside the template's supported range (no sheet "${sheetName}")`,
-                category: "skipped_invalid",
-                date: toLocalDateString(entry.date),
-            });
-            continue;
-        }
-
-        const row = entry.date.getDate() + 1; // row 2 = day 1, per template layout
-        const key = `${sheetName}|${row}`;
-        const cell = byCell.get(key) ?? { sheetName, row, date: entry.date, shifts: [] };
-        const isDuplicate = cell.shifts.some(
-            s => s.clockIn === entry.clockIn && s.clockOut === entry.clockOut
-        );
-        if (!isDuplicate) {
-            cell.shifts.push({ clockIn: entry.clockIn, clockOut: entry.clockOut, source: entry.source, guessed: entry.guessed });
-        }
-        byCell.set(key, cell);
-    }
-
-    // Column P is blank/unused on every monthly sheet (verified against the template), and its
-    // own instructions (Definitions-formulas!B16) explicitly allow adding columns for extra info.
-    const REMARKS_COL = "P";
-    const sheetsWithRemarks = new Set<string>();
-
-    // No human can work 24h+ in a calendar day. This is also asked of the model in the prompt,
-    // but LLM instruction-following isn't a data-integrity guarantee — enforce it here too rather
-    // than trusting the model not to write an impossible shift into a wage-claim spreadsheet.
+    // No human can work 24h+ in a calendar day. The review UI already lets a human fix an
+    // implausible row before it gets here, but that isn't a data-integrity guarantee — enforce it
+    // here too rather than trusting the submitted value not to be an impossible shift.
     const MAX_DAILY_HOURS = 24;
 
     const writtenDates: Date[] = [];
-
-    // ExcelJS shares style objects by reference across cells with identical template formatting —
-    // assigning `.fill`/`.font` directly mutates that shared style and silently affects unrelated
-    // cells too. Cloning `.style` first gives this cell its own style object.
-    function highlightCell(cell: ExcelJS.Cell) {
-        cell.style = { ...cell.style, fill: GUESS_FILL };
-    }
 
     function setCell(cell: ExcelJS.Cell, value: ExcelJS.CellValue) {
         cell.value = value;
         cell.style = { ...cell.style, font: DATA_FONT };
     }
 
-    function setRemark(worksheet: ExcelJS.Worksheet, row: number, sheetName: string, text: string, highlight: boolean) {
-        const cell = worksheet.getCell(`${REMARKS_COL}${row}`);
-        setCell(cell, text);
-        if (highlight) highlightCell(cell);
-        sheetsWithRemarks.add(sheetName);
-    }
+    for (const r of rows) {
+        if (r.restDay) continue; // nothing to write — a blank N/O row already reads as unworked
 
-    for (const { sheetName, row, date, shifts } of byCell.values()) {
-        const worksheet = workbook.getWorksheet(sheetName)!;
-
-        // A zero or 24h+ duration shift can't be real as a literal reading, but it's still
-        // written to the sheet (rather than silently skipped) since the raw digits themselves
-        // were genuinely read off the page — dropping it entirely hides real data a human might
-        // need to interpret themselves (e.g. a shorthand or convention specific to this worker's
-        // handwriting). Flagged the same way a model-guess is: highlighted + remarked, so it's
-        // obvious in the sheet itself that this needs a manual check, not just in the warnings.
-        const validShifts = shifts.map(s => {
-            const hours = shiftHours(s.clockIn, s.clockOut);
-            if (hours <= 0 || hours >= MAX_DAILY_HOURS) {
-                warnings.push({
-                    source: s.source,
-                    reason: `implausible shift ${s.clockIn}-${s.clockOut} on ${date.toDateString()} (${hours}h) — written to the sheet anyway and flagged for review, please verify against the original page`,
-                    category: "flagged_review",
-                    date: toLocalDateString(date),
-                });
-                return { ...s, implausible: true };
-            }
-            return s;
-        });
-
-        const anyGuessed = validShifts.some(s => s.guessed);
-        const anyImplausible = validShifts.some(s => s.implausible);
-        const sourceList = validShifts.map(s => s.source).join(", ");
-
-        if (validShifts.length === 1) {
-            const nCell = worksheet.getCell(`N${row}`);
-            const oCell = worksheet.getCell(`O${row}`);
-            setCell(nCell, validShifts[0].clockIn);
-            setCell(oCell, validShifts[0].clockOut);
-            writtenDates.push(date);
-            if (anyGuessed || anyImplausible) {
-                highlightCell(nCell);
-                highlightCell(oCell);
-                const reasons: string[] = [];
-                if (anyGuessed) reasons.push("model-derived guess");
-                if (anyImplausible) reasons.push("implausible shift duration (0h or 24h+)");
-                setRemark(worksheet, row, sheetName, `${reasons.join(" + ")} — please double check`, true);
-            }
-        } else {
-            // 2+ shifts (e.g. a morning block and an evening block) collapse to one row: full
-            // span = first clock-in to last clock-out, and the gap(s) between shifts become the
-            // meal break (column G), overriding the template's default — the same N/O columns
-            // a single-shift day uses, just with the real break instead of the assumed one.
-            const sorted = [...validShifts].sort((a, b) => toMinutes(a.clockIn) - toMinutes(b.clockIn));
-            const breakdown = sorted.map(s => `${s.clockIn}-${s.clockOut}`).join(", ");
-            const { start, end, spanHours, breakHours } = computeSpanAndBreak(sorted);
-
-            if (spanHours >= MAX_DAILY_HOURS || breakHours < 0 || breakHours >= spanHours) {
-                // A very common OCR failure: the row's final value is a "12am" (midnight, ending
-                // the last shift) that gets misread as 1200 (noon) instead of the 0/2400 midnight
-                // sentinel — the same visual "12" converted the same wrong way twice. Detectable
-                // as: the last shift's clock-out is exactly 1200, and an earlier shift in the same
-                // day also clocked out at 1200. Flagged explicitly here (not auto-corrected — we
-                // can't know for certain without re-reading the page) so it's immediately
-                // diagnosable instead of a generic "implausible" message.
-                const possibleMidnightMisread =
-                    end === 1200 && sorted.slice(0, -1).some(s => s.clockOut === 1200);
-                const explanation = possibleMidnightMisread
-                    ? "likely a 12am/12pm misread (the last shift's end time was probably midnight, not noon — should likely be 2400 or 0, not 1200)"
-                    : "implausible";
-                warnings.push({
-                    source: sourceList,
-                    reason: `shifts for ${date.toDateString()} (${breakdown}) span ${spanHours}h with ${breakHours}h break — ${explanation}, skipped entirely, please verify against the original page`,
-                    category: "skipped_invalid",
-                    date: toLocalDateString(date),
-                });
-                continue;
-            }
-
-            const nCell = worksheet.getCell(`N${row}`);
-            const oCell = worksheet.getCell(`O${row}`);
-            const gCell = worksheet.getCell(`G${row}`);
-            setCell(nCell, start);
-            setCell(oCell, end);
-            setCell(gCell, breakHours);
-            writtenDates.push(date);
-
-            const remarkText = `${validShifts.length} shifts (${breakdown}) — treated as ${start}-${end} with ${breakHours}h break (meal time overridden from default), please verify`
-                + (anyGuessed ? " (includes a model-derived guess)" : "")
-                + (anyImplausible ? " (includes a shift with implausible 0h/24h+ duration)" : "");
-            setRemark(worksheet, row, sheetName, remarkText, true);
-            highlightCell(nCell);
-            highlightCell(oCell);
-            highlightCell(gCell);
+        const [y, m, d] = r.date.split("-").map(Number);
+        const date = new Date(y, m - 1, d);
+        const sheetName = sheetNameFor(date);
+        const worksheet = workbook.getWorksheet(sheetName);
+        if (!worksheet) {
             warnings.push({
-                source: sourceList,
-                reason: `${validShifts.length} shifts detected for ${date.toDateString()} (${breakdown}) — treated as single span ${start}-${end} with ${breakHours}h meal break, please verify`,
-                category: "flagged_review",
-                date: toLocalDateString(date),
+                source: r.source,
+                reason: `${date.toDateString()} falls outside the template's supported range (no sheet "${sheetName}")`,
+                category: "skipped_invalid",
+                date: r.date,
             });
+            continue;
         }
-    }
+        if (r.clockIn === null || r.clockOut === null) {
+            warnings.push({ source: r.source, reason: `${date.toDateString()}: missing start/end time, skipped`, category: "skipped_invalid", date: r.date });
+            continue;
+        }
 
-    for (const sheetName of sheetsWithRemarks) {
-        setCell(workbook.getWorksheet(sheetName)!.getCell(`${REMARKS_COL}1`), "Remarks");
+        const hours = shiftHours(r.clockIn, r.clockOut);
+        const lunchBreak = r.lunchBreakHours ?? 0;
+        if (hours <= 0 || hours >= MAX_DAILY_HOURS || lunchBreak < 0 || lunchBreak >= hours) {
+            warnings.push({
+                source: r.source,
+                reason: `${date.toDateString()}: ${r.clockIn}-${r.clockOut} with ${lunchBreak}h break (${hours}h span) is not a valid shift — skipped, please fix and regenerate`,
+                category: "skipped_invalid",
+                date: r.date,
+            });
+            continue;
+        }
+
+        const row = date.getDate() + 1; // row 2 = day 1, per template layout
+        const nCell = worksheet.getCell(`N${row}`);
+        const oCell = worksheet.getCell(`O${row}`);
+        const gCell = worksheet.getCell(`G${row}`);
+        setCell(nCell, r.clockIn);
+        setCell(oCell, r.clockOut);
+        setCell(gCell, lunchBreak);
+        writtenDates.push(date);
     }
 
     const arrayBuffer = await workbook.xlsx.writeBuffer();

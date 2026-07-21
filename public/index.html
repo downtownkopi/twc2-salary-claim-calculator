@@ -6,6 +6,18 @@
 <title>Timesheet → Wage Claim Calculator</title>
 <style>
   :root {
+    --bg: #f5f6f8;
+    --panel: #ffffff;
+    --border: #d8dbe0;
+    --text: #1a1d23;
+    --muted: #6b7280;
+    --accent: #2563eb;
+    --warn-bg: #fff4e0;
+    --warn-text: #8a5a06;
+    --ok: #1a7f37;
+    --err: #cf222e;
+  }
+  html[data-theme="dark"] {
     --bg: #0f1115;
     --panel: #171a21;
     --border: #2a2f3a;
@@ -27,6 +39,12 @@
     max-width: 1100px;
     margin: 0 auto;
   }
+  .theme-toggle-wrap { display: flex; justify-content: flex-end; max-width: 1100px; margin: 0 auto 8px; }
+  .theme-toggle-btn {
+    background: var(--panel); border: 1px solid var(--border); color: var(--text);
+    padding: 6px 12px; border-radius: 6px; font-size: 12px; cursor: pointer;
+  }
+  .theme-toggle-btn:hover { border-color: var(--accent); }
   .container { max-width: 720px; margin: 0 auto; }
   h1 { font-size: 20px; margin: 0 0 4px; }
   .sub { color: var(--muted); font-size: 13px; margin-bottom: 24px; }
@@ -85,59 +103,43 @@
   }
   .month-summary li { color: var(--muted); }
   .month-summary li.incomplete { color: var(--warn-text); }
-  .scan-output-link {
-    display: block;
-    margin-top: 12px;
-    font-size: 12px;
-    color: var(--accent);
-    text-decoration: none;
-  }
-  .scan-output-link:hover { text-decoration: underline; }
-  .warnings {
-    margin-top: 16px;
-    background: var(--warn-bg);
-    border: 1px solid #5a4522;
-    border-radius: 8px;
-    padding: 12px 16px;
-  }
-  .warnings h3 { margin: 0 0 8px; font-size: 13px; color: var(--warn-text); }
-  .warnings ul { margin: 0; padding-left: 18px; font-size: 12px; color: var(--warn-text); }
-  .warnings li { margin-bottom: 4px; }
-  .warning-group { margin-bottom: 10px; }
-  .warning-group:last-child { margin-bottom: 0; }
-  .warning-group summary {
-    cursor: pointer;
-    font-size: 12px;
-    font-weight: 600;
-    color: var(--warn-text);
-    margin-bottom: 6px;
-  }
-  .warning-group summary .count { color: var(--muted); font-weight: 400; }
-  .warning-group ul { margin-top: 6px; }
   .page-reviews { margin-top: 32px; }
   .page-reviews h2 { font-size: 16px; margin: 0 0 4px; }
   .page-reviews .sub { margin-bottom: 16px; }
   .page-review-row {
     display: flex;
-    gap: 16px;
+    flex-direction: column;
+    align-items: center;
+    gap: 12px;
     margin-bottom: 20px;
     border: 1px solid var(--border);
     border-radius: 8px;
     padding: 16px;
     background: var(--panel);
-    align-items: flex-start;
   }
-  .page-review-image { flex: 0 0 45%; max-width: 480px; }
+  .page-review-image { width: 100%; }
   .page-review-image img { width: 100%; border-radius: 6px; display: block; }
-  .page-review-details { flex: 1; min-width: 0; }
+  .page-review-details { width: 100%; }
   .page-review-source { font-size: 12px; color: var(--muted); margin-bottom: 8px; word-break: break-all; }
-  .page-review-entries { list-style: none; margin: 0 0 10px; padding: 0; font-size: 13px; }
-  .page-review-entries li { padding: 4px 0; border-bottom: 1px solid var(--border); }
-  .page-review-entries li:last-child { border-bottom: none; }
-  .page-review-entries .guessed { color: var(--warn-text); }
-  .page-review-entries .empty { color: var(--muted); font-style: italic; }
-  .page-review-warnings { margin: 0; padding-left: 18px; font-size: 12px; color: var(--warn-text); }
-  .page-review-warnings li { margin-bottom: 4px; }
+  .inline-review-list { list-style: none; margin: 0 0 4px; padding: 0; font-size: 12px; }
+  .inline-review-row {
+    display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px;
+    padding: 8px 4px; border-bottom: 1px solid var(--border);
+  }
+  .inline-review-list .empty { padding: 4px 0; color: var(--muted); font-style: italic; }
+  .inline-review-row:last-child { border-bottom: none; }
+  .inline-review-row.flagged-row { background: rgba(240, 185, 85, 0.08); }
+  .inline-review-row .field-group { display: inline-flex; align-items: center; gap: 5px; }
+  .inline-review-row label { color: var(--muted); font-size: 11px; }
+  .inline-review-row input {
+    background: var(--bg); border: 1px solid var(--border); color: var(--text);
+    padding: 4px 5px; border-radius: 4px; font-size: 12px; box-sizing: border-box;
+  }
+  .inline-review-row input[type="date"] { width: 118px; }
+  .inline-review-row input[type="time"] { width: 110px; }
+  .inline-review-row input[type="number"] { width: 52px; }
+  .inline-review-row input:disabled { opacity: 0.4; }
+  .inline-review-row .row-notes { flex-basis: 100%; font-size: 11px; color: var(--warn-text); }
   .spinner {
     display: inline-block; width: 12px; height: 12px;
     border: 2px solid var(--border); border-top-color: var(--accent);
@@ -145,18 +147,41 @@
     vertical-align: middle;
   }
   @keyframes spin { to { transform: rotate(360deg); } }
+
+  .row-delete-btn {
+    background: transparent; border: 1px solid var(--border); color: var(--muted);
+    padding: 2px 6px; border-radius: 4px; font-size: 13px; line-height: 1.4; cursor: pointer;
+  }
+  .row-delete-btn:hover { color: var(--err); border-color: var(--err); }
+  .extra-days-section { margin-top: 28px; padding-top: 20px; border-top: 1px solid var(--border); }
+  .extra-days-section h3 { font-size: 15px; margin: 0 0 4px; }
+  .review-hint { font-size: 12px; color: var(--muted); margin: 6px 0 12px; }
+  .extra-rows-wrap {
+    border: 1px solid var(--border); border-radius: 8px; padding: 12px 16px; background: var(--panel);
+  }
+  .review-actions { display: flex; align-items: center; gap: 12px; margin-top: 12px; }
+  .add-day-btn {
+    background: var(--panel); border: 1px solid var(--border); color: var(--text);
+    padding: 8px 14px; border-radius: 6px; font-size: 13px; font-weight: 400; cursor: pointer;
+  }
+  .add-day-btn:hover { border-color: var(--accent); }
+  .generate-btn { margin-left: auto; }
 </style>
 </head>
 <body>
 
+<div class="theme-toggle-wrap">
+  <button type="button" class="theme-toggle-btn" id="themeToggleBtn">🌙 Dark mode</button>
+</div>
+
 <div class="container">
 <h1>Timesheet → Wage Claim Calculator</h1>
-<div class="sub">Upload one worker's handwritten timesheet PDFs (one or more months). Each page is read by Qwen and the hours worked get filled into calculation.xltx, ready to download.</div>
+<div class="sub">Upload one worker's timesheets — PDFs or photos (jpg/png), one or more months. Each page is read by Qwen, then you review and correct the detected hours before generating the calculation.xltx spreadsheet.</div>
 
 <form id="form">
   <div class="field">
-    <label for="pdfs">Timesheet PDFs</label>
-    <input type="file" id="pdfs" name="pdfs" accept="application/pdf" multiple required>
+    <label for="pdfs">Timesheet files (PDF or photo)</label>
+    <input type="file" id="pdfs" name="pdfs" accept="application/pdf,image/*" multiple required>
     <div class="file-list" id="fileList"></div>
   </div>
 
@@ -173,44 +198,61 @@
 
   <div class="status" id="status"></div>
   <ul class="month-summary" id="monthSummary" style="display:none"></ul>
-  <a href="#" id="scanOutputLink" class="scan-output-link" style="display:none">Download scan output (JSON) — every entry with its exact source, for debugging</a>
-  <div class="warnings" id="warnings" style="display:none">
-    <h3>General warnings</h3>
-    <div class="file-list" style="margin-bottom:8px">Not tied to a specific page — e.g. a day nothing on any page accounted for, or a file that couldn't be read. Page-specific warnings appear alongside their page below.</div>
-    <div id="warningGroups"></div>
-  </div>
 </form>
 </div>
 
 <div class="page-reviews" id="pageReviews" style="display:none">
   <h2>Page-by-page review</h2>
-  <div class="sub">Compare each source page against what was extracted from it.</div>
+  <div class="sub">Every date's Start/End/Lunch is editable right beside its source page — fix anything the scan got wrong, remove a row that shouldn't be there, or add a missing day below. Rows highlighted yellow were flagged by the scan (a guess, a multi-shift day, or an implausible reading) and are worth a closer look. Nothing is written to the spreadsheet until you click Generate.</div>
   <div id="pageReviewList"></div>
+
+  <div class="extra-days-section">
+    <h3>Add a missing day</h3>
+    <div class="review-hint">For a date the scan didn't pick up on any page at all.</div>
+    <div class="extra-rows-wrap">
+      <ul class="inline-review-list" id="extraRowsList"></ul>
+    </div>
+    <div class="review-actions">
+      <button type="button" class="add-day-btn" id="addDayBtn">+ Add day</button>
+      <button type="button" class="generate-btn" id="generateBtn">Generate Excel</button>
+    </div>
+    <div class="status" id="generateStatus"></div>
+  </div>
 </div>
 
 <script>
+// Light by default — dark mode is opt-in and remembered per-browser via localStorage.
+const themeToggleBtn = document.getElementById('themeToggleBtn');
+function applyTheme(theme) {
+  if (theme === 'dark') {
+    document.documentElement.setAttribute('data-theme', 'dark');
+    themeToggleBtn.textContent = '☀️ Light mode';
+  } else {
+    document.documentElement.removeAttribute('data-theme');
+    themeToggleBtn.textContent = '🌙 Dark mode';
+  }
+}
+applyTheme(localStorage.getItem('theme') === 'dark' ? 'dark' : 'light');
+themeToggleBtn.addEventListener('click', () => {
+  const next = document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+  localStorage.setItem('theme', next);
+  applyTheme(next);
+});
+
 const form = document.getElementById('form');
 const pdfsInput = document.getElementById('pdfs');
 const fileList = document.getElementById('fileList');
 const submitBtn = document.getElementById('submitBtn');
 const statusEl = document.getElementById('status');
-const warningsEl = document.getElementById('warnings');
-const warningGroups = document.getElementById('warningGroups');
 
-// Order = roughly most-actionable-first. Labels match lib/xlsx.ts's WarningCategory values.
-const WARNING_CATEGORY_ORDER = [
-  { key: 'dropped_disagreement', label: 'Dropped — conflicting reads' },
-  { key: 'missing_data', label: 'Missing — no data found' },
-  { key: 'flagged_review', label: 'Written but flagged for review' },
-  { key: 'skipped_invalid', label: 'Skipped — invalid data' },
-  { key: 'scan_quality', label: 'Scan quality issues' },
-  { key: 'system', label: 'File / system errors' },
-];
 const monthSummaryEl = document.getElementById('monthSummary');
-const scanOutputLink = document.getElementById('scanOutputLink');
 const pageReviewsEl = document.getElementById('pageReviews');
 const pageReviewList = document.getElementById('pageReviewList');
-let scanOutputBlobUrl = null;
+const extraRowsList = document.getElementById('extraRowsList');
+const addDayBtn = document.getElementById('addDayBtn');
+const generateBtn = document.getElementById('generateBtn');
+const generateStatusEl = document.getElementById('generateStatus');
+let currentYear = null; // captured at scan time, reused when generating so the two stay in sync
 
 pdfsInput.addEventListener('change', () => {
   const names = Array.from(pdfsInput.files).map(f => f.name);
@@ -219,22 +261,22 @@ pdfsInput.addEventListener('change', () => {
 
 form.addEventListener('submit', async (e) => {
   e.preventDefault();
-  warningsEl.style.display = 'none';
-  warningGroups.innerHTML = '';
   monthSummaryEl.style.display = 'none';
   monthSummaryEl.innerHTML = '';
-  scanOutputLink.style.display = 'none';
   pageReviewsEl.style.display = 'none';
   pageReviewList.innerHTML = '';
-  if (scanOutputBlobUrl) { URL.revokeObjectURL(scanOutputBlobUrl); scanOutputBlobUrl = null; }
+  extraRowsList.innerHTML = '';
+  generateStatusEl.className = 'status';
+  generateStatusEl.textContent = '';
 
   const formData = new FormData();
   for (const file of pdfsInput.files) formData.append('pdfs', file);
-  formData.append('year', document.getElementById('year').value);
+  currentYear = document.getElementById('year').value;
+  formData.append('year', currentYear);
 
   submitBtn.disabled = true;
   statusEl.className = 'status loading';
-  statusEl.innerHTML = '<span class="spinner"></span>Scanning pages and building claim… this can take a while for multiple PDFs.';
+  statusEl.innerHTML = '<span class="spinner"></span>Scanning pages… this can take a while for multiple PDFs.';
 
   try {
     const res = await fetch('/api/process', { method: 'POST', body: formData });
@@ -245,7 +287,7 @@ form.addEventListener('submit', async (e) => {
     }
 
     statusEl.className = 'status success';
-    statusEl.textContent = `Done in ${formatDuration(data.durationMs)}${formatCost(data.costUsd)}`;
+    statusEl.textContent = `Scan done in ${formatDuration(data.durationMs)}${formatCost(data.costUsd)} — review the rows below, then generate the spreadsheet.`;
 
     if (data.monthSummary && data.monthSummary.length > 0) {
       monthSummaryEl.style.display = 'block';
@@ -254,24 +296,75 @@ form.addEventListener('submit', async (e) => {
         .join('');
     }
 
-    if (data.warnings && data.warnings.length > 0) {
-      warningsEl.style.display = 'block';
-      warningGroups.innerHTML = renderWarningGroups(data.warnings);
-    }
-
-    if (data.scanOutput) {
-      const scanBlob = new Blob([JSON.stringify(data.scanOutput, null, 2)], { type: 'application/json' });
-      scanOutputBlobUrl = URL.createObjectURL(scanBlob);
-      scanOutputLink.href = scanOutputBlobUrl;
-      scanOutputLink.download = data.filename.replace(/\.xlsx$/, '') + '-scan-output.json';
-      scanOutputLink.style.display = 'block';
-    }
-
+    // Shown even when zero pages came back (e.g. every file failed to read) so "Add a missing
+    // day" and "Generate Excel" — nested inside this section, at the bottom of the discovered
+    // pages — always stay reachable after a scan completes.
+    pageReviewsEl.style.display = 'block';
     if (data.pageReviews && data.pageReviews.length > 0) {
-      pageReviewsEl.style.display = 'block';
       pageReviewList.innerHTML = data.pageReviews.map(renderPageReview).join('');
+      // Each page card was rendered with an empty placeholder list (see renderPageReview) — now
+      // that they're in the DOM, populate each with the reviewRows whose `source` traces back to
+      // that page, so the editable Start/End/Lunch inputs sit right beside their source image.
+      // Matched by position (Nth list <-> Nth pageReviews entry, same render order) rather than a
+      // CSS attribute selector on the source string, which can contain characters (quotes,
+      // parens) that aren't safe to drop straight into a selector.
+      const reviewRows = data.reviewRows || [];
+      const lists = pageReviewList.querySelectorAll('.review-target-list');
+      data.pageReviews.forEach((page, idx) => {
+        const container = lists[idx];
+        if (!container) return;
+        // A row's `source` can be a comma-joined list (e.g. a multi-shift day whose shifts came
+        // from different bands of the same page) — split-and-match avoids a prefix false-positive
+        // like "file.pdf p1" wrongly matching a row actually sourced from "file.pdf p10".
+        const matching = reviewRows.filter(r => r.source.split(', ').includes(page.source));
+        if (matching.length === 0) {
+          container.innerHTML = '<li class="empty">No entries extracted from this page</li>';
+        } else {
+          for (const row of matching) appendReviewRow(container, row);
+        }
+      });
     }
+  } catch (err) {
+    statusEl.className = 'status error';
+    statusEl.textContent = 'Error: ' + err.message;
+  } finally {
+    submitBtn.disabled = false;
+  }
+});
 
+addDayBtn.addEventListener('click', () => {
+  appendReviewRow(extraRowsList, { date: '', clockIn: null, clockOut: null, lunchBreakHours: 1, restDay: false, guessed: false, notes: null, source: 'manually added' });
+});
+
+generateBtn.addEventListener('click', async () => {
+  const rows = collectAllReviewRows();
+  if (rows.length === 0) {
+    generateStatusEl.className = 'status error';
+    generateStatusEl.textContent = 'No rows to generate — add at least one day first.';
+    return;
+  }
+  generateBtn.disabled = true;
+  generateStatusEl.className = 'status loading';
+  generateStatusEl.innerHTML = '<span class="spinner"></span>Generating spreadsheet…';
+
+  try {
+    const res = await fetch('/api/generate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ year: Number(currentYear), rows }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || `Server returned ${res.status}`);
+
+    generateStatusEl.className = 'status success';
+    generateStatusEl.textContent = `Generated — ${data.entriesWritten} day(s) written.`;
+
+    if (data.monthSummary && data.monthSummary.length > 0) {
+      monthSummaryEl.style.display = 'block';
+      monthSummaryEl.innerHTML = data.monthSummary
+        .map(m => `<li class="${m.filled < m.total ? 'incomplete' : ''}">- ${escapeHtml(m.label)} ${m.filled}/${m.total} day(s) filled</li>`)
+        .join('');
+    }
     const bytes = Uint8Array.from(atob(data.file), c => c.charCodeAt(0));
     const blob = new Blob([bytes], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
     const url = URL.createObjectURL(blob);
@@ -283,58 +376,103 @@ form.addEventListener('submit', async (e) => {
     a.remove();
     URL.revokeObjectURL(url);
   } catch (err) {
-    statusEl.className = 'status error';
-    statusEl.textContent = 'Error: ' + err.message;
+    generateStatusEl.className = 'status error';
+    generateStatusEl.textContent = 'Error: ' + err.message;
   } finally {
-    submitBtn.disabled = false;
+    generateBtn.disabled = false;
   }
 });
 
-function renderWarningGroups(warnings) {
-  const byCategory = new Map();
-  for (const w of warnings) {
-    const key = w.category || 'other';
-    if (!byCategory.has(key)) byCategory.set(key, []);
-    byCategory.get(key).push(w);
-  }
+// HHMM (e.g. 800, 1730) <-> <input type="time"> value ("08:00", "17:30"). A midnight-ending
+// overnight shift (the 2400 sentinel elsewhere in this codebase) round-trips fine as plain "00:00"
+// here — the hours calculation already wraps correctly for either representation, so the edit UI
+// doesn't need to special-case it.
+function hhmmToTimeInput(hhmm) {
+  if (hhmm === null || hhmm === undefined) return '';
+  const h = Math.floor(hhmm / 100) % 24;
+  const m = hhmm % 100;
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+}
+function timeInputToHHMM(str) {
+  if (!str) return null;
+  const [h, m] = str.split(':').map(Number);
+  return h * 100 + m;
+}
 
-  const order = [...WARNING_CATEGORY_ORDER, { key: 'other', label: 'Other' }];
-  return order
-    .filter(({ key }) => byCategory.has(key))
-    .map(({ key, label }) => {
-      const items = byCategory.get(key);
-      const list = items.map(w => `<li><b>${escapeHtml(w.source)}:</b> ${escapeHtml(w.reason)}</li>`).join('');
-      return `<details class="warning-group" open>
-        <summary>${escapeHtml(label)} <span class="count">(${items.length})</span></summary>
-        <ul>${list}</ul>
-      </details>`;
-    })
-    .join('');
+// Appends one editable date row into `container` — either a page card's inline-review-list (see
+// renderPageReview) or the standalone "add a missing day" list at the bottom. `.review-row` is
+// the shared marker collectAllReviewRows() uses to gather every row on the page regardless of
+// which list it lives in.
+function appendReviewRow(container, row) {
+  const li = document.createElement('li');
+  li.className = 'inline-review-row review-row' + (row.guessed ? ' flagged-row' : '');
+  // Carried through unedited so a flagged row the reviewer doesn't touch still gets highlighted
+  // in the final spreadsheet as a fallback — the browser review is the primary check, but this
+  // keeps a safety net for anything skimmed past.
+  li.dataset.guessed = row.guessed ? '1' : '';
+  li.dataset.notes = row.notes || '';
+  li.innerHTML = `
+    <div class="field-group"><input type="date" class="f-date" value="${escapeHtml(row.date)}"></div>
+    <div class="field-group"><label>In</label><input type="time" class="f-start" value="${hhmmToTimeInput(row.clockIn)}" ${row.restDay ? 'disabled' : ''}></div>
+    <div class="field-group"><label>Out</label><input type="time" class="f-end" value="${hhmmToTimeInput(row.clockOut)}" ${row.restDay ? 'disabled' : ''}></div>
+    <div class="field-group"><label>Lunch</label><input type="number" step="0.25" min="0" class="f-lunch" value="${row.lunchBreakHours ?? ''}" ${row.restDay ? 'disabled' : ''}></div>
+    <div class="field-group"><label><input type="checkbox" class="f-rest" ${row.restDay ? 'checked' : ''}> Rest day</label></div>
+    <button type="button" class="row-delete-btn" title="Remove" aria-label="Remove">🗑</button>
+    ${row.notes ? `<div class="row-notes">${escapeHtml(row.notes)}</div>` : ''}
+  `;
+  li.querySelector('.f-rest').addEventListener('change', (e) => {
+    const disabled = e.target.checked;
+    li.querySelector('.f-start').disabled = disabled;
+    li.querySelector('.f-end').disabled = disabled;
+    li.querySelector('.f-lunch').disabled = disabled;
+  });
+  li.querySelector('.row-delete-btn').addEventListener('click', () => li.remove());
+  container.appendChild(li);
+}
+
+function collectAllReviewRows() {
+  const rows = [];
+  for (const li of document.querySelectorAll('.review-row')) {
+    const date = li.querySelector('.f-date').value;
+    if (!date) continue; // a row with no date can't be written anywhere — skip rather than error
+    const restDay = li.querySelector('.f-rest').checked;
+    rows.push({
+      date,
+      clockIn: restDay ? null : timeInputToHHMM(li.querySelector('.f-start').value),
+      clockOut: restDay ? null : timeInputToHHMM(li.querySelector('.f-end').value),
+      lunchBreakHours: restDay ? null : (li.querySelector('.f-lunch').value === '' ? null : Number(li.querySelector('.f-lunch').value)),
+      restDay,
+      guessed: li.dataset.guessed === '1',
+      notes: li.dataset.notes || null,
+      source: 'reviewed',
+    });
+  }
+  return rows;
 }
 
 function renderPageReview(page) {
-  const entriesHtml = page.entries.length === 0
-    ? '<li class="empty">No entries extracted from this page</li>'
-    : page.entries.map(e => {
-        if (e.type === 'rest_day') return `<li>${escapeHtml(e.date)} — rest day</li>`;
-        const clockIn = String(e.clockIn).padStart(4, '0');
-        const clockOut = String(e.clockOut).padStart(4, '0');
-        const cls = e.guessed ? ' class="guessed"' : '';
-        return `<li${cls}>${escapeHtml(e.date)} — ${clockIn} to ${clockOut}${e.guessed ? ' (flagged)' : ''}</li>`;
-      }).join('');
+  // hours_worked entries have no clock in/out at all (lib/ocr.ts's "hours_total" data model) —
+  // there's no Start/End to make editable, and they're already flagged elsewhere as not written
+  // to the spreadsheet, so they're shown here as plain read-only context rather than a row in the
+  // editable list below.
+  const hoursOnlyHtml = page.entries
+    .filter(e => e.type === 'hours_worked')
+    .map(e => {
+      const ot = e.otHours ? ` + ${e.otHours}h OT` : '';
+      return `<li class="empty">${escapeHtml(e.date)} — ${e.hoursWorked}h worked${ot} (no clock times on page — not written to spreadsheet)</li>`;
+    })
+    .join('');
 
-  const warningsHtml = page.warnings.length === 0 ? '' : `
-    <ul class="page-review-warnings">
-      ${page.warnings.map(w => `<li>${escapeHtml(w.reason)}</li>`).join('')}
-    </ul>`;
-
+  // The <ul class="inline-review-list"> is left empty here — populated right after this page's
+  // card lands in the DOM (see the /api/process success handler) with the reviewRows that trace
+  // back to this exact page, so the editable Start/End/Lunch inputs sit right beside the image.
   return `
     <div class="page-review-row">
       <div class="page-review-image"><img src="data:image/png;base64,${page.image}" alt="${escapeHtml(page.source)}"></div>
       <div class="page-review-details">
         <div class="page-review-source">${escapeHtml(page.source)}</div>
-        <ul class="page-review-entries">${entriesHtml}</ul>
-        ${warningsHtml}
+        ${hoursOnlyHtml ? `<ul class="inline-review-list">${hoursOnlyHtml}</ul>` : ''}
+        <ul class="inline-review-list review-target-list"></ul>
       </div>
     </div>`;
 }

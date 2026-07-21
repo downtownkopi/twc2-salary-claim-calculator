@@ -5,5 +5,7 @@ node_modules/
 test.pdf
 output.json
 *.pdf
+Timecards/
 
 .claude/settings.local.json
+.DS_Store

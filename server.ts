@@ -1,8 +1,8 @@
 import express from "express";
 import multer from "multer";
 import * as path from "path";
-import { pdfToImages, scanPageImage, extractJsonBlock, cropIntoBands, extractPageContext, verifyDatesOnPage, resizeForDisplay } from "./lib/ocr";
-import { fillTimesheet, MONTH_ABBR, type TimeEntry, type FillWarning, type RestDay } from "./lib/xlsx";
+import { pdfToImages, imageToPages, scanPageImage, extractJsonBlock, cropIntoBands, extractPageContext, verifyDatesOnPage, resizeForDisplay, type PageDataModel } from "./lib/ocr";
+import { buildReviewRows, fillTimesheetFromRows, MONTH_ABBR, type TimeEntry, type FillWarning, type RestDay, type ReviewRow } from "./lib/xlsx";
 import { reconcileAttempts, type ParsedEntry } from "./lib/reconcile";
 
 const TEMPLATE_PATH = path.join(__dirname, "calculation.xltx");
@@ -54,12 +54,33 @@ process.on("uncaughtException", (err) => {
 // Handwritten years are frequently misread by OCR (e.g. "2023" instead of "2026"), and since
 // this template only has sheets for SUPPORTED_YEARS, we don't trust the model's year at all —
 // the caller picks it explicitly, and we only ask the model for day/month/clock times.
-function buildPrompt(year: number, pageContext: string): string {
-    return `This is one page of a handwritten daily timesheet, used to fill a wage-claim spreadsheet for the year ${year}.
+//
+// A real-world upload batch turned out to span far more variety than "one row per day, clock
+// in/out times, handwritten" — see the format survey behind this revision: two-half-month
+// side-by-side tables, weekly calendar grids, free-form diagonal lists, punch cards, typed
+// (non-handwritten) sheets, mixed English/Chinese/Bengali, and — critically — pages that record
+// only a total hours-worked(+OT) figure per day with NO clock times anywhere. The prompt below no
+// longer assumes handwriting or a single table shape, and adds hoursWorked/otHours as the
+// alternative to `times` for that last case. dataModelHint comes from extractPageContext's cheap
+// full-page classification pass — a hint to lean on, not a hard rule, since a single page can
+// occasionally mix both models.
+function buildPrompt(year: number, pageContext: string, dataModelHint: PageDataModel): string {
+    const hintLine =
+        dataModelHint === "hours_total"
+            ? "An earlier pass guessed this page records only total hours worked (and maybe separate overtime hours) per day, with no clock in/out times — but verify against what you actually see; if clock times ARE visible on this image, report those instead (see below)."
+            : dataModelHint === "clock_times"
+                ? "An earlier pass guessed this page records actual clock in/out times per day — but verify against what you actually see."
+                : "An earlier pass could not tell what this page records per day — judge purely from what you see on this image.";
+
+    return `This is one page of a worker's daily time/attendance record, used to fill a wage-claim spreadsheet for the year ${year}. It may be handwritten OR typed/computer-generated, in English, Chinese, Bengali, or a mix, and may use any layout — a simple row-per-day table, two half-months side by side on one page, a weekly calendar grid (day-of-week columns), a free-form list, a punch card, etc. Read whatever is actually in front of you rather than assuming one fixed shape.
+
+The printed column labels on a page's template may NOT match what's actually written in that column — the same printed template is often reused inconsistently by different workers (e.g. a column printed "Amount"/support-in-currency might actually contain a clock-out time, not money; a column printed "Site" might contain a month name instead). Always interpret each cell by what is ACTUALLY WRITTEN there, never by trusting the printed label alone.
 
 Page-level context (extracted separately from the full page before this image was cropped, since this image you're looking at now may be only part of the page and might not show a header/title that exists elsewhere on the page): ${pageContext || "none found"}. If this names a specific month, treat it as authoritative for every date row you report below — use that month even if this particular cropped image doesn't show the header itself, UNLESS a row on THIS image explicitly and clearly indicates a different month.
 
-For each calendar date row on this page, your job is simply to list EVERY clock time value written on that row, left to right, in the order they appear — do NOT try to decide how many shifts they represent or group them into clock-in/clock-out pairs yourself. That grouping happens automatically downstream from the count and order of values you report, so your only job is accurate, complete enumeration.
+${hintLine}
+
+For each calendar date row on this page, if actual clock in/out times are shown, your job is simply to list EVERY clock time value written on that row, left to right, in the order they appear — do NOT try to decide how many shifts they represent or group them into clock-in/clock-out pairs yourself. That grouping happens automatically downstream from the count and order of values you report, so your only job is accurate, complete enumeration.
 
 - A normal day with one shift has 2 values: [clock_in, clock_out].
 - A split day with a morning shift and an evening shift has 4 values: [in1, out1, in2, out2].
@@ -71,6 +92,10 @@ CRITICAL — always scan the FULL WIDTH of a row before deciding it only has 2 v
 Watch out for the 12am/12pm ambiguity — it's a common mistake. 12pm = noon = 1200. 12am = midnight = 0 (or 2400 if it's the last value of the day, ending a shift that started earlier). These are NOT the same time, even though both are written as "12". Do not convert 12am the same way you'd convert 12pm.
 
 Worked example of this exact mistake: a row reading "6am to 12pm, 6pm to 12am" (two shifts, a morning block and an evening block) must be reported as [600, 1200, 1800, 2400] — NOT [600, 1200, 1800, 1200]. The second "12" is 12am (midnight), ending the evening shift, and is a completely different time from the first "12" (12pm/noon) even though both look like "12" at a glance. If your final value for a row matches an earlier value in that same row only because you converted both "12"s the same way, you have made this exact mistake — re-examine whether the later one is actually 12am.
+
+Watch out for a bare "NN/NN" or "NN-NN" shorthand (e.g. "08/20") written in a non-Date column (e.g. one printed "Amount" or "Qty") on a work-hours page — this is a common way workers write clock-in/clock-out as just the HOUR, no minutes, no am/pm marker. It is NOT a calendar date, even though it superficially looks like MM/DD — a real date belongs in the Date column, which this page already has separately, so a second date-like value elsewhere on the same row would be redundant and wrong.
+
+Worked example of this exact case: a row shows "08/20" in a column printed "Amount", and this page is a time/wage record (not a payment ledger). The correct output for that row is times: [800, 2000] — 8:00am to 8:00pm — filled into the times array exactly like any other clock time, per the schema below. Do NOT second-guess this into times: null because the column's printed label says "Amount" rather than "time" — you already know from the instruction above that printed labels on this page's template can be wrong, and this is that exact situation. If you find yourself reasoning through this shorthand and concluding it represents clock hours, your times array for that row MUST reflect that conclusion — do not talk yourself back into null afterward.
 
 Note: an overnight-spanning value (a time that's numerically smaller than the one before it, e.g. a shift running from 2200 to 0600) is expected and handled correctly downstream — do not try to "fix" it or reorder the values, just report them in the order they appear on the page.
 
@@ -88,15 +113,19 @@ NEVER guess or invent time values, for any reason. If a row's clock times are sm
 
 If a date is explicitly marked as a rest day, day off, public holiday, or similar, still output a row for it — set rest_day to true and times to null. Do NOT guess times for a confirmed rest day.
 
+Some pages record only a TOTAL number of hours worked per day (and sometimes a separate overtime figure), with NO clock in/out time anywhere on that row — e.g. a row just saying "8" or "8 + 2 OT" instead of "8:00-17:00". When this is genuinely what's on the page for a date (no clock times present at all for it), do NOT invent clock times to fill the times field — instead leave times null and report hoursWorked (a number, e.g. 8 or 10.5) and otHours (a number, or null if no overtime shown/not applicable) for that date. Only use hoursWorked/otHours when clock times are genuinely absent for that date — if actual clock times ARE present on the row, always report them via times as instructed above instead, even if a total-hours figure also happens to sit alongside them (times take priority whenever both exist). If a date's row shows only a bare presence mark (e.g. a checkmark or tally mark) with nothing that tells you a duration or a clock time, leave times, hoursWorked, and otHours all null and say so briefly in notes — do not invent a duration from a presence mark alone.
+
 For every date row visible on this page, output:
 - day: day of month, integer 1-31
 - month: month, integer 1-12. Use the page-level context above if it names a month, unless this specific row clearly indicates otherwise (this page is for the year ${year} — ignore any year written on the page, it is not needed)
-- times: array of every clock time value on this row as described above, in left-to-right order, or null if illegible/not determinable/rest day. Length should normally be even (2, 4, 6...) since shifts come in in/out pairs.
+- times: array of every clock time value on this row as described above, in left-to-right order, or null if illegible/not determinable/rest day/hours-only. Length should normally be even (2, 4, 6...) since shifts come in in/out pairs.
+- hoursWorked: total hours worked that day as a number (e.g. 8, 10.5), ONLY when times is null because no clock times exist for this date and a total-hours figure is genuinely shown instead. null otherwise (including whenever times is populated).
+- otHours: overtime hours as a number, alongside hoursWorked when shown. null if not applicable/not shown, or whenever hoursWorked itself is null.
 - guessed: always false. You must never guess or invent values (see above) — this field exists only for schema consistency.
 - rest_day: true if this date is explicitly marked as a rest day/off/holiday on the page, false otherwise
-- notes: null normally. If times is null, OR anything about this row doesn't make sense (e.g. an odd number of values, unclear handwriting, unusual format, implied 24h+ span), explain briefly here so a human can review.
+- notes: null normally. If times/hoursWorked are null, OR anything about this row doesn't make sense (e.g. an odd number of values, unclear handwriting, unusual format, implied 24h+ span), explain briefly here so a human can review.
 
-Output ONLY a valid JSON array of {day, month, times, guessed, rest_day, notes} objects for this page. No other text, no markdown fences.`;
+Output ONLY a valid JSON array of {day, month, times, hoursWorked, otHours, guessed, rest_day, notes} objects for this page. No other text, no markdown fences.`;
 }
 
 const app = express();
@@ -116,6 +145,11 @@ app.post("/api/process", upload.array("pdfs", 10), async (req, res) => {
 
     const timeEntries: TimeEntry[] = [];
     const restDays: RestDay[] = [];
+    // Days where the source page recorded only a total hours-worked(+OT) figure, no clock times
+    // (lib/ocr.ts's PageDataModel "hours_total") — fillTimesheet's N/O columns need actual clock
+    // times, so these can't be written to the spreadsheet yet. Kept here purely so the raw scan
+    // output / side-by-side review UI can show what was extracted, instead of silently vanishing.
+    const hoursEntries: { date: Date; hoursWorked: number; otHours: number | null; source: string; guessed: boolean }[] = [];
     const warnings: FillWarning[] = [];
     let totalCostUsd = 0; // sums OpenRouter's own reported usage.cost across every call this request makes
     // Display-only (downscaled) copy of every page, for the side-by-side review UI — keyed by the
@@ -123,11 +157,14 @@ app.post("/api/process", upload.array("pdfs", 10), async (req, res) => {
     const pageImages: { source: string; image: string }[] = [];
 
     for (const file of files) {
+        // Real-world timesheets are frequently a phone photo (jpg/png), not a PDF — branch on the
+        // upload's mimetype rather than assuming every file is a PDF.
+        const isImage = file.mimetype.startsWith("image/");
         let images: string[];
         try {
-            images = await pdfToImages(file.buffer);
+            images = isImage ? await imageToPages(file.buffer) : await pdfToImages(file.buffer);
         } catch (e: any) {
-            warnings.push({ source: file.originalname, reason: `could not read PDF: ${e.message}`, category: "system" });
+            warnings.push({ source: file.originalname, reason: `could not read ${isImage ? "image" : "PDF"}: ${e.message}`, category: "system" });
             continue;
         }
 
@@ -138,16 +175,28 @@ app.post("/api/process", upload.array("pdfs", 10), async (req, res) => {
             // Read the full, uncropped page once for page-level context (e.g. a month header)
             // before cropping into bands — a header can sit anywhere on the page depending on
             // the source layout, and once cropped into bands, whichever band doesn't happen to
-            // include it would otherwise have no way to know what month its rows belong to.
+            // include it would otherwise have no way to know what month its rows belong to. Also
+            // does two cheap classifications on the same call (lib/ocr.ts): whether this page is
+            // a timesheet at all, and which data model it seems to use.
             let pageContext = "";
+            let dataModel: PageDataModel = "unclear";
             try {
                 const result = await extractPageContext(images[i]);
                 pageContext = result.context;
+                dataModel = result.dataModel;
                 totalCostUsd += result.cost;
+                if (!result.isTimesheet) {
+                    warnings.push({
+                        source,
+                        reason: `page does not appear to be a work time/attendance record${pageContext ? ` (${pageContext})` : ""} — skipped, no scan attempts made`,
+                        category: "system",
+                    });
+                    continue;
+                }
             } catch (e: any) {
                 warnings.push({ source, reason: `could not extract page-level context (e.g. month header): ${e.message} — bands will rely on per-row reading only`, category: "scan_quality" });
             }
-            const prompt = buildPrompt(year, pageContext);
+            const prompt = buildPrompt(year, pageContext, dataModel);
 
             const bands = await cropIntoBands(images[i], BANDS_PER_PAGE);
 
@@ -290,6 +339,27 @@ app.post("/api/process", upload.array("pdfs", 10), async (req, res) => {
                     continue;
                 }
                 const entryDate = `${year}-${String(entry.month).padStart(2, "0")}-${String(entry.day).padStart(2, "0")}`;
+                if ((!entry.times || entry.times.length === 0) && entry.hoursWorked !== null) {
+                    // hours_total data model: no clock times exist for this date, only a total
+                    // hours(+OT) figure — can't feed fillTimesheet's clock-time columns, so this
+                    // is captured for the review UI/JSON but explicitly flagged as not written to
+                    // the spreadsheet, rather than either fabricating clock times or silently
+                    // dropping genuinely-read data.
+                    hoursEntries.push({
+                        date: new Date(year, entry.month - 1, entry.day),
+                        hoursWorked: entry.hoursWorked,
+                        otHours: entry.otHours,
+                        source,
+                        guessed: entry.guessed === true,
+                    });
+                    warnings.push({
+                        source,
+                        reason: `day=${entry.day} month=${entry.month}: only a total-hours figure was found (${entry.hoursWorked}h${entry.otHours ? ` + ${entry.otHours}h OT` : ""}), no clock in/out times — NOT written to the spreadsheet (needs clock times), please enter this day manually`,
+                        category: "flagged_review",
+                        date: entryDate,
+                    });
+                    continue;
+                }
                 if (!entry.times || entry.times.length === 0) {
                     warnings.push({
                         source,
@@ -339,37 +409,26 @@ app.post("/api/process", upload.array("pdfs", 10), async (req, res) => {
     // actually showed (e.g. a day before the earliest page any file covered) — a wrong entry on
     // a wage claim is worse than a visible, honest gap.
 
-    let buffer: Buffer;
-    let fillWarnings: FillWarning[];
-    let writtenDates: Date[];
-    try {
-        ({ buffer, warnings: fillWarnings, writtenDates } = await fillTimesheet(TEMPLATE_PATH, timeEntries));
-    } catch (e: any) {
-        return res.status(500).json({ error: `failed to fill template: ${e.message}` });
-    }
+    // One row per calendar date (multi-shift days already collapsed into a single span+break) —
+    // this is the editable seed for the human-review step in the browser. Nothing gets written to
+    // the spreadsheet until the reviewer submits their (possibly corrected) rows to /api/generate.
+    const reviewRows = buildReviewRows(timeEntries, restDays);
 
-    // A day is "covered" once it's either actually written to the sheet (writtenDates, i.e. it
-    // survived fillTimesheet's own validation like the 24h check) or a confirmed rest day —
-    // both are correct, complete outcomes, not gaps. Built from writtenDates rather than the
-    // pre-validation timeEntries so a day that fillTimesheet rejected doesn't get wrongly
-    // counted as covered here.
+    // A day is "covered" once it has a review row at all (worked or rest day) — this is a
+    // pre-generate PREVIEW of coverage, not the final word (fillTimesheetFromRows does its own
+    // 24h-sanity check later and can still reject a row the human never fixed).
     const coveredByMonth = new Map<string, Set<number>>(); // key `${year}-${monthIndex0}`
-    for (const d of writtenDates) {
-        const k = `${d.getFullYear()}-${d.getMonth()}`;
-        (coveredByMonth.get(k) ?? coveredByMonth.set(k, new Set()).get(k)!).add(d.getDate());
-    }
-    for (const r of restDays) {
-        const k = `${r.year}-${r.month - 1}`;
-        (coveredByMonth.get(k) ?? coveredByMonth.set(k, new Set()).get(k)!).add(r.day);
+    for (const r of reviewRows) {
+        const [y, m, d] = r.date.split("-").map(Number);
+        const k = `${y}-${m - 1}`;
+        (coveredByMonth.get(k) ?? coveredByMonth.set(k, new Set()).get(k)!).add(d);
     }
 
-    // A day that reconciliation/fillTimesheet already explained with a specific warning (e.g.
-    // "dropped due to conflicting reads") doesn't need this generic catch-all repeating "no entry
-    // anywhere" for the exact same date — that's the duplication that made the warnings list feel
-    // long-winded. Only dates with zero explanation anywhere get the generic message.
-    const explainedDates = new Set(
-        [...warnings, ...fillWarnings].map(w => w.date).filter((d): d is string => d !== undefined)
-    );
+    // A day that reconciliation already explained with a specific warning (e.g. "dropped due to
+    // conflicting reads") doesn't need this generic catch-all repeating "no entry anywhere" for
+    // the exact same date — that's the duplication that made the warnings list feel long-winded.
+    // Only dates with zero explanation anywhere get the generic message.
+    const explainedDates = new Set(warnings.map(w => w.date).filter((d): d is string => d !== undefined));
 
     // Final coverage check: every skip path above (reconcile, fillTimesheet) is supposed to
     // leave a warning behind — but a page whose model output is a successfully parsed, genuinely
@@ -422,6 +481,14 @@ app.post("/api/process", upload.array("pdfs", 10), async (req, res) => {
             type: "rest_day" as const,
             source: r.source,
         })),
+        ...hoursEntries.map(h => ({
+            date: toLocalDateString(h.date),
+            type: "hours_worked" as const,
+            hoursWorked: h.hoursWorked,
+            otHours: h.otHours,
+            guessed: h.guessed,
+            source: h.source,
+        })),
     ].sort((a, b) => a.date.localeCompare(b.date));
 
     // Side-by-side review data: each page's (downscaled) image next to everything relevant to
@@ -434,7 +501,7 @@ app.post("/api/process", upload.array("pdfs", 10), async (req, res) => {
     // not duplicated in a separate general list. Only warnings with no page to attach to (e.g. the
     // coverage check for a day nothing ever read, or a file-level "could not read PDF" error) stay
     // in the general list.
-    const allWarnings = [...warnings, ...fillWarnings];
+    const allWarnings = warnings;
     const assignedWarnings = new Set<FillWarning>();
     const pageReviews = pageImages.map(({ source, image }) => {
         const entries = [
@@ -452,6 +519,15 @@ app.post("/api/process", upload.array("pdfs", 10), async (req, res) => {
                 .map(r => ({
                     date: `${r.year}-${String(r.month).padStart(2, "0")}-${String(r.day).padStart(2, "0")}`,
                     type: "rest_day" as const,
+                })),
+            ...hoursEntries
+                .filter(h => h.source === source)
+                .map(h => ({
+                    date: toLocalDateString(h.date),
+                    type: "hours_worked" as const,
+                    hoursWorked: h.hoursWorked,
+                    otHours: h.otHours,
+                    guessed: h.guessed,
                 })),
         ].sort((a, b) => a.date.localeCompare(b.date));
 
@@ -510,15 +586,81 @@ app.post("/api/process", upload.array("pdfs", 10), async (req, res) => {
 
     res.json({
         success: true,
-        filename: `calculation-filled-${Date.now()}.xlsx`,
-        file: buffer.toString("base64"),
+        year,
         warnings: generalWarnings,
-        entriesWritten: writtenDates.length,
         monthSummary,
         scanOutput,
         pageReviews,
+        reviewRows,
         costUsd: totalCostUsd,
         durationMs: Date.now() - startedAt,
+    });
+});
+
+// Takes the human-reviewed (possibly hand-corrected) rows from the browser's edit step and writes
+// them straight to the spreadsheet — no OCR here, this is pure "given these final numbers, fill
+// the template" work, so it's fast and synchronous compared to /api/process.
+app.post("/api/generate", express.json({ limit: "5mb" }), async (req, res) => {
+    const year = Number(req.body?.year);
+    if (!SUPPORTED_YEARS.includes(year)) {
+        return res.status(400).json({ error: `year must be one of: ${SUPPORTED_YEARS.join(", ")}` });
+    }
+    const rows = req.body?.rows;
+    if (!Array.isArray(rows)) {
+        return res.status(400).json({ error: "rows must be an array" });
+    }
+
+    let buffer: Buffer;
+    let warnings: FillWarning[];
+    let writtenDates: Date[];
+    try {
+        ({ buffer, warnings, writtenDates } = await fillTimesheetFromRows(TEMPLATE_PATH, rows as ReviewRow[]));
+    } catch (e: any) {
+        return res.status(500).json({ error: `failed to fill template: ${e.message}` });
+    }
+
+    // Same "every day of every touched month, flag anything uncovered" coverage check as the scan
+    // step's preview, but authoritative now — based on what fillTimesheetFromRows actually wrote
+    // (post 24h-sanity-check) plus confirmed rest days, rather than the pre-write preview.
+    const coveredByMonth = new Map<string, Set<number>>();
+    for (const d of writtenDates) {
+        const k = `${d.getFullYear()}-${d.getMonth()}`;
+        (coveredByMonth.get(k) ?? coveredByMonth.set(k, new Set()).get(k)!).add(d.getDate());
+    }
+    for (const r of rows as ReviewRow[]) {
+        if (!r.restDay) continue;
+        const [y, m, d] = r.date.split("-").map(Number);
+        const k = `${y}-${m - 1}`;
+        (coveredByMonth.get(k) ?? coveredByMonth.set(k, new Set()).get(k)!).add(d);
+    }
+    const explainedDates = new Set(warnings.map(w => w.date).filter((d): d is string => d !== undefined));
+
+    const monthSummary: { label: string; filled: number; total: number }[] = [];
+    for (const [key, daysCovered] of [...coveredByMonth].sort()) {
+        const [y, monthIndex0] = key.split("-").map(Number);
+        const daysInMonth = new Date(y, monthIndex0 + 1, 0).getDate();
+        for (let day = 1; day <= daysInMonth; day++) {
+            if (daysCovered.has(day)) continue;
+            const dateStr = `${y}-${String(monthIndex0 + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+            if (explainedDates.has(dateStr)) continue;
+            const date = new Date(y, monthIndex0, day);
+            warnings.push({
+                source: "coverage check",
+                reason: `${date.toDateString()} has no row submitted — please check this date directly.`,
+                category: "missing_data",
+                date: dateStr,
+            });
+        }
+        monthSummary.push({ label: `${MONTH_ABBR[monthIndex0]} ${y}`, filled: daysCovered.size, total: daysInMonth });
+    }
+
+    res.json({
+        success: true,
+        filename: `calculation-filled-${Date.now()}.xlsx`,
+        file: buffer.toString("base64"),
+        warnings,
+        entriesWritten: writtenDates.length,
+        monthSummary,
     });
 });
 
