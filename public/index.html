@@ -103,23 +103,54 @@
   }
   .month-summary li { color: var(--muted); }
   .month-summary li.incomplete { color: var(--warn-text); }
-  .page-reviews { margin-top: 32px; }
+  /* Breaks out of body's max-width so everything from here down spans the full browser width,
+     regardless of how narrow the centered form/upload section above stays. */
+  .page-reviews {
+    margin-top: 32px;
+    width: 100vw;
+    margin-left: calc(50% - 50vw);
+    margin-right: calc(50% - 50vw);
+    padding: 0 24px;
+    box-sizing: border-box;
+  }
   .page-reviews h2 { font-size: 16px; margin: 0 0 4px; }
   .page-reviews .sub { margin-bottom: 16px; }
   .page-review-row {
     display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 12px;
+    align-items: flex-start;
+    gap: 20px;
     margin-bottom: 20px;
     border: 1px solid var(--border);
     border-radius: 8px;
     padding: 16px;
     background: var(--panel);
   }
-  .page-review-image { width: 100%; }
-  .page-review-image img { width: 100%; border-radius: 6px; display: block; }
-  .page-review-details { width: 100%; }
+  /* Sticky within its own .page-review-row — stays pinned in view while you scroll through that
+     page's date rows on the right, then scrolls away normally once that row's content (which is
+     taller than the image) runs out, letting the next page's image take over. */
+  .page-review-image {
+    flex: 0 0 50%;
+    position: sticky;
+    top: 16px;
+    align-self: flex-start;
+  }
+  .page-review-image img {
+    width: 100%;
+    max-height: calc(100vh - 32px);
+    object-fit: contain;
+    border-radius: 6px;
+    display: block;
+  }
+  /* Sticky to the SAME top offset as .page-review-image — whichever of the two columns is
+     shorter (image vs. date-rows list) fully pins in view while the taller one keeps scrolling
+     past it, instead of the shorter one scrolling out of sight early. */
+  .page-review-details {
+    flex: 1;
+    min-width: 0;
+    position: sticky;
+    top: 16px;
+    align-self: flex-start;
+  }
   .page-review-source { font-size: 12px; color: var(--muted); margin-bottom: 8px; word-break: break-all; }
   .inline-review-list { list-style: none; margin: 0 0 4px; padding: 0; font-size: 12px; }
   .inline-review-row {
@@ -149,23 +180,30 @@
   @keyframes spin { to { transform: rotate(360deg); } }
 
   .row-delete-btn {
-    background: transparent; border: 1px solid var(--border); color: var(--muted);
-    padding: 2px 6px; border-radius: 4px; font-size: 13px; line-height: 1.4; cursor: pointer;
+    background: var(--err); color: white; border: none;
+    display: inline-flex; align-items: center; justify-content: center;
+    padding: 5px 7px; border-radius: 4px; cursor: pointer;
   }
-  .row-delete-btn:hover { color: var(--err); border-color: var(--err); }
+  .row-delete-btn:hover { opacity: 0.85; }
   .extra-days-section { margin-top: 28px; padding-top: 20px; border-top: 1px solid var(--border); }
-  .extra-days-section h3 { font-size: 15px; margin: 0 0 4px; }
+  /* Two nested caps reproducing body's own centering (max-width:1100, which .page-reviews's
+     matching 24px padding already stands in for) and then .container's (max-width:720) inside
+     it — so the Generate button lands at the exact same distance from the browser's left edge as
+     "Process & Generate Claim" above, instead of centering within the full-bleed .page-reviews. */
+  .extra-days-body-width { max-width: 1100px; margin: 0 auto; }
+  .extra-days-claim-width { max-width: 720px; margin: 0 auto; }
   .review-hint { font-size: 12px; color: var(--muted); margin: 6px 0 12px; }
-  .extra-rows-wrap {
-    border: 1px solid var(--border); border-radius: 8px; padding: 12px 16px; background: var(--panel);
-  }
   .review-actions { display: flex; align-items: center; gap: 12px; margin-top: 12px; }
   .add-day-btn {
-    background: var(--panel); border: 1px solid var(--border); color: var(--text);
-    padding: 8px 14px; border-radius: 6px; font-size: 13px; font-weight: 400; cursor: pointer;
+    background: var(--accent); color: white; border: none;
+    padding: 8px 14px; border-radius: 6px; font-size: 13px; font-weight: 600; cursor: pointer;
   }
-  .add-day-btn:hover { border-color: var(--accent); }
-  .generate-btn { margin-left: auto; }
+  .add-day-btn:hover { opacity: 0.85; }
+  /* Per-page "add a missing day" mini-section, right under that page's own discovered rows. */
+  .page-add-day {
+    margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--border);
+  }
+  .page-add-day .add-day-btn { padding: 5px 10px; font-size: 12px; }
 </style>
 </head>
 <body>
@@ -207,16 +245,14 @@
   <div id="pageReviewList"></div>
 
   <div class="extra-days-section">
-    <h3>Add a missing day</h3>
-    <div class="review-hint">For a date the scan didn't pick up on any page at all.</div>
-    <div class="extra-rows-wrap">
-      <ul class="inline-review-list" id="extraRowsList"></ul>
+    <div class="extra-days-body-width">
+      <div class="extra-days-claim-width">
+        <div class="review-actions">
+          <button type="button" class="generate-btn" id="generateBtn">Generate Excel</button>
+        </div>
+        <div class="status" id="generateStatus"></div>
+      </div>
     </div>
-    <div class="review-actions">
-      <button type="button" class="add-day-btn" id="addDayBtn">+ Add day</button>
-      <button type="button" class="generate-btn" id="generateBtn">Generate Excel</button>
-    </div>
-    <div class="status" id="generateStatus"></div>
   </div>
 </div>
 
@@ -248,8 +284,6 @@ const statusEl = document.getElementById('status');
 const monthSummaryEl = document.getElementById('monthSummary');
 const pageReviewsEl = document.getElementById('pageReviews');
 const pageReviewList = document.getElementById('pageReviewList');
-const extraRowsList = document.getElementById('extraRowsList');
-const addDayBtn = document.getElementById('addDayBtn');
 const generateBtn = document.getElementById('generateBtn');
 const generateStatusEl = document.getElementById('generateStatus');
 let currentYear = null; // captured at scan time, reused when generating so the two stay in sync
@@ -259,13 +293,28 @@ pdfsInput.addEventListener('change', () => {
   fileList.textContent = names.length ? `${names.length} file(s): ${names.join(', ')}` : '';
 });
 
+// Scans can run for minutes on multiple/large PDFs — a browser notification means the user
+// doesn't have to keep the tab in view to know when it's done. Permission must be requested from
+// a real user-gesture handler (not after an await, some browsers drop "user activation" by then),
+// so this fires as the very first thing in the submit handler, before the fetch call.
+function notifyIfPermitted(title, body) {
+  if (typeof Notification === 'undefined' || Notification.permission !== 'granted') return;
+  // Only notify if the tab isn't already the one the user's looking at — no point interrupting
+  // someone who's already watching it finish.
+  if (document.visibilityState === 'visible') return;
+  const n = new Notification(title, { body });
+  n.onclick = () => { window.focus(); n.close(); };
+}
+
 form.addEventListener('submit', async (e) => {
   e.preventDefault();
+  if (typeof Notification !== 'undefined' && Notification.permission === 'default') {
+    Notification.requestPermission();
+  }
   monthSummaryEl.style.display = 'none';
   monthSummaryEl.innerHTML = '';
   pageReviewsEl.style.display = 'none';
   pageReviewList.innerHTML = '';
-  extraRowsList.innerHTML = '';
   generateStatusEl.className = 'status';
   generateStatusEl.textContent = '';
 
@@ -288,6 +337,7 @@ form.addEventListener('submit', async (e) => {
 
     statusEl.className = 'status success';
     statusEl.textContent = `Scan done in ${formatDuration(data.durationMs)}${formatCost(data.costUsd)} — review the rows below, then generate the spreadsheet.`;
+    notifyIfPermitted('Scan complete', `Done in ${formatDuration(data.durationMs)} — ready to review.`);
 
     if (data.monthSummary && data.monthSummary.length > 0) {
       monthSummaryEl.style.display = 'block';
@@ -296,9 +346,8 @@ form.addEventListener('submit', async (e) => {
         .join('');
     }
 
-    // Shown even when zero pages came back (e.g. every file failed to read) so "Add a missing
-    // day" and "Generate Excel" — nested inside this section, at the bottom of the discovered
-    // pages — always stay reachable after a scan completes.
+    // Shown even when zero pages came back (e.g. every file failed to read) so "Generate Excel"
+    // at the bottom always stays reachable after a scan completes.
     pageReviewsEl.style.display = 'block';
     if (data.pageReviews && data.pageReviews.length > 0) {
       pageReviewList.innerHTML = data.pageReviews.map(renderPageReview).join('');
@@ -323,17 +372,24 @@ form.addEventListener('submit', async (e) => {
           for (const row of matching) appendReviewRow(container, row);
         }
       });
+      // Each page card also got its own "+ Add day" button (see renderPageReview) — wire each one
+      // to append into ITS OWN mini-list (same position-matching as above), so a manually-added
+      // day lands right under the page it belongs to instead of one shared list at the page bottom.
+      const addDayBtns = pageReviewList.querySelectorAll('.page-add-day-btn');
+      const extraLists = pageReviewList.querySelectorAll('.page-extra-list');
+      addDayBtns.forEach((btn, idx) => {
+        btn.addEventListener('click', () => {
+          appendReviewRow(extraLists[idx], { date: '', clockIn: null, clockOut: null, lunchBreakHours: 1, restDay: false, guessed: false, notes: null, source: 'manually added' });
+        });
+      });
     }
   } catch (err) {
     statusEl.className = 'status error';
     statusEl.textContent = 'Error: ' + err.message;
+    notifyIfPermitted('Scan failed', err.message);
   } finally {
     submitBtn.disabled = false;
   }
-});
-
-addDayBtn.addEventListener('click', () => {
-  appendReviewRow(extraRowsList, { date: '', clockIn: null, clockOut: null, lunchBreakHours: 1, restDay: false, guessed: false, notes: null, source: 'manually added' });
 });
 
 generateBtn.addEventListener('click', async () => {
@@ -417,7 +473,7 @@ function appendReviewRow(container, row) {
     <div class="field-group"><label>Out</label><input type="time" class="f-end" value="${hhmmToTimeInput(row.clockOut)}" ${row.restDay ? 'disabled' : ''}></div>
     <div class="field-group"><label>Lunch</label><input type="number" step="0.25" min="0" class="f-lunch" value="${row.lunchBreakHours ?? ''}" ${row.restDay ? 'disabled' : ''}></div>
     <div class="field-group"><label><input type="checkbox" class="f-rest" ${row.restDay ? 'checked' : ''}> Rest day</label></div>
-    <button type="button" class="row-delete-btn" title="Remove" aria-label="Remove">🗑</button>
+    <button type="button" class="row-delete-btn" title="Remove" aria-label="Remove"><svg viewBox="0 0 16 16" width="13" height="13" fill="currentColor" aria-hidden="true"><path d="M6 1a1 1 0 0 0-1 1v1H2.5a.5.5 0 0 0 0 1h.55l.65 9.1A1.5 1.5 0 0 0 5.2 15h5.6a1.5 1.5 0 0 0 1.5-1.4l.65-9.1h.55a.5.5 0 0 0 0-1H11V2a1 1 0 0 0-1-1H6zm0 2V2h4v1H6zM4.55 4h6.9l-.64 9h-5.62l-.64-9zM6.5 6a.5.5 0 0 1 .5.5v5a.5.5 0 0 1-1 0v-5a.5.5 0 0 1 .5-.5zm3 0a.5.5 0 0 1 .5.5v5a.5.5 0 0 1-1 0v-5a.5.5 0 0 1 .5-.5z"/></svg></button>
     ${row.notes ? `<div class="row-notes">${escapeHtml(row.notes)}</div>` : ''}
   `;
   li.querySelector('.f-rest').addEventListener('change', (e) => {
@@ -473,6 +529,11 @@ function renderPageReview(page) {
         <div class="page-review-source">${escapeHtml(page.source)}</div>
         ${hoursOnlyHtml ? `<ul class="inline-review-list">${hoursOnlyHtml}</ul>` : ''}
         <ul class="inline-review-list review-target-list"></ul>
+        <div class="page-add-day">
+          <div class="review-hint">Add a date this page's scan didn't pick up.</div>
+          <ul class="inline-review-list page-extra-list"></ul>
+          <button type="button" class="add-day-btn page-add-day-btn">+ Add day</button>
+        </div>
       </div>
     </div>`;
 }
