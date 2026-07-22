@@ -32,7 +32,12 @@ function isPlausibleTime(t: number): boolean {
     if (t < 0) return false;
     if (t === 2400) return true;
     const minutes = t % 100;
-    return minutes < 60;
+    const hours = Math.floor(t / 100);
+    // Real failure mode: a source timestamp with seconds (e.g. "19:50:07" from a phone app's
+    // punch-log screen) getting mashed into one bare number instead of the colon just being
+    // dropped — 195007 passes a minutes-only check (07 < 60) despite being nonsense. Hours must
+    // be a real hour-of-day.
+    return minutes < 60 && hours < 24;
 }
 
 // Same "unreadable value, not a competing opinion" reasoning as isPlausibleTime, applied to the
@@ -99,8 +104,31 @@ export function reconcileAttempts(
         const implausibleValues: number[] = [];
 
         for (const attempt of attempts) {
-            const rowForDay = attempt.find(e => e.day === day && e.month === month);
-            if (!rowForDay) continue;
+            // A punch-log-style page (a phone app's chronological list of individual clock
+            // in/out events, rather than a day-per-row table) can legitimately produce MULTIPLE
+            // objects for the same calendar date within one attempt — one per punch. The prompt
+            // asks the model to merge these itself, but this is a safety net for when it doesn't:
+            // combine every matching object's times into one array, sorted chronologically
+            // (ascending) since separate punch entries carry no other ordering signal, unlike a
+            // single table row's left-to-right reading order (which IS preserved as-is, matters
+            // for legitimate overnight-spanning shifts, and is never reordered here).
+            const matches = attempt.filter(e => e.day === day && e.month === month);
+            if (matches.length === 0) continue;
+            const rowForDay: ParsedEntry =
+                matches.length === 1
+                    ? matches[0]
+                    : {
+                          day,
+                          month,
+                          times: matches.some(m => m.times && m.times.length > 0)
+                              ? matches.flatMap(m => m.times ?? []).sort((a, b) => a - b)
+                              : null,
+                          hoursWorked: matches.find(m => m.hoursWorked !== null)?.hoursWorked ?? null,
+                          otHours: matches.find(m => m.otHours !== null)?.otHours ?? null,
+                          guessed: matches.some(m => m.guessed === true),
+                          rest_day: matches.every(m => m.rest_day === true),
+                          notes: matches.map(m => m.notes).filter(Boolean).join("; ") || null,
+                      };
 
             if (rowForDay.times && rowForDay.times.length > 0) {
                 const bad = rowForDay.times.filter(t => !isPlausibleTime(t));
