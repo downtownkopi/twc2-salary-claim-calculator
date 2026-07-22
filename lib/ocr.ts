@@ -14,6 +14,26 @@ function getClient(): OpenRouter {
     return client;
 }
 
+// Contrast boost for genuinely low-contrast pages (faint pen, washed-out photocopies) — centered
+// on the page's own measured brightness (mean) rather than a hard min/max stretch. Tested against
+// real faint samples before adopting this: a full min/max stretch (sharp's .normalize()) thins
+// faint pen strokes enough to flip digit reads (9 misread as 6, repeatedly, on an otherwise
+// perfectly-read page); this mean-centered version left that same page's accuracy unchanged, and
+// surfaced at least one previously "illegible" cell on a genuinely hard low-contrast sample. Only
+// applied below a stdev threshold so a normal, already-decent-contrast scan is never touched —
+// the risk demonstrated above is specifically from applying this where it isn't needed.
+const LOW_CONTRAST_STDEV_THRESHOLD = 30;
+const CONTRAST_BOOST_FACTOR = 1.6;
+
+async function boostFaintContrast(png: Buffer): Promise<Buffer> {
+    const stats = await sharp(png).grayscale().stats();
+    const stdev = stats.channels[0].stdev;
+    if (stdev >= LOW_CONTRAST_STDEV_THRESHOLD) return png;
+    const mean = stats.channels[0].mean;
+    const offset = mean * (1 - CONTRAST_BOOST_FACTOR);
+    return sharp(png).linear(CONTRAST_BOOST_FACTOR, offset).png().toBuffer();
+}
+
 // Convert a PDF (path or in-memory buffer) into an array of base64 PNG images, one per page
 export async function pdfToImages(input: string | Buffer): Promise<string[]> {
     const images: string[] = [];
@@ -24,7 +44,8 @@ export async function pdfToImages(input: string | Buffer): Promise<string[]> {
     // clearer source pixels.
     const document = await pdf(input, { scale: 3.0 });
     for await (const pageBuffer of document) {
-        images.push(pageBuffer.toString("base64"));
+        const boosted = await boostFaintContrast(pageBuffer);
+        images.push(boosted.toString("base64"));
     }
     return images;
 }
@@ -47,7 +68,8 @@ export async function imageToPages(input: Buffer): Promise<string[]> {
         .resize({ width: 2500, height: 2500, fit: "inside", withoutEnlargement: true })
         .png()
         .toBuffer();
-    return [png.toString("base64")];
+    const boosted = await boostFaintContrast(png);
+    return [boosted.toString("base64")];
 }
 
 // Splits one page image into vertically overlapping bands (top/bottom by default). A single
