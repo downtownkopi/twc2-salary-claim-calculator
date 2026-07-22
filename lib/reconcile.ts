@@ -78,7 +78,17 @@ export function reconcileAttempts(
     // Only used to build the `date` field on warnings (so the UI/server can dedupe against a
     // later generic "no data for this day" warning about the same date) — reconciliation itself
     // never needs the year, since day/month alone is enough to group attempts.
-    year?: number
+    year?: number,
+    // A table row's left-to-right value order is semantically meaningful (an overnight shift like
+    // [2200, 600] must NOT be reordered — reversing it would silently claim a 6am-10pm shift
+    // instead of the real 10pm-6am one), so by default two attempts reporting the same values in
+    // different order genuinely disagree. A punch-log page (lib/ocr.ts's PageDataModel
+    // "punch_log" — a phone app's chronological list of individual timestamped events, not a
+    // table) has no such row order to preserve: each punch is independently timestamped by the
+    // app itself, so the model reconstructing which came first from page-reading order is prone
+    // to getting it backwards, and "same two values, different order" there is the SAME reading,
+    // not a conflicting one. Pass false only for pages classified as punch-log.
+    orderMatters = true
 ): { entries: ParsedEntry[]; warnings: FillWarning[] } {
     const warnings: FillWarning[] = [];
     const dayKeys = new Set<string>();
@@ -162,7 +172,9 @@ export function reconcileAttempts(
             }
         }
 
-        const distinctTimeSignatures = new Set(timesVotes.map(t => t.join(",")));
+        const distinctTimeSignatures = new Set(
+            timesVotes.map(t => (orderMatters ? t : [...t].sort((a, b) => a - b)).join(","))
+        );
         const distinctHoursSignatures = new Set(hoursVotes.map(v => `${v.hoursWorked}|${v.otHours ?? ""}`));
         // "every attempt that mentioned this day" must ALL agree on the SAME data model (times-only,
         // rest-only, or hours-only) for any of these to count as agreement — otherwise a mix of
@@ -182,7 +194,11 @@ export function reconcileAttempts(
         const unanimous = fullyParticipated && sufficientRedundancy && (allAgreeOnTimes || allAgreeOnRest || allAgreeOnHours);
 
         if (unanimous && allAgreeOnTimes) {
-            entries.push({ day, month, times: timesVotes[0], hoursWorked: null, otHours: null, guessed: false, rest_day: false, notes: null });
+            // When order doesn't matter, timesVotes[0] itself might happen to be in the "wrong"
+            // (page-reading) order even though it agrees with the others post-sort — output the
+            // canonical ascending order rather than whichever attempt happened to be first.
+            const outputTimes = orderMatters ? timesVotes[0] : [...timesVotes[0]].sort((a, b) => a - b);
+            entries.push({ day, month, times: outputTimes, hoursWorked: null, otHours: null, guessed: false, rest_day: false, notes: null });
         } else if (unanimous && allAgreeOnRest) {
             entries.push({ day, month, times: null, hoursWorked: null, otHours: null, guessed: false, rest_day: true, notes: null });
         } else if (unanimous && allAgreeOnHours) {

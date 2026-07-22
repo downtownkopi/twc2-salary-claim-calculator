@@ -70,7 +70,9 @@ function buildPrompt(year: number, pageContext: string, dataModelHint: PageDataM
             ? "An earlier pass guessed this page records only total hours worked (and maybe separate overtime hours) per day, with no clock in/out times — but verify against what you actually see; if clock times ARE visible on this image, report those instead (see below)."
             : dataModelHint === "clock_times"
                 ? "An earlier pass guessed this page records actual clock in/out times per day — but verify against what you actually see."
-                : "An earlier pass could not tell what this page records per day — judge purely from what you see on this image.";
+                : dataModelHint === "punch_log"
+                    ? "An earlier pass guessed this page is a phone app's punch-log screen (a chronological list of individual timestamped events, not a table) — see the specific guidance for that layout below, and verify against what you actually see."
+                    : "An earlier pass could not tell what this page records per day — judge purely from what you see on this image.";
 
     return `This is one page of a worker's daily time/attendance record, used to fill a wage-claim spreadsheet for the year ${year}. It may be handwritten OR typed/computer-generated, in English, Chinese, Bengali, or a mix, and may use any layout — a simple row-per-day table, two half-months side by side on one page, a weekly calendar grid (day-of-week columns), a free-form list, a punch card, a phone app's punch-log screenshot, etc. Read whatever is actually in front of you rather than assuming one fixed shape.
 
@@ -260,11 +262,18 @@ app.post("/api/process", upload.array("pdfs", 10), async (req, res) => {
             // is a genuine disagreement about the same source material). A band that fully
             // failed contributes nothing (skipped, not pushed as an empty attempt) so it doesn't
             // dilute the "X/N attempts agreed" bookkeeping for bands that did report.
+            // A punch-log page (lib/ocr.ts's PageDataModel) has no meaningful left-to-right/
+            // row order to preserve — each entry is independently timestamped by the app itself,
+            // unlike a table row where order distinguishes e.g. a real overnight shift from its
+            // reverse. Only relax reconcileAttempts's order-sensitivity for pages classified as
+            // such (see lib/reconcile.ts for why this can't safely be the default everywhere).
+            const orderMatters = dataModel !== "punch_log";
+
             const bandResults: ParsedEntry[][] = [];
             for (let b = 0; b < bands.length; b++) {
                 if (attemptsByBand[b].length === 0) continue;
                 const bandSource = bands.length > 1 ? `${source} (band ${b + 1}/${bands.length})` : source;
-                const { entries: bandEntries, warnings: bandWarnings } = reconcileAttempts(attemptsByBand[b], bandSource, true, year);
+                const { entries: bandEntries, warnings: bandWarnings } = reconcileAttempts(attemptsByBand[b], bandSource, true, year, orderMatters);
                 bandResults.push(bandEntries);
                 warnings.push(...bandWarnings);
             }
@@ -279,7 +288,7 @@ app.post("/api/process", upload.array("pdfs", 10), async (req, res) => {
             // in one band's region and outside another's isn't disagreement, it's expected
             // non-coverage. Only reject when multiple bands DO report the same day with
             // conflicting values — that's a real disagreement, not a coverage gap.
-            const { entries: reconciled, warnings: crossBandWarnings } = reconcileAttempts(bandResults, source, false, year);
+            const { entries: reconciled, warnings: crossBandWarnings } = reconcileAttempts(bandResults, source, false, year, orderMatters);
             warnings.push(...crossBandWarnings);
 
             // Strict cross-attempt unanimity (lib/reconcile.ts) only catches disagreement — it
