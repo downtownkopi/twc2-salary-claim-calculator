@@ -497,7 +497,7 @@ function appendReviewRow(container, row) {
     <div class="field-group"><label>Out</label><input type="time" class="f-end" value="${hhmmToTimeInput(row.clockOut)}" ${row.restDay ? 'disabled' : ''}></div>
     <div class="field-group"><label>Lunch</label><input type="number" step="0.25" min="0" class="f-lunch" value="${row.lunchBreakHours ?? ''}" ${row.restDay ? 'disabled' : ''}></div>
     <div class="field-group"><label><input type="checkbox" class="f-rest" ${row.restDay ? 'checked' : ''}> Rest day</label></div>
-    <button type="button" class="row-delete-btn" title="Remove" aria-label="Remove"><svg viewBox="0 0 16 16" width="13" height="13" fill="currentColor" aria-hidden="true"><path d="M6 1a1 1 0 0 0-1 1v1H2.5a.5.5 0 0 0 0 1h.55l.65 9.1A1.5 1.5 0 0 0 5.2 15h5.6a1.5 1.5 0 0 0 1.5-1.4l.65-9.1h.55a.5.5 0 0 0 0-1H11V2a1 1 0 0 0-1-1H6zm0 2V2h4v1H6zM4.55 4h6.9l-.64 9h-5.62l-.64-9zM6.5 6a.5.5 0 0 1 .5.5v5a.5.5 0 0 1-1 0v-5a.5.5 0 0 1 .5-.5zm3 0a.5.5 0 0 1 .5.5v5a.5.5 0 0 1-1 0v-5a.5.5 0 0 1 .5-.5z"/></svg></button>
+    <button type="button" class="row-delete-btn" title="Remove" aria-label="Remove"><svg viewBox="0 0 16 16" style="width:13px;height:13px;flex-shrink:0;" fill="currentColor" aria-hidden="true"><path d="M6 1a1 1 0 0 0-1 1v1H2.5a.5.5 0 0 0 0 1h.55l.65 9.1A1.5 1.5 0 0 0 5.2 15h5.6a1.5 1.5 0 0 0 1.5-1.4l.65-9.1h.55a.5.5 0 0 0 0-1H11V2a1 1 0 0 0-1-1H6zm0 2V2h4v1H6zM4.55 4h6.9l-.64 9h-5.62l-.64-9zM6.5 6a.5.5 0 0 1 .5.5v5a.5.5 0 0 1-1 0v-5a.5.5 0 0 1 .5-.5zm3 0a.5.5 0 0 1 .5.5v5a.5.5 0 0 1-1 0v-5a.5.5 0 0 1 .5-.5z"/></svg></button>
     ${row.notes ? `<div class="row-notes">${escapeHtml(row.notes)}</div>` : ''}
   `;
   li.querySelector('.f-rest').addEventListener('change', (e) => {
@@ -549,7 +549,7 @@ function renderPageReview(page) {
   return `
     <div class="page-review-row">
       <div class="page-review-image">
-        <button type="button" class="rotate-btn" title="Rotate image"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="23 4 23 10 17 10"></polyline><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></svg></button>
+        <button type="button" class="rotate-btn" title="Rotate image"><svg viewBox="0 0 24 24" style="width:14px;height:14px;flex-shrink:0;" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="23 4 23 10 17 10"></polyline><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></svg></button>
         <img src="data:image/png;base64,${page.image}" alt="${escapeHtml(page.source)}">
       </div>
       <div class="page-review-details">
