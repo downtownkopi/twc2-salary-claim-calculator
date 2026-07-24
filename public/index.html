@@ -261,7 +261,7 @@
 
 <div class="page-reviews" id="pageReviews" style="display:none">
   <h2>Page-by-page review</h2>
-  <div class="sub">Every date's Start/End/Lunch is editable right beside its source page — fix anything the scan got wrong, remove a row that shouldn't be there, or add a missing day below. Rows highlighted yellow were flagged by the scan (a guess, a multi-shift day, or an implausible reading) and are worth a closer look. Nothing is written to the spreadsheet until you click Generate.</div>
+  <div class="sub">Every date's Start/End/Lunch is editable right beside its source page — fix anything the scan got wrong, remove a row that shouldn't be there, or add a missing day below. Rows highlighted yellow were flagged by the scan (a guess, a multi-shift day, or an implausible reading) and are worth a closer look. Nothing is written to the spreadsheet until you click Generate. If a page's scan was wrong, correct the row(s) to the right values first, then click that page's "🚩 Flag as wrong" — it saves both the scan's original (wrong) reading and your correction, which is what actually helps improve future scans.</div>
   <div id="pageReviewList"></div>
 
   <div class="extra-days-section">
@@ -552,7 +552,7 @@ function collectAllReviewRows() {
 async function flagPage(btn, idx) {
   const page = currentPageReviews[idx];
   if (!page) return;
-  const note = prompt('What did the scan get wrong on this page? (optional, but helps a lot)') || '';
+  const note = prompt('Have you already corrected the row(s) below to the right values? This sends both the original scan and your correction.\n\nWhat did the scan get wrong on this page? (optional, but helps a lot)') || '';
 
   const card = btn.closest('.page-review-row');
   const correctedEntries = [];
@@ -625,7 +625,7 @@ function renderPageReview(page) {
       <div class="page-review-details">
         <div class="page-review-source">
           <span>${escapeHtml(page.source)}</span>
-          <button type="button" class="flag-btn page-flag-btn" title="Flag this page as misread">🚩 Flag as wrong</button>
+          <button type="button" class="flag-btn page-flag-btn" title="Fix the row(s) below to the correct values first, then click this — it sends both the scan's original reading and your correction">🚩 Flag as wrong</button>
         </div>
         ${hoursOnlyHtml ? `<ul class="inline-review-list">${hoursOnlyHtml}</ul>` : ''}
         <ul class="inline-review-list review-target-list"></ul>
