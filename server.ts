@@ -4,6 +4,7 @@ import * as path from "path";
 import { pdfToImages, imageToPages, scanPageImage, extractJsonBlock, cropIntoBands, extractPageContext, verifyDatesOnPage, resizeForDisplay, type PageDataModel } from "./lib/ocr";
 import { buildReviewRows, fillTimesheetFromRows, MONTH_ABBR, type TimeEntry, type FillWarning, type RestDay, type ReviewRow } from "./lib/xlsx";
 import { reconcileAttempts, type ParsedEntry } from "./lib/reconcile";
+import { uploadFlaggedPage, type FlaggedPageEntry } from "./lib/feedback";
 
 const TEMPLATE_PATH = path.join(__dirname, "calculation.xltx");
 const PORT = process.env.PORT || 3000;
@@ -164,6 +165,10 @@ app.post("/api/process", upload.array("pdfs", 10), async (req, res) => {
     // Display-only (downscaled) copy of every page, for the side-by-side review UI — keyed by the
     // same `source` string ("file.pdf p2") already used to tag every entry/warning from that page.
     const pageImages: { source: string; image: string }[] = [];
+    // dataModel/pageContext per page, keyed by source — populated once extractPageContext runs
+    // below. Carried into pageReviews purely so a later "flag this page" action (public/index.html)
+    // can send this classification along with the flag, without the client having to re-derive it.
+    const pageMeta = new Map<string, { dataModel: PageDataModel; pageContext: string }>();
 
     for (const file of files) {
         // Real-world timesheets are frequently a phone photo (jpg/png), not a PDF — branch on the
@@ -193,6 +198,7 @@ app.post("/api/process", upload.array("pdfs", 10), async (req, res) => {
                 const result = await extractPageContext(images[i]);
                 pageContext = result.context;
                 dataModel = result.dataModel;
+                pageMeta.set(source, { dataModel, pageContext });
                 totalCostUsd += result.cost;
                 if (!result.isTimesheet) {
                     warnings.push({
@@ -553,7 +559,8 @@ app.post("/api/process", upload.array("pdfs", 10), async (req, res) => {
         const pageWarnings = allWarnings.filter(w => w.source.split(", ").includes(source));
         pageWarnings.forEach(w => assignedWarnings.add(w));
 
-        return { source, image, entries, warnings: pageWarnings };
+        const meta = pageMeta.get(source);
+        return { source, image, entries, warnings: pageWarnings, dataModel: meta?.dataModel ?? "unclear", pageContext: meta?.pageContext ?? "" };
     });
 
     // A warning with no specific page source (e.g. the coverage check for a day nothing read at
@@ -678,6 +685,34 @@ app.post("/api/generate", express.json({ limit: "5mb" }), async (req, res) => {
         entriesWritten: writtenDates.length,
         monthSummary,
     });
+});
+
+// Ground-truth corpus builder, not part of the scan/generate critical path — a user marks a page
+// as misread, we store the source image next to what the pipeline produced (rawEntries, the
+// pre-edit reconciled output already sent to the browser in /api/process's pageReviews) and what
+// the user actually corrected it to (correctedEntries, read back from their edited review rows).
+// Used later for prompt fixes/regression tests, not live inference, so a storage hiccup here
+// shouldn't look like a failure of the actual scan/generate the user cares about.
+app.post("/api/flag-page", express.json({ limit: "5mb" }), async (req, res) => {
+    const { source, image, rawEntries, correctedEntries, note, dataModel, pageContext } = req.body ?? {};
+    if (typeof source !== "string" || typeof image !== "string" || !Array.isArray(rawEntries) || !Array.isArray(correctedEntries)) {
+        return res.status(400).json({ error: "source, image, rawEntries, correctedEntries are required" });
+    }
+    try {
+        const { docId } = await uploadFlaggedPage({
+            source,
+            image,
+            rawEntries: rawEntries as FlaggedPageEntry[],
+            correctedEntries: correctedEntries as FlaggedPageEntry[],
+            note: typeof note === "string" && note.trim() ? note.trim() : null,
+            dataModel: typeof dataModel === "string" ? dataModel : "unclear",
+            pageContext: typeof pageContext === "string" ? pageContext : "",
+        });
+        res.json({ success: true, docId });
+    } catch (e: any) {
+        console.error("failed to store flagged page:", e);
+        res.status(500).json({ error: `failed to store flagged page: ${e.message}` });
+    }
 });
 
 app.listen(PORT, () => {
