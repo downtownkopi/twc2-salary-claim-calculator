@@ -150,8 +150,9 @@
   .rotate-btn {
     position: absolute; top: 8px; right: 8px; z-index: 2;
     background: var(--accent); color: white; border: none;
-    display: inline-flex; align-items: center; justify-content: center;
-    width: 28px; height: 28px; border-radius: 4px; cursor: pointer;
+    display: inline-flex; align-items: center; justify-content: center; gap: 5px;
+    height: 28px; padding: 0 10px; border-radius: 4px; cursor: pointer;
+    font-size: 12px; font-weight: 500;
   }
   .rotate-btn:hover { opacity: 0.85; }
   /* Sticky to the SAME top offset as .page-review-image — whichever of the two columns is
@@ -549,7 +550,7 @@ function renderPageReview(page) {
   return `
     <div class="page-review-row">
       <div class="page-review-image">
-        <button type="button" class="rotate-btn" title="Rotate image"><svg viewBox="0 0 24 24" style="width:14px;height:14px;flex-shrink:0;" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="23 4 23 10 17 10"></polyline><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></svg></button>
+        <button type="button" class="rotate-btn" title="Rotate image"><svg viewBox="0 0 24 24" style="width:14px;height:14px;flex-shrink:0;" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="23 4 23 10 17 10"></polyline><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></svg>Rotate</button>
         <img src="data:image/png;base64,${page.image}" alt="${escapeHtml(page.source)}">
       </div>
       <div class="page-review-details">
