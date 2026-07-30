@@ -48,6 +48,35 @@
   .container { max-width: 720px; margin: 0 auto; }
   h1 { font-size: 20px; margin: 0 0 4px; }
   .sub { color: var(--muted); font-size: 13px; margin-bottom: 24px; }
+  .upload-warning { color: var(--err); font-size: 13px; font-weight: 600; margin: 4px 0 16px; }
+  .stage-grid { display: flex; flex-direction: column; gap: 12px; margin-top: 10px; }
+  .stage-file-group { border: 1px solid var(--border); border-radius: 8px; padding: 10px; background: var(--panel); }
+  .stage-file-header {
+    display: flex; align-items: center; justify-content: space-between; gap: 10px;
+    font-size: 12px; color: var(--muted); margin-bottom: 8px; word-break: break-all;
+  }
+  .stage-file-pages { display: flex; flex-wrap: wrap; gap: 12px; }
+  .stage-tile { width: 170px; }
+  .stage-tile-img-wrap {
+    width: 170px; height: 170px; overflow: hidden; border: 1px solid var(--border); border-radius: 6px;
+    display: flex; align-items: center; justify-content: center; background: var(--bg); position: relative;
+  }
+  .stage-tile-img-wrap img { max-width: 100%; max-height: 100%; object-fit: contain; transition: transform 0.15s ease; }
+  .stage-tile-rotate-btn {
+    position: absolute; top: 5px; right: 5px; background: var(--accent); color: white; border: none;
+    width: 26px; height: 26px; border-radius: 4px; cursor: pointer; font-size: 15px; line-height: 1;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .stage-tile-rotate-btn:hover { opacity: 0.85; }
+  .stage-tile-delete-btn {
+    position: absolute; top: 5px; left: 5px; background: var(--err); color: white; border: none;
+    width: 24px; height: 24px; border-radius: 4px; cursor: pointer; font-size: 14px; line-height: 1;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .stage-tile-delete-btn:hover { opacity: 0.85; }
+  .stage-tile-label { font-size: 11px; color: var(--muted); margin-top: 4px; text-align: center; word-break: break-all; }
+  .stage-loading, .stage-error { font-size: 12px; margin-top: 4px; }
+  .stage-error { color: var(--err); }
   label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 6px; }
   .field { margin-bottom: 20px; }
   select {
@@ -133,10 +162,6 @@
     position: sticky;
     top: 16px;
     align-self: flex-start;
-    /* A 90/270 rotation makes the image's bounding box wider than the container — clip it here
-       rather than letting it spill over the date-rows column next to it. A 180 flip (the common
-       "scanned upside down" case) keeps the same box, so it's unaffected either way. */
-    overflow: hidden;
   }
   .page-review-image img {
     width: 100%;
@@ -144,17 +169,7 @@
     object-fit: contain;
     border-radius: 6px;
     display: block;
-    transition: transform 0.2s ease;
-    transform-origin: center;
   }
-  .rotate-btn {
-    position: absolute; top: 8px; right: 8px; z-index: 2;
-    background: var(--accent); color: white; border: none;
-    display: inline-flex; align-items: center; justify-content: center; gap: 5px;
-    height: 28px; padding: 0 10px; border-radius: 4px; cursor: pointer;
-    font-size: 12px; font-weight: 500;
-  }
-  .rotate-btn:hover { opacity: 0.85; }
   /* Sticky to the SAME top offset as .page-review-image — whichever of the two columns is
      shorter (image vs. date-rows list) fully pins in view while the taller one keeps scrolling
      past it, instead of the shorter one scrolling out of sight early. */
@@ -181,15 +196,27 @@
   .inline-review-row:last-child { border-bottom: none; }
   .inline-review-row.flagged-row { background: rgba(240, 185, 85, 0.08); }
   .inline-review-row .field-group { display: inline-flex; align-items: center; gap: 5px; }
-  .inline-review-row label { color: var(--muted); font-size: 11px; }
+  /* margin: 0 overrides the generic top-level `label { margin-bottom: 6px }` rule further up —
+     that leaked-in asymmetric margin (0 top / 6px bottom) was the actual root cause of a ~3px
+     vertical misalignment measured here (getBoundingClientRect confirmed it): flexbox centers a
+     flex item's MARGIN box, so an asymmetric margin shifts the visible content off-center even
+     though every other alignment rule was correct. Rest day's <label> wraps its checkbox + text
+     together (so clicking the text toggles the checkbox) — display:inline-flex + align-items:center
+     centers those two children against each other. The plain In/Out/Lunch captions use
+     <span class="field-label"> instead (see appendReviewRow), which was never affected since the
+     generic rule only targets <label> tags — kept as spans rather than converted back to label
+     now that the real cause is fixed, since they don't need label's click-to-focus behavior. */
+  .inline-review-row label { color: var(--muted); font-size: 11px; margin: 0; display: inline-flex; align-items: center; gap: 4px; }
+  .field-label { color: var(--muted); font-size: 11px; }
   .inline-review-row input {
     background: var(--bg); border: 1px solid var(--border); color: var(--text);
     padding: 4px 5px; border-radius: 4px; font-size: 12px; box-sizing: border-box;
   }
   .inline-review-row input[type="date"] { width: 118px; }
-  .inline-review-row input[type="time"] { width: 110px; }
+  .inline-review-row .time-input { width: 48px; }
   .inline-review-row input[type="number"] { width: 52px; }
   .inline-review-row input:disabled { opacity: 0.4; }
+  .weekday-label { display: inline-block; width: 30px; text-align: center; font-size: 11px; font-weight: 600; color: var(--muted); }
   .inline-review-row .row-notes { flex-basis: 100%; font-size: 11px; color: var(--warn-text); }
   .spinner {
     display: inline-block; width: 12px; height: 12px;
@@ -224,6 +251,17 @@
     margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--border);
   }
   .page-add-day .add-day-btn { padding: 5px 10px; font-size: 12px; }
+  .ipa-review {
+    margin-top: 20px; padding: 16px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel);
+  }
+  .ipa-review h3 { font-size: 14px; margin: 0 0 10px; }
+  .ipa-field-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 10px 16px; font-size: 13px; }
+  .ipa-field-group { display: flex; flex-direction: column; gap: 3px; }
+  .ipa-field-group label { font-size: 11px; color: var(--muted); }
+  .ipa-field-group input {
+    background: var(--bg); border: 1px solid var(--border); color: var(--text);
+    padding: 6px 8px; border-radius: 4px; font-size: 13px; box-sizing: border-box;
+  }
 </style>
 </head>
 <body>
@@ -238,9 +276,17 @@
 
 <form id="form">
   <div class="field">
+    <label for="ipa">IPA letter (optional — PDF or photo)</label>
+    <input type="file" id="ipa" name="ipa" accept="application/pdf,image/*">
+    <div class="file-list">If attached, employer/salary/OT-rate terms are read off it alongside the timesheets, in the same submit.</div>
+    <div class="stage-grid" id="ipaStage"></div>
+  </div>
+
+  <div class="field">
     <label for="pdfs">Timesheet files (PDF or photo)</label>
     <input type="file" id="pdfs" name="pdfs" accept="application/pdf,image/*" multiple required>
     <div class="file-list" id="fileList"></div>
+    <div class="stage-grid" id="pdfsStage"></div>
   </div>
 
   <div class="field">
@@ -252,10 +298,13 @@
     <div class="file-list">Handwritten years are often misread — the model only reads day/month off the page, this dropdown decides the year (and which sheet tab is used).</div>
   </div>
 
+  <div class="upload-warning">⚠ Make sure every page — IPA letter and timesheets alike — is upright before uploading. A sideways page (common in scanned/photographed PDFs) can cause the scan to silently misread dates and times.</div>
+
   <button type="submit" id="submitBtn">Process & Generate Claim</button>
 
   <div class="status" id="status"></div>
   <ul class="month-summary" id="monthSummary" style="display:none"></ul>
+  <div class="ipa-review" id="ipaReview" style="display:none"></div>
 </form>
 </div>
 
@@ -297,9 +346,11 @@ themeToggleBtn.addEventListener('click', () => {
 
 const form = document.getElementById('form');
 const pdfsInput = document.getElementById('pdfs');
+const ipaInput = document.getElementById('ipa');
 const fileList = document.getElementById('fileList');
 const submitBtn = document.getElementById('submitBtn');
 const statusEl = document.getElementById('status');
+const ipaReviewEl = document.getElementById('ipaReview');
 
 const monthSummaryEl = document.getElementById('monthSummary');
 const pageReviewsEl = document.getElementById('pageReviews');
@@ -312,10 +363,156 @@ let currentYear = null; // captured at scan time, reused when generating so the 
 // only living inside the submit handler's closure and vanishing once rendering finishes.
 let currentPageReviews = [];
 
-pdfsInput.addEventListener('change', () => {
+const pdfsStageEl = document.getElementById('pdfsStage');
+const ipaStageEl = document.getElementById('ipaStage');
+// Rotation degrees a human has chosen in the staging preview, sent along with the real scan
+// (/api/process's `rotations` field) so the server applies the same correction before OCR ever
+// sees the page. pdfsRotations is keyed "<fileIndex>-<pageIndex>" to match server.ts's lookup —
+// reset whenever the pdfs selection changes (refreshPdfsPreview), since a changed file selection
+// invalidates old indices. Kept entirely separate from ipaRotationDeg/refreshIpaPreview so
+// attaching one doesn't reset or re-fetch the other's already-confirmed state.
+let pdfsRotations = {};
+let ipaRotationDeg = 0;
+// Pages a human dropped in the staging preview, keyed "<fileIndex>-<pageIndex>" same as
+// pdfsRotations. A PDF's underlying pages can't be excluded from the file itself client-side (the
+// server always re-renders every page from the uploaded bytes) — so this set is sent alongside
+// `rotations` on the real submit, and server.ts skips scanning any page whose key is in it.
+let excludedPdfsPages = new Set();
+
+function renderStageTile(kind, key, label, imageB64) {
+  const rotation = kind === 'pdfs' ? (pdfsRotations[key] || 0) : ipaRotationDeg;
+  const removeTitle = kind === 'pdfs' ? 'Remove this page' : 'Remove this file';
+  return `
+    <div class="stage-tile" data-kind="${kind}" data-key="${key}">
+      <div class="stage-tile-img-wrap">
+        <img src="data:image/png;base64,${imageB64}" style="transform: rotate(${rotation}deg);">
+        <button type="button" class="stage-tile-rotate-btn" title="Rotate">⟳</button>
+        <button type="button" class="stage-tile-delete-btn" title="${removeTitle}">✕</button>
+      </div>
+      <div class="stage-tile-label">${escapeHtml(label)}</div>
+    </div>`;
+}
+
+function wireStageRotateButtons(container) {
+  container.querySelectorAll('.stage-tile').forEach(tile => {
+    const kind = tile.dataset.kind;
+    const key = tile.dataset.key;
+    const img = tile.querySelector('img');
+    tile.querySelector('.stage-tile-rotate-btn').addEventListener('click', () => {
+      const current = kind === 'pdfs' ? (pdfsRotations[key] || 0) : ipaRotationDeg;
+      const next = (current + 90) % 360;
+      if (kind === 'pdfs') pdfsRotations[key] = next; else ipaRotationDeg = next;
+      img.style.transform = `rotate(${next}deg)`;
+    });
+  });
+}
+
+function updateFileListLabel() {
   const names = Array.from(pdfsInput.files).map(f => f.name);
   fileList.textContent = names.length ? `${names.length} file(s): ${names.join(', ')}` : '';
+}
+
+// No OCR here — just renders a thumbnail of every attached timesheet page (/api/preview does the
+// same pdf-to-image/downscale work /api/process itself does, minus any model call) so a sideways
+// or unwanted page can be caught before paying for the real (expensive, multi-pass) scan. Grouped
+// by source file purely for display; each page tile has its own delete button (excludedPdfsPages)
+// since the file itself is still uploaded whole — the server just skips excluded page indices.
+async function refreshPdfsPreview() {
+  const hasPdfs = pdfsInput.files.length > 0;
+  pdfsRotations = {};
+  excludedPdfsPages = new Set();
+
+  if (!hasPdfs) {
+    pdfsStageEl.innerHTML = '';
+    return;
+  }
+  pdfsStageEl.innerHTML = '<div class="stage-loading"><span class="spinner"></span>Loading previews…</div>';
+
+  const formData = new FormData();
+  for (const file of pdfsInput.files) formData.append('pdfs', file);
+
+  try {
+    const res = await fetch('/api/preview', { method: 'POST', body: formData });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || `Server returned ${res.status}`);
+
+    const byFile = new Map(); // fileIndex -> { fileName, tiles: string[] }
+    for (const p of data.pdfsPreview || []) {
+      if (!byFile.has(p.fileIndex)) byFile.set(p.fileIndex, { fileName: p.fileName, tiles: [] });
+      byFile.get(p.fileIndex).tiles.push(renderStageTile('pdfs', `${p.fileIndex}-${p.pageIndex}`, `p${p.pageIndex + 1}`, p.image));
+    }
+    pdfsStageEl.innerHTML = [...byFile.entries()].map(([fileIndex, { fileName, tiles }]) => `
+      <div class="stage-file-group">
+        <div class="stage-file-header">
+          <span>${escapeHtml(fileName)}</span>
+        </div>
+        <div class="stage-file-pages">${tiles.join('')}</div>
+      </div>`).join('')
+      + (data.pdfsErrors || []).map(e => `<div class="stage-error">${escapeHtml(e.fileName)}: ${escapeHtml(e.error)}</div>`).join('');
+
+    wireStageRotateButtons(pdfsStageEl);
+    pdfsStageEl.querySelectorAll('.stage-tile-delete-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const tile = btn.closest('.stage-tile');
+        excludedPdfsPages.add(tile.dataset.key);
+        const group = tile.closest('.stage-file-group');
+        tile.remove();
+        // Last remaining page tile for this file just got dropped — the empty group header
+        // shouldn't linger with nothing under it.
+        if (group && group.querySelectorAll('.stage-tile').length === 0) group.remove();
+      });
+    });
+  } catch (err) {
+    pdfsStageEl.innerHTML = `<div class="stage-error">Preview failed: ${escapeHtml(err.message)}</div>`;
+  }
+}
+
+// Same idea as refreshPdfsPreview but for the single optional IPA file — kept as a separate
+// function (rather than one combined refreshPreview covering both) specifically so attaching a
+// timesheet doesn't reset/re-fetch the already-confirmed IPA rotation, and vice versa.
+async function refreshIpaPreview() {
+  const hasIpa = !!ipaInput.files[0];
+  ipaRotationDeg = 0;
+
+  if (!hasIpa) {
+    ipaStageEl.innerHTML = '';
+    return;
+  }
+  ipaStageEl.innerHTML = '<div class="stage-loading"><span class="spinner"></span>Loading preview…</div>';
+
+  const formData = new FormData();
+  formData.append('ipa', ipaInput.files[0]);
+
+  try {
+    const res = await fetch('/api/preview', { method: 'POST', body: formData });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || `Server returned ${res.status}`);
+
+    ipaStageEl.innerHTML = data.ipaPreview
+      ? `<div class="stage-file-group">
+          <div class="stage-file-header">
+            <span>${escapeHtml(ipaInput.files[0].name)} (only p1 is used)</span>
+          </div>
+          <div class="stage-file-pages">${renderStageTile('ipa', 'ipa', '', data.ipaPreview)}</div>
+        </div>`
+      : (data.ipaError ? `<div class="stage-error">${escapeHtml(data.ipaError)}</div>` : '');
+
+    wireStageRotateButtons(ipaStageEl);
+    const deleteBtn = ipaStageEl.querySelector('.stage-tile-delete-btn');
+    if (deleteBtn) deleteBtn.addEventListener('click', () => {
+      ipaInput.value = ''; // single-file input — clearing it entirely IS "removing the file"
+      refreshIpaPreview();
+    });
+  } catch (err) {
+    ipaStageEl.innerHTML = `<div class="stage-error">Preview failed: ${escapeHtml(err.message)}</div>`;
+  }
+}
+
+pdfsInput.addEventListener('change', () => {
+  updateFileListLabel();
+  refreshPdfsPreview();
 });
+ipaInput.addEventListener('change', refreshIpaPreview);
 
 // Scans can run for minutes on multiple/large PDFs — a browser notification means the user
 // doesn't have to keep the tab in view to know when it's done. Permission must be requested from
@@ -330,6 +527,30 @@ function notifyIfPermitted(title, body) {
   n.onclick = () => { window.focus(); n.close(); };
 }
 
+// Live elapsed-time readout while a scan is in flight — no server-side timeout/abort here, we
+// don't yet know what a "too long" threshold should be for this pipeline (varies a lot by
+// page/file count), so this is purely visibility into how long the current request has been
+// running, not an automatic cutoff. Also folds in livePagesProcessedCount (updated by
+// renderLivePages as /api/process/:jobId polling reports finished pages) so the same status line
+// shows both "how long" and "how much done" without the two updaters fighting over statusEl.
+let scanTimerInterval = null;
+let livePagesProcessedCount = 0;
+function startScanTimer() {
+  const startedAt = Date.now();
+  const tick = () => {
+    statusEl.className = 'status loading';
+    const progress = livePagesProcessedCount > 0 ? ` — ${livePagesProcessedCount} page(s) processed so far` : '';
+    statusEl.innerHTML = `<span class="spinner"></span>Scanning pages… ${formatDuration(Date.now() - startedAt)} elapsed${progress}`;
+  };
+  tick();
+  scanTimerInterval = setInterval(tick, 1000);
+}
+function stopScanTimer() {
+  if (scanTimerInterval === null) return;
+  clearInterval(scanTimerInterval);
+  scanTimerInterval = null;
+}
+
 form.addEventListener('submit', async (e) => {
   e.preventDefault();
   if (typeof Notification !== 'undefined' && Notification.permission === 'default') {
@@ -337,92 +558,35 @@ form.addEventListener('submit', async (e) => {
   }
   monthSummaryEl.style.display = 'none';
   monthSummaryEl.innerHTML = '';
-  pageReviewsEl.style.display = 'none';
+  pageReviewsEl.style.display = 'block';
   pageReviewList.innerHTML = '';
   generateStatusEl.className = 'status';
   generateStatusEl.textContent = '';
 
   const formData = new FormData();
   for (const file of pdfsInput.files) formData.append('pdfs', file);
+  if (ipaInput.files[0]) formData.append('ipa', ipaInput.files[0]);
+  // Rotations + page exclusions confirmed in the staging preview above — same fileIndex/pageIndex
+  // keys server.ts expects, matched against the exact same files/order being submitted here.
+  formData.append('rotations', JSON.stringify({ pdfs: pdfsRotations, ipa: ipaRotationDeg }));
+  formData.append('excludedPages', JSON.stringify([...excludedPdfsPages]));
   currentYear = document.getElementById('year').value;
   formData.append('year', currentYear);
+  ipaReviewEl.style.display = 'none';
+  ipaReviewEl.innerHTML = '';
 
   submitBtn.disabled = true;
-  statusEl.className = 'status loading';
-  statusEl.innerHTML = '<span class="spinner"></span>Scanning pages… this can take a while for multiple PDFs.';
+  livePagesProcessedCount = 0;
+  startScanTimer();
 
   try {
     const res = await fetch('/api/process', { method: 'POST', body: formData });
     const data = await res.json();
+    if (!res.ok) throw new Error(data.error || `Server returned ${res.status}`);
 
-    if (!res.ok) {
-      throw new Error(data.error || `Server returned ${res.status}`);
-    }
-
-    statusEl.className = 'status success';
-    statusEl.textContent = `Scan done in ${formatDuration(data.durationMs)}${formatCost(data.costUsd)} — review the rows below, then generate the spreadsheet.`;
-    notifyIfPermitted('Scan complete', `Done in ${formatDuration(data.durationMs)} — ready to review.`);
-
-    if (data.monthSummary && data.monthSummary.length > 0) {
-      monthSummaryEl.style.display = 'block';
-      monthSummaryEl.innerHTML = data.monthSummary
-        .map(m => `<li class="${m.filled < m.total ? 'incomplete' : ''}">- ${escapeHtml(m.label)} ${m.filled}/${m.total} day(s) filled</li>`)
-        .join('');
-    }
-
-    // Shown even when zero pages came back (e.g. every file failed to read) so "Generate Excel"
-    // at the bottom always stays reachable after a scan completes.
-    pageReviewsEl.style.display = 'block';
-    currentPageReviews = data.pageReviews || [];
-    if (data.pageReviews && data.pageReviews.length > 0) {
-      pageReviewList.innerHTML = data.pageReviews.map(renderPageReview).join('');
-      // Each page card was rendered with an empty placeholder list (see renderPageReview) — now
-      // that they're in the DOM, populate each with the reviewRows whose `source` traces back to
-      // that page, so the editable Start/End/Lunch inputs sit right beside their source image.
-      // Matched by position (Nth list <-> Nth pageReviews entry, same render order) rather than a
-      // CSS attribute selector on the source string, which can contain characters (quotes,
-      // parens) that aren't safe to drop straight into a selector.
-      const reviewRows = data.reviewRows || [];
-      const lists = pageReviewList.querySelectorAll('.review-target-list');
-      data.pageReviews.forEach((page, idx) => {
-        const container = lists[idx];
-        if (!container) return;
-        // A row's `source` can be a comma-joined list (e.g. a multi-shift day whose shifts came
-        // from different bands of the same page) — split-and-match avoids a prefix false-positive
-        // like "file.pdf p1" wrongly matching a row actually sourced from "file.pdf p10".
-        const matching = reviewRows.filter(r => r.source.split(', ').includes(page.source));
-        if (matching.length === 0) {
-          container.innerHTML = '<li class="empty">No entries extracted from this page</li>';
-        } else {
-          for (const row of matching) appendReviewRow(container, row);
-        }
-      });
-      // Each page card also got its own "+ Add day" button (see renderPageReview) — wire each one
-      // to append into ITS OWN mini-list (same position-matching as above), so a manually-added
-      // day lands right under the page it belongs to instead of one shared list at the page bottom.
-      const addDayBtns = pageReviewList.querySelectorAll('.page-add-day-btn');
-      const extraLists = pageReviewList.querySelectorAll('.page-extra-list');
-      addDayBtns.forEach((btn, idx) => {
-        btn.addEventListener('click', () => {
-          appendReviewRow(extraLists[idx], { date: '', clockIn: null, clockOut: null, lunchBreakHours: 1, restDay: false, guessed: false, notes: null, source: 'manually added' });
-        });
-      });
-      // Purely a display aid for the human reviewer — cycles the shown image 90° at a time
-      // (0/90/180/270) so an upside-down or sideways scan can actually be read. Doesn't touch the
-      // underlying scan or re-trigger OCR; the extracted rows are already whatever the model read.
-      pageReviewList.querySelectorAll('.rotate-btn').forEach(btn => {
-        btn.addEventListener('click', () => {
-          const img = btn.nextElementSibling;
-          const next = (Number(img.dataset.rotation || '0') + 90) % 360;
-          img.dataset.rotation = next;
-          img.style.transform = `rotate(${next}deg)`;
-        });
-      });
-      pageReviewList.querySelectorAll('.page-flag-btn').forEach((btn, idx) => {
-        btn.addEventListener('click', () => flagPage(btn, idx));
-      });
-    }
+    await pollJobUntilDone(data.jobId);
   } catch (err) {
+    stopScanTimer();
     statusEl.className = 'status error';
     statusEl.textContent = 'Error: ' + err.message;
     notifyIfPermitted('Scan failed', err.message);
@@ -430,6 +594,149 @@ form.addEventListener('submit', async (e) => {
     submitBtn.disabled = false;
   }
 });
+
+const POLL_INTERVAL_MS = 3000;
+
+// Polls a running /api/process job rather than waiting on one held-open request — a real scan
+// (many pages, sequential) can take 15-20+ minutes, long enough that a single connection is
+// fragile (proxies/networks can drop it) and gives zero visibility until the very end. Each poll
+// renders whatever pages have finished so far (renderLivePages) before the job is done, then
+// switches to the full editable review UI (renderFinalResult) the moment it completes.
+function pollJobUntilDone(jobId) {
+  return new Promise((resolve, reject) => {
+    const tick = async () => {
+      let data;
+      try {
+        const res = await fetch(`/api/process/${jobId}`);
+        data = await res.json();
+        if (!res.ok) throw new Error(data.error || `Server returned ${res.status}`);
+      } catch (err) {
+        reject(err);
+        return;
+      }
+
+      if (data.status === 'error') {
+        reject(new Error(data.error || 'Scan failed'));
+        return;
+      }
+
+      renderLivePages(data.pages || []);
+
+      if (data.status === 'done') {
+        stopScanTimer();
+        renderFinalResult(data.result);
+        resolve();
+        return;
+      }
+
+      setTimeout(tick, POLL_INTERVAL_MS);
+    };
+    tick();
+  });
+}
+
+// One line per extracted entry, read-only — shown as soon as a page finishes, before the
+// editable review UI exists. hhmmToTimeInput is the same HHMM->"HH:MM" formatter the final
+// editable rows use, so the live preview and the final view read identically.
+function formatLiveEntry(e) {
+  if (e.type === 'rest_day') return `${e.date}: Rest day`;
+  if (e.type === 'hours_worked') {
+    const ot = e.otHours ? ` + ${e.otHours}h OT` : '';
+    return `${e.date}: ${e.hoursWorked}h worked${ot}${e.guessed ? ' (guess)' : ''}`;
+  }
+  return `${e.date}: ${hhmmToTimeInput(e.clockIn)}–${hhmmToTimeInput(e.clockOut)}${e.guessed ? ' (guess)' : ''}`;
+}
+
+// Read-only progress view while the job is still running — one card per page finished so far,
+// showing the actual dates/times it found (not just a count) so you can see real extracted
+// values land as each page completes, rather than waiting on the whole batch. No editable inputs
+// yet since reviewRows (the thing those inputs edit) don't exist until the batch completes — this
+// view is fully replaced by renderFinalResult's editable cards once status flips to "done".
+function renderLivePages(pages) {
+  livePagesProcessedCount = pages.length;
+  pageReviewList.innerHTML = pages.map(page => {
+    const entriesHtml = page.entries.length
+      ? `<ul class="inline-review-list">${page.entries.map(e => `<li class="empty">${escapeHtml(formatLiveEntry(e))}</li>`).join('')}</ul>`
+      : `<div class="review-hint">No entries found on this page.</div>`;
+    const warningsHtml = page.warnings.length
+      ? `<div class="row-notes">${page.warnings.map(w => escapeHtml(w.reason)).join('<br>')}</div>`
+      : '';
+    return `
+      <div class="page-review-row">
+        <div class="page-review-image">
+          <img src="data:image/png;base64,${page.image}" alt="${escapeHtml(page.source)}">
+        </div>
+        <div class="page-review-details">
+          <div class="page-review-source"><span>${escapeHtml(page.source)}</span></div>
+          ${entriesHtml}
+          ${warningsHtml}
+        </div>
+      </div>`;
+  }).join('');
+}
+
+// The complete, editable review UI — built once a job's status is "done" (data.result, same
+// shape /api/process used to return directly before it became a polled background job).
+function renderFinalResult(data) {
+  statusEl.className = 'status success';
+  statusEl.textContent = `Scan done in ${formatDuration(data.durationMs)}${formatCost(data.costUsd)} — review the rows below, then generate the spreadsheet.`;
+  notifyIfPermitted('Scan complete', `Done in ${formatDuration(data.durationMs)} — ready to review.`);
+
+  if (data.monthSummary && data.monthSummary.length > 0) {
+    monthSummaryEl.style.display = 'block';
+    monthSummaryEl.innerHTML = data.monthSummary
+      .map(m => `<li class="${m.filled < m.total ? 'incomplete' : ''}">- ${escapeHtml(m.label)} ${m.filled}/${m.total} day(s) filled</li>`)
+      .join('');
+  }
+
+  if (data.ipa || data.ipaWarning) {
+    ipaReviewEl.style.display = 'block';
+    ipaReviewEl.innerHTML = (data.ipa ? renderIpaFields(data.ipa) : '')
+      + (data.ipaWarning ? `<div class="row-notes">${escapeHtml(data.ipaWarning)}</div>` : '');
+  }
+
+  // Shown even when zero pages came back (e.g. every file failed to read) so "Generate Excel"
+  // at the bottom always stays reachable after a scan completes.
+  pageReviewsEl.style.display = 'block';
+  currentPageReviews = data.pageReviews || [];
+  if (data.pageReviews && data.pageReviews.length > 0) {
+    pageReviewList.innerHTML = data.pageReviews.map(renderPageReview).join('');
+    // Each page card was rendered with an empty placeholder list (see renderPageReview) — now
+    // that they're in the DOM, populate each with the reviewRows whose `source` traces back to
+    // that page, so the editable Start/End/Lunch inputs sit right beside their source image.
+    // Matched by position (Nth list <-> Nth pageReviews entry, same render order) rather than a
+    // CSS attribute selector on the source string, which can contain characters (quotes,
+    // parens) that aren't safe to drop straight into a selector.
+    const reviewRows = data.reviewRows || [];
+    const lists = pageReviewList.querySelectorAll('.review-target-list');
+    data.pageReviews.forEach((page, idx) => {
+      const container = lists[idx];
+      if (!container) return;
+      // A row's `source` can be a comma-joined list (e.g. a multi-shift day whose shifts came
+      // from different bands of the same page) — split-and-match avoids a prefix false-positive
+      // like "file.pdf p1" wrongly matching a row actually sourced from "file.pdf p10".
+      const matching = reviewRows.filter(r => r.source.split(', ').includes(page.source));
+      if (matching.length === 0) {
+        container.innerHTML = '<li class="empty">No entries extracted from this page</li>';
+      } else {
+        for (const row of matching) appendReviewRow(container, row);
+      }
+    });
+    // Each page card also got its own "+ Add day" button (see renderPageReview) — wire each one
+    // to append into ITS OWN mini-list (same position-matching as above), so a manually-added
+    // day lands right under the page it belongs to instead of one shared list at the page bottom.
+    const addDayBtns = pageReviewList.querySelectorAll('.page-add-day-btn');
+    const extraLists = pageReviewList.querySelectorAll('.page-extra-list');
+    addDayBtns.forEach((btn, idx) => {
+      btn.addEventListener('click', () => {
+        appendReviewRow(extraLists[idx], { date: '', clockIn: null, clockOut: null, lunchBreakHours: 1, restDay: false, guessed: false, notes: null, source: 'manually added' });
+      });
+    });
+    pageReviewList.querySelectorAll('.page-flag-btn').forEach((btn, idx) => {
+      btn.addEventListener('click', () => flagPage(btn, idx));
+    });
+  }
+}
 
 generateBtn.addEventListener('click', async () => {
   const rows = collectAllReviewRows();
@@ -478,20 +785,54 @@ generateBtn.addEventListener('click', async () => {
   }
 });
 
-// HHMM (e.g. 800, 1730) <-> <input type="time"> value ("08:00", "17:30"). A midnight-ending
-// overnight shift (the 2400 sentinel elsewhere in this codebase) round-trips fine as plain "00:00"
+// HHMM (e.g. 800, 1730) <-> the In/Out text input's displayed value ("0800", "1730") — bare
+// 4-digit 24-hour, no colon, matching the exact convention lib/ocr.ts's own prompt already uses
+// ("Report the values as bare 24-hour numbers, no colon, e.g. 800 means 8:00am"). A midnight-ending
+// overnight shift (the 2400 sentinel elsewhere in this codebase) round-trips fine as plain "0000"
 // here — the hours calculation already wraps correctly for either representation, so the edit UI
 // doesn't need to special-case it.
 function hhmmToTimeInput(hhmm) {
   if (hhmm === null || hhmm === undefined) return '';
   const h = Math.floor(hhmm / 100) % 24;
   const m = hhmm % 100;
-  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+  return `${String(h).padStart(2, '0')}${String(m).padStart(2, '0')}`;
 }
 function timeInputToHHMM(str) {
-  if (!str) return null;
-  const [h, m] = str.split(':').map(Number);
-  return h * 100 + m;
+  return normalizeTimeInputToParts(str)?.hhmm ?? null;
+}
+
+// In/Out are plain text inputs (not <input type="time">) specifically so the displayed value is
+// always bare 24-hour digits regardless of browser/OS locale — a native time input's VALUE is
+// already 24-hour under the hood, but some browsers (Safari especially) render it with AM/PM
+// decoration no matter what `lang` is set to, which is exactly what this was built to avoid.
+// Shared by normalizeTimeInput (reformat on blur) and timeInputToHHMM (parse at submit time,
+// which can't assume the field was ever blurred) so both agree on how loose input like "8", "800",
+// or "1730" gets interpreted.
+function normalizeTimeInputToParts(value) {
+  if (!value) return null;
+  const digits = value.replace(/[^0-9]/g, '');
+  if (!digits) return null;
+  let h, m;
+  if (digits.length <= 2) { h = Number(digits); m = 0; }
+  else if (digits.length === 3) { h = Number(digits.slice(0, 1)); m = Number(digits.slice(1)); }
+  else { h = Number(digits.slice(0, -2)); m = Number(digits.slice(-2)); }
+  if (h > 23 || m > 59) return null; // can't confidently parse
+  return { h, m, hhmm: h * 100 + m };
+}
+function normalizeTimeInput(value) {
+  const parts = normalizeTimeInputToParts(value);
+  if (!parts) return value; // can't confidently parse — leave it for the reviewer to fix by hand
+  return `${String(parts.h).padStart(2, '0')}${String(parts.m).padStart(2, '0')}`;
+}
+
+const WEEKDAY_ABBR = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+// Parsed and constructed in local time (not new Date(dateStr), which parses as UTC and can shift
+// the weekday by a day) — same local-date discipline server.ts already uses everywhere else.
+function weekdayAbbr(dateStr) {
+  if (!dateStr) return '';
+  const [y, m, d] = dateStr.split('-').map(Number);
+  if (!y || !m || !d) return '';
+  return WEEKDAY_ABBR[new Date(y, m - 1, d).getDay()];
 }
 
 // Appends one editable date row into `container` — either a page card's inline-review-list (see
@@ -507,19 +848,30 @@ function appendReviewRow(container, row) {
   li.dataset.guessed = row.guessed ? '1' : '';
   li.dataset.notes = row.notes || '';
   li.innerHTML = `
+    <div class="field-group weekday-group"><span class="weekday-label">${weekdayAbbr(row.date)}</span></div>
     <div class="field-group"><input type="date" class="f-date" value="${escapeHtml(row.date)}"></div>
-    <div class="field-group"><label>In</label><input type="time" class="f-start" value="${hhmmToTimeInput(row.clockIn)}" ${row.restDay ? 'disabled' : ''}></div>
-    <div class="field-group"><label>Out</label><input type="time" class="f-end" value="${hhmmToTimeInput(row.clockOut)}" ${row.restDay ? 'disabled' : ''}></div>
-    <div class="field-group"><label>Lunch</label><input type="number" step="0.25" min="0" class="f-lunch" value="${row.lunchBreakHours ?? ''}" ${row.restDay ? 'disabled' : ''}></div>
+    <div class="field-group"><span class="field-label">In</span><input type="text" inputmode="numeric" maxlength="4" placeholder="0800" class="f-start time-input" value="${hhmmToTimeInput(row.clockIn)}" ${row.restDay ? 'disabled' : ''}></div>
+    <div class="field-group"><span class="field-label">Out</span><input type="text" inputmode="numeric" maxlength="4" placeholder="1700" class="f-end time-input" value="${hhmmToTimeInput(row.clockOut)}" ${row.restDay ? 'disabled' : ''}></div>
+    <div class="field-group"><span class="field-label">Lunch</span><input type="number" step="0.25" min="0" class="f-lunch" value="${row.lunchBreakHours ?? ''}" ${row.restDay ? 'disabled' : ''}></div>
     <div class="field-group"><label><input type="checkbox" class="f-rest" ${row.restDay ? 'checked' : ''}> Rest day</label></div>
     <button type="button" class="row-delete-btn" title="Remove" aria-label="Remove"><svg viewBox="0 0 16 16" style="width:13px;height:13px;flex-shrink:0;" fill="currentColor" aria-hidden="true"><path d="M6 1a1 1 0 0 0-1 1v1H2.5a.5.5 0 0 0 0 1h.55l.65 9.1A1.5 1.5 0 0 0 5.2 15h5.6a1.5 1.5 0 0 0 1.5-1.4l.65-9.1h.55a.5.5 0 0 0 0-1H11V2a1 1 0 0 0-1-1H6zm0 2V2h4v1H6zM4.55 4h6.9l-.64 9h-5.62l-.64-9zM6.5 6a.5.5 0 0 1 .5.5v5a.5.5 0 0 1-1 0v-5a.5.5 0 0 1 .5-.5zm3 0a.5.5 0 0 1 .5.5v5a.5.5 0 0 1-1 0v-5a.5.5 0 0 1 .5-.5z"/></svg></button>
     ${row.notes ? `<div class="row-notes">${escapeHtml(row.notes)}</div>` : ''}
   `;
+  const dateInput = li.querySelector('.f-date');
+  const weekdayLabel = li.querySelector('.weekday-label');
+  // A manually-added row (see the "+ Add day" button) starts with no date at all — this keeps
+  // the weekday label correct once the reviewer actually picks one, instead of staying blank.
+  dateInput.addEventListener('change', () => {
+    weekdayLabel.textContent = weekdayAbbr(dateInput.value);
+  });
   li.querySelector('.f-rest').addEventListener('change', (e) => {
     const disabled = e.target.checked;
     li.querySelector('.f-start').disabled = disabled;
     li.querySelector('.f-end').disabled = disabled;
     li.querySelector('.f-lunch').disabled = disabled;
+  });
+  li.querySelectorAll('.time-input').forEach(input => {
+    input.addEventListener('blur', () => { input.value = normalizeTimeInput(input.value); });
   });
   li.querySelector('.row-delete-btn').addEventListener('click', () => li.remove());
   container.appendChild(li);
@@ -619,7 +971,6 @@ function renderPageReview(page) {
   return `
     <div class="page-review-row">
       <div class="page-review-image">
-        <button type="button" class="rotate-btn" title="Rotate image"><svg viewBox="0 0 24 24" style="width:14px;height:14px;flex-shrink:0;" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="23 4 23 10 17 10"></polyline><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></svg>Rotate</button>
         <img src="data:image/png;base64,${page.image}" alt="${escapeHtml(page.source)}">
       </div>
       <div class="page-review-details">
@@ -635,6 +986,30 @@ function renderPageReview(page) {
           <button type="button" class="add-day-btn page-add-day-btn">+ Add day</button>
         </div>
       </div>
+    </div>`;
+}
+
+// Only basic monthly salary + fixed monthly allowances are shown here — every other extracted
+// IPA field (employer/UEN/occupation/sector/rates/working hours/WP validity/deductions/notes) is
+// still returned by the server (lib/ipa.ts) but intentionally not surfaced in this card.
+// Allowances collapse to a single total ($) input rather than per-line-item rows — the model can
+// extract several named allowances (food, transport, etc.), but this view only needs the combined
+// figure, editable like any other field, empty (not 0) when nothing was scanned.
+function ipaField(field, label, value) {
+  const v = value === null || value === undefined ? '' : escapeHtml(String(value));
+  return `<div class="ipa-field-group"><label>${escapeHtml(label)}</label><input type="number" class="ipa-input" data-field="${field}" value="${v}"></div>`;
+}
+
+function renderIpaFields(f) {
+  const allowanceTotal = f.fixedMonthlyAllowances.length
+    ? f.fixedMonthlyAllowances.reduce((sum, a) => sum + (typeof a.amount === 'number' ? a.amount : 0), 0)
+    : null;
+
+  return `
+    <h3>IPA — declared employment terms</h3>
+    <div class="ipa-field-grid">
+      ${ipaField('basicMonthlySalary', 'Basic monthly salary ($)', f.basicMonthlySalary)}
+      ${ipaField('fixedMonthlyAllowances', 'Fixed monthly allowances ($)', allowanceTotal)}
     </div>`;
 }
 

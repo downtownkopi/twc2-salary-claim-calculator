@@ -129,6 +129,21 @@ export async function resizeForDisplay(base64Image: string, maxWidth = 1400): Pr
     return resized.toString("base64");
 }
 
+// Applies a user-confirmed rotation from the pre-scan staging step (public/index.html) — chosen
+// by a human looking at a thumbnail, not detected automatically. A cheap VLM self-report of "how
+// many degrees to rotate this" was tested and found unreliable (confidently wrong on a real
+// sideways page), so orientation correction here is deliberately human-confirmed rather than
+// inferred. `degrees` follows the same clockwise convention as CSS's `transform: rotate()`, so the
+// staging UI's live thumbnail preview and this server-side correction always agree on which way is
+// which.
+export async function rotateImage(base64Image: string, degrees: number): Promise<string> {
+    const normalized = ((degrees % 360) + 360) % 360;
+    if (normalized === 0) return base64Image;
+    const buffer = Buffer.from(base64Image, "base64");
+    const rotated = await sharp(buffer).rotate(normalized).png().toBuffer();
+    return rotated.toString("base64");
+}
+
 function isRateLimited(err: any): boolean {
     const code = err?.error?.code ?? err?.statusCode ?? err?.status;
     return code === 429;
@@ -136,6 +151,32 @@ function isRateLimited(err: any): boolean {
 
 function sleep(ms: number): Promise<void> {
     return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+// A malformed/truncated upstream response can make the OpenRouter SDK throw from deep inside its
+// own internals (confirmed live: a JSON.parse failure inside the SDK's matchFunc/chatSend),
+// detached from the promise this function returns — that promise then never resolves or rejects
+// on its own, hanging forever. Racing it against a plain timeout doesn't cancel the underlying
+// request (the SDK's own unhandled rejection, already logged and swallowed by server.ts's
+// process-level handler, still fires later) but it stops THIS call from blocking whatever awaited
+// it — e.g. one hung attempt no longer blocks an entire page's Promise.allSettled batch forever.
+//
+// A timeout here is retried (bounded, see MAX_ATTEMPTS below), unlike the original no-retry
+// design. Reasoning: a pending request can be in one of two states we can't tell apart while
+// waiting — genuinely slow (big image, long prompt, provider under load; would eventually
+// succeed) or the SDK bug above (would NEVER resolve, confirmed live via an unhandled-rejection
+// that fired minutes after we'd already given up). Since a real, confirmed-possible permanent
+// hang exists, removing the timeout entirely isn't safe — but since a slow-but-good response is
+// also plausible, treating every timeout as a final failure with zero retry throws away exactly
+// the case where trying again would have worked. A fresh attempt (no backoff delay — unlike the
+// 429 case, there's no rate limit to wait out) gives that case a real second chance while still
+// bounding total wait to MAX_ATTEMPTS x REQUEST_TIMEOUT_MS in the worst case.
+class TimeoutError extends Error {}
+
+const REQUEST_TIMEOUT_MS = 90_000;
+
+function requestTimeout(ms: number): Promise<never> {
+    return new Promise((_, reject) => setTimeout(() => reject(new TimeoutError(`OpenRouter request timed out after ${ms}ms`)), ms));
 }
 
 // Send a single page image + prompt to Qwen2.5-VL via OpenRouter, return raw model text.
@@ -150,7 +191,7 @@ function sleep(ms: number): Promise<void> {
 // every attempt, giving reconciliation's disagreement-detection nothing to catch. Varying
 // temperature/seed across attempts (server.ts) gives each pass a real chance to diverge when
 // the model's reading is actually uncertain.
-async function sendVisionRequest(
+export async function sendVisionRequest(
     base64Image: string,
     prompt: string,
     temperature: number,
@@ -160,52 +201,55 @@ async function sendVisionRequest(
     const MAX_ATTEMPTS = 3;
     for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
         try {
-            const response = await getClient().chat.send({
-                chatRequest: {
-                    // Asks OpenRouter to report the actual USD cost of this specific call back in
-                    // the response (response.usage.cost) rather than us estimating it from
-                    // published per-token pricing — exact and correct even if a request happens to
-                    // route to a different-priced provider/quantization tier than expected.
-                    usage: { include: true },
-                    // Switched from google/gemini-2.5-flash after user side-by-side testing found
-                    // it underperformed on dense handwritten timesheets. nex-agi/nex-n2-pro is a
-                    // MoE model (17B active / 397B total, Qwen3.5 arch) with two OpenRouter
-                    // endpoints: Nex AGI (fp8) and SiliconFlow (unknown quantization). Filtering to
-                    // known, higher-precision quant tiers only (same reasoning as the earlier Qwen
-                    // setup) to avoid the lower-confidence unknown-quant provider.
-                    // Switched from nex-n2-pro per user request to try qwen3-vl-32b-instruct.
-                    // reasoning: effort "none" is kept as a harmless no-op for non-reasoning
-                    // models (confirmed via a live call — response comes back with
-                    // reasoning: null, doesn't error) so we don't need to special-case it per
-                    // model. qwen3-vl-32b-instruct has only one OpenRouter endpoint (Alibaba,
-                    // quantization "unknown") — the fp8/fp16/bf16/fp32 filter used for Qwen's
-                    // larger models would exclude that one endpoint entirely and leave nothing to
-                    // route to, so it's dropped here (same reasoning as the earlier Gemini swap).
-                    reasoning: { effort: "none" },
-                    model: "qwen/qwen3-vl-32b-instruct",
-                    maxTokens,
-                    temperature,
-                    seed,
-                    messages: [
-                        {
-                            role: "user",
-                            content: [
-                                { type: "text", text: prompt },
-                                {
-                                    type: "image_url",
-                                    imageUrl: {
-                                        url: `data:image/png;base64,${base64Image}`,
+            const response = await Promise.race([
+                getClient().chat.send({
+                    chatRequest: {
+                        // Asks OpenRouter to report the actual USD cost of this specific call back in
+                        // the response (response.usage.cost) rather than us estimating it from
+                        // published per-token pricing — exact and correct even if a request happens to
+                        // route to a different-priced provider/quantization tier than expected.
+                        usage: { include: true },
+                        // Switched from google/gemini-2.5-flash after user side-by-side testing found
+                        // it underperformed on dense handwritten timesheets. nex-agi/nex-n2-pro is a
+                        // MoE model (17B active / 397B total, Qwen3.5 arch) with two OpenRouter
+                        // endpoints: Nex AGI (fp8) and SiliconFlow (unknown quantization). Filtering to
+                        // known, higher-precision quant tiers only (same reasoning as the earlier Qwen
+                        // setup) to avoid the lower-confidence unknown-quant provider.
+                        // Switched from nex-n2-pro per user request to try qwen3-vl-32b-instruct.
+                        // reasoning: effort "none" is kept as a harmless no-op for non-reasoning
+                        // models (confirmed via a live call — response comes back with
+                        // reasoning: null, doesn't error) so we don't need to special-case it per
+                        // model. qwen3-vl-32b-instruct has only one OpenRouter endpoint (Alibaba,
+                        // quantization "unknown") — the fp8/fp16/bf16/fp32 filter used for Qwen's
+                        // larger models would exclude that one endpoint entirely and leave nothing to
+                        // route to, so it's dropped here (same reasoning as the earlier Gemini swap).
+                        reasoning: { effort: "none" },
+                        model: "qwen/qwen3-vl-32b-instruct",
+                        maxTokens,
+                        temperature,
+                        seed,
+                        messages: [
+                            {
+                                role: "user",
+                                content: [
+                                    { type: "text", text: prompt },
+                                    {
+                                        type: "image_url",
+                                        imageUrl: {
+                                            url: `data:image/png;base64,${base64Image}`,
+                                        },
                                     },
-                                },
-                            ],
-                        },
-                    ],
-                    // `usage` isn't in the SDK's TS type for ChatRequest, but OpenRouter's API
-                    // accepts and honors it (confirmed via a live call) — cast to bypass the
-                    // stale type, matching the `response as any` cast already used below for the
-                    // same reason on the response side.
-                } as any,
-            });
+                                ],
+                            },
+                        ],
+                        // `usage` isn't in the SDK's TS type for ChatRequest, but OpenRouter's API
+                        // accepts and honors it (confirmed via a live call) — cast to bypass the
+                        // stale type, matching the `response as any` cast already used below for the
+                        // same reason on the response side.
+                    } as any,
+                }),
+                requestTimeout(REQUEST_TIMEOUT_MS),
+            ]);
 
             const choice = (response as any).choices[0];
             return {
@@ -217,6 +261,9 @@ async function sendVisionRequest(
             if (isRateLimited(err) && attempt < MAX_ATTEMPTS) {
                 await sleep(1000 * 2 ** (attempt - 1)); // 1s, 2s backoff
                 continue;
+            }
+            if (err instanceof TimeoutError && attempt < MAX_ATTEMPTS) {
+                continue; // no backoff — a hung/slow request just needs a fresh attempt, not a wait
             }
             throw err;
         }
@@ -323,11 +370,18 @@ export function extractJsonBlock(text: string): string {
     if (fenced) return fenced[1];
 
     const arrStart = text.indexOf("[");
-    const arrEnd = text.lastIndexOf("]");
-    if (arrStart !== -1 && arrEnd !== -1 && arrEnd > arrStart) {
-        return text.slice(arrStart, arrEnd + 1);
-    }
     const objStart = text.indexOf("{");
+    // Whichever bracket the reply's JSON actually opens with FIRST tells us its true top-level
+    // shape — an object reply (e.g. lib/ipa.ts's IpaFields) can itself contain array-valued
+    // fields (fixedMonthlyAllowances/fixedMonthlyDeductions), so unconditionally preferring
+    // "first [ ... last ]" here would slice out just one of those nested arrays (e.g. an empty
+    // "[]") instead of the whole object — JSON.parse happily parses that short valid array on
+    // its own, then errors on every character of the real object that follows it.
+    const useArray = arrStart !== -1 && (objStart === -1 || arrStart < objStart);
+    if (useArray) {
+        const arrEnd = text.lastIndexOf("]");
+        if (arrEnd > arrStart) return text.slice(arrStart, arrEnd + 1);
+    }
     const objEnd = text.lastIndexOf("}");
     if (objStart !== -1 && objEnd !== -1 && objEnd > objStart) {
         return text.slice(objStart, objEnd + 1);

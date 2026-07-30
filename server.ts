@@ -1,10 +1,12 @@
 import express from "express";
 import multer from "multer";
 import * as path from "path";
-import { pdfToImages, imageToPages, scanPageImage, extractJsonBlock, cropIntoBands, extractPageContext, verifyDatesOnPage, resizeForDisplay, type PageDataModel } from "./lib/ocr";
+import { randomUUID } from "crypto";
+import { pdfToImages, imageToPages, scanPageImage, extractJsonBlock, cropIntoBands, extractPageContext, verifyDatesOnPage, resizeForDisplay, rotateImage, type PageDataModel } from "./lib/ocr";
 import { buildReviewRows, fillTimesheetFromRows, MONTH_ABBR, type TimeEntry, type FillWarning, type RestDay, type ReviewRow } from "./lib/xlsx";
 import { reconcileAttempts, type ParsedEntry } from "./lib/reconcile";
 import { uploadFlaggedPage, type FlaggedPageEntry } from "./lib/feedback";
+import { extractIpaFields, type IpaFields } from "./lib/ipa";
 
 const TEMPLATE_PATH = path.join(__dirname, "calculation.xltx");
 const PORT = process.env.PORT || 3000;
@@ -36,6 +38,55 @@ const upload = multer({
     storage: multer.memoryStorage(),
     limits: { fileSize: 20 * 1024 * 1024, files: 10 },
 });
+
+// Shared by /api/preview (staging thumbnails) and /api/process (the real scan) — real-world
+// timesheets are frequently a phone photo (jpg/png), not a PDF, so branch on the upload's
+// mimetype rather than assuming every file is a PDF.
+async function loadPagesForFile(file: Express.Multer.File): Promise<string[]> {
+    const isImage = file.mimetype.startsWith("image/");
+    return isImage ? await imageToPages(file.buffer) : await pdfToImages(file.buffer);
+}
+
+// Rotation degrees a human confirmed in the pre-scan staging step (public/index.html), keyed so
+// /api/process can look up which page they apply to. pdfs are keyed "<fileIndex>-<pageIndex>"
+// since there can be several multi-page files; ipa is a single number since only its first page is
+// ever used downstream (lib/ipa.ts).
+type RotationMap = { pdfs?: Record<string, number>; ipa?: number };
+
+// A page's own image + everything read from it so far, in the exact shape public/index.html
+// already knows how to render — used both as a live in-progress snapshot (pushed as each page
+// finishes scanning) and as the authoritative final version (once the whole job is done, which
+// additionally has coverage-check warnings attached — see the end of runProcessJob).
+type PageReview = {
+    source: string;
+    image: string;
+    entries: { date: string; type: string; [k: string]: unknown }[];
+    warnings: FillWarning[];
+    dataModel: PageDataModel;
+    pageContext: string;
+};
+
+// /api/process kicks off a scan as a background job (12 real-world pages can take 15-20+ minutes
+// sequentially) and returns a jobId immediately rather than holding the HTTP request open the
+// whole time — a connection held open that long is fragile (proxies/networks can drop it), and it
+// gave the browser zero visibility into per-page progress. public/index.html polls
+// GET /api/process/:jobId to render each page's card as soon as that page finishes, instead of
+// waiting for the entire batch before showing anything.
+type ProcessJob = {
+    status: "running" | "done" | "error";
+    pages: PageReview[]; // grows live while running; replaced with the authoritative final list once done
+    result: Record<string, unknown> | null; // set once status is "done" — same shape /api/process used to return directly
+    error: string | null;
+};
+// Named processJobs, not jobs — the per-page scan loop below already uses a local variable
+// called `jobs` for its band x temperature attempt list, and shadowing that would be a landmine.
+const processJobs = new Map<string, ProcessJob>();
+// Jobs are only needed long enough for the client to poll the final "done" state once — not
+// pruning them at all would leak memory on a long-running server across many scans.
+const JOB_TTL_MS = 30 * 60 * 1000;
+function scheduleJobCleanup(jobId: string) {
+    setTimeout(() => processJobs.delete(jobId), JOB_TTL_MS);
+}
 
 // Fanning out many parallel scan calls per page (bands x temperatures) means far more surface
 // area for a flaky upstream response. Our own try/catch around each scanPageImage call assumes SDK failures
@@ -119,6 +170,8 @@ CRITICAL — pay special attention to the LAST row that has any handwritten cont
 
 CRITICAL — many rows on a timesheet look nearly identical at a glance (e.g. the same clock-in time and same mid-day break time repeated every day), but that does NOT mean every row is identical. Do not let an earlier row you already read confidently influence how you read a later row that merely looks similar. You must independently re-examine and read the actual handwritten digits on EVERY row, especially any values later in the row — it is extremely common for only a later time value to differ between otherwise similar-looking rows, and copying a previous row's values here instead of reading this row's own digits is a serious, easy-to-make error. Treat each row as a completely separate read, as if you had never seen any other row on the page.
 
+CRITICAL — this same rule applies just as strictly to a weekly CALENDAR GRID layout (day-of-week columns, each date in its own box), where the "neighbors" that can wrongly bleed into each other are the boxes next to, above, or below the one you're reading, not rows in a table. A date's own box is read purely on its own — never copy, infer, or "complete the pattern" from a neighboring date's box, even when several neighboring dates in a row all show the identical time (e.g. a run of workdays all reading "8:00 to 19:00"). Worked example of this exact mistake: dates 9 and 11 both show "8:00 to 19:00" in their boxes, and date 10 (directly between them) shows only a bare checkmark or tally mark in its box with NO time text written inside it at all. The correct output for date 10 is times: null (per the bare-presence-mark rule above) — NOT "8:00 to 19:00" borrowed from either neighbor. A checkmark is not a time value, no matter how consistent the surrounding dates look; only report a time for a date when that date's OWN box actually contains written time text.
+
 NEVER guess or invent time values, for any reason. If a row's clock times are smudged, blurry, or otherwise too unclear to read with confidence, output times as null for that row and briefly explain why in notes — do not use a pattern from other rows on the page to fill it in, even if the pattern looks obvious or consistent. And if a date simply has no row on the page at all (no marks, nothing written for it), do not output an entry for it at all. Every value you report must be something you actually read directly off the page, never inferred, pattern-matched, or guessed.
 
 If a date is explicitly marked as a rest day, day off, public holiday, or similar, still output a row for it — set rest_day to true and times to null. Do NOT guess times for a confirmed rest day.
@@ -141,9 +194,63 @@ Output ONLY a valid JSON array of {day, month, times, hoursWorked, otHours, gues
 const app = express();
 app.use(express.static(path.join(__dirname, "public")));
 
-app.post("/api/process", upload.array("pdfs", 10), async (req, res) => {
-    const startedAt = Date.now();
-    const files = req.files as Express.Multer.File[] | undefined;
+// Renders a thumbnail of every page of every attached file (no OCR/model calls at all — just
+// pdf-to-image/image-normalize + downscale, same functions /api/process itself uses to load
+// pages) so the browser can show a staging grid right after attaching, before the real (expensive,
+// multi-pass) scan runs. Lets a human confirm/rotate a sideways page up front — auto-detecting
+// this from the model was tried and found unreliable (see lib/ocr.ts's rotateImage comment).
+app.post(
+    "/api/preview",
+    upload.fields([
+        { name: "pdfs", maxCount: 10 },
+        { name: "ipa", maxCount: 1 },
+    ]),
+    async (req, res) => {
+        const uploadedFields = req.files as { [field: string]: Express.Multer.File[] } | undefined;
+        const files = uploadedFields?.pdfs ?? [];
+        const ipaFile = uploadedFields?.ipa?.[0];
+
+        const pdfsPreview: { fileIndex: number; pageIndex: number; fileName: string; image: string }[] = [];
+        const pdfsErrors: { fileName: string; error: string }[] = [];
+        for (let fi = 0; fi < files.length; fi++) {
+            const file = files[fi];
+            try {
+                const images = await loadPagesForFile(file);
+                for (let pi = 0; pi < images.length; pi++) {
+                    pdfsPreview.push({ fileIndex: fi, pageIndex: pi, fileName: file.originalname, image: await resizeForDisplay(images[pi], 400) });
+                }
+            } catch (e: any) {
+                pdfsErrors.push({ fileName: file.originalname, error: e.message });
+            }
+        }
+
+        let ipaPreview: string | null = null;
+        let ipaError: string | null = null;
+        if (ipaFile) {
+            try {
+                const images = await loadPagesForFile(ipaFile);
+                // Only the first page is ever sent to extractIpaFields (lib/ipa.ts) — previewing
+                // later pages would invite rotating a page that isn't actually used.
+                if (images.length > 0) ipaPreview = await resizeForDisplay(images[0], 400);
+            } catch (e: any) {
+                ipaError = e.message;
+            }
+        }
+
+        res.json({ pdfsPreview, pdfsErrors, ipaPreview, ipaError });
+    }
+);
+
+app.post(
+    "/api/process",
+    upload.fields([
+        { name: "pdfs", maxCount: 10 },
+        { name: "ipa", maxCount: 1 }, // optional — the IPA letter, a single separate document from the timesheets
+    ]),
+    (req, res) => {
+    const uploadedFields = req.files as { [field: string]: Express.Multer.File[] } | undefined;
+    const files = uploadedFields?.pdfs;
+    const ipaFile = uploadedFields?.ipa?.[0];
     if (!files || files.length === 0) {
         return res.status(400).json({ error: "No PDF files uploaded." });
     }
@@ -152,6 +259,74 @@ app.post("/api/process", upload.array("pdfs", 10), async (req, res) => {
     if (!SUPPORTED_YEARS.includes(year)) {
         return res.status(400).json({ error: `year must be one of: ${SUPPORTED_YEARS.join(", ")}` });
     }
+
+    // Rotation degrees a human confirmed against the /api/preview thumbnails (public/index.html's
+    // staging step) — applied below via rotateImage before anything else ever looks at a page's
+    // image, so every downstream step (context extraction, scanning, IPA extraction) sees the
+    // corrected orientation. Absent/malformed is treated as "no rotations chosen" rather than an
+    // error — the staging step is a UX improvement, not a required step, so a request without it
+    // (e.g. an older client) should still scan normally, just without the correction.
+    let rotations: RotationMap = {};
+    try {
+        if (typeof req.body.rotations === "string") rotations = JSON.parse(req.body.rotations);
+    } catch {
+        // ignore — fall through with no rotations applied
+    }
+
+    // Pages a human dropped in the staging preview ("<fileIndex>-<pageIndex>" keys, same as
+    // rotations.pdfs) — the underlying file is still uploaded whole (a PDF's pages can't be
+    // stripped client-side), so exclusion is enforced here: skip these pages entirely, before any
+    // context extraction or scan attempt, as if that page were never on the page count at all.
+    let excludedPages = new Set<string>();
+    try {
+        if (typeof req.body.excludedPages === "string") {
+            const parsed = JSON.parse(req.body.excludedPages);
+            if (Array.isArray(parsed)) excludedPages = new Set(parsed);
+        }
+    } catch {
+        // ignore — fall through with no exclusions applied
+    }
+
+    // A real scan (many pages, sequential) can run 15-20+ minutes — long enough that holding this
+    // HTTP request open the whole time is fragile (proxies/networks can drop a connection that
+    // long) and gives the browser zero visibility into progress until the very end. Instead: kick
+    // the scan off as a background job and return its id immediately; public/index.html polls
+    // GET /api/process/:jobId, which renders each page's card as soon as that page finishes rather
+    // than waiting for the entire batch.
+    const jobId = randomUUID();
+    processJobs.set(jobId, { status: "running", pages: [], result: null, error: null });
+    runProcessJob(jobId, files, ipaFile, year, rotations, excludedPages)
+        .catch(e => {
+            const job = processJobs.get(jobId);
+            if (job) { job.status = "error"; job.error = e.message; }
+        })
+        .finally(() => scheduleJobCleanup(jobId));
+
+    res.json({ jobId });
+    }
+);
+
+// Polled by public/index.html every few seconds while a scan runs. `pages` grows live as each
+// page finishes scanning; `result`/`error` land once `status` moves away from "running".
+app.get("/api/process/:jobId", (req, res) => {
+    const job = processJobs.get(req.params.jobId);
+    if (!job) return res.status(404).json({ error: "job not found or expired" });
+    res.json(job);
+});
+
+// The actual scan/reconcile/fill-prep pipeline — everything /api/process's handler used to do
+// inline before returning res.json() directly. Now runs detached from the request that started
+// it (see the handler above), mutating the processJobs entry in place as it goes so
+// GET /api/process/:jobId always reflects current progress.
+async function runProcessJob(
+    jobId: string,
+    files: Express.Multer.File[],
+    ipaFile: Express.Multer.File | undefined,
+    year: number,
+    rotations: RotationMap,
+    excludedPages: Set<string>
+): Promise<void> {
+    const startedAt = Date.now();
 
     const timeEntries: TimeEntry[] = [];
     const restDays: RestDay[] = [];
@@ -170,254 +345,364 @@ app.post("/api/process", upload.array("pdfs", 10), async (req, res) => {
     // can send this classification along with the flag, without the client having to re-derive it.
     const pageMeta = new Map<string, { dataModel: PageDataModel; pageContext: string }>();
 
-    for (const file of files) {
-        // Real-world timesheets are frequently a phone photo (jpg/png), not a PDF — branch on the
-        // upload's mimetype rather than assuming every file is a PDF.
-        const isImage = file.mimetype.startsWith("image/");
+    // toLocalDateString, not toISOString: .toISOString() converts to UTC, which silently shifts
+    // the calendar date by a day in timezones ahead of UTC (e.g. a local-midnight Sept 11 becomes
+    // "2025-09-10") — exactly the class of date bug this debug output exists to help catch, so
+    // shipping that here would be self-defeating. Every date elsewhere in this codebase is
+    // constructed and read in local time (new Date(year, month, day)), so this matches that.
+    // Declared up here (rather than down by scanOutput, where it used to live) since the live
+    // per-page progress push inside the loop below needs it too.
+    const toLocalDateString = (d: Date) =>
+        `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+
+    // Builds the same {date, type, ...} shape /api/process has always returned per page, filtered
+    // to one page's own source — shared by the live in-progress snapshot pushed inside the loop
+    // below and the authoritative final pageReviews built after the whole loop completes.
+    function entriesForSource(source: string) {
+        return [
+            ...timeEntries
+                .filter(e => e.source === source)
+                .map(e => ({
+                    date: toLocalDateString(e.date),
+                    type: "worked" as const,
+                    clockIn: e.clockIn,
+                    clockOut: e.clockOut,
+                    guessed: e.guessed,
+                })),
+            ...restDays
+                .filter(r => r.source === source)
+                .map(r => ({
+                    date: `${r.year}-${String(r.month).padStart(2, "0")}-${String(r.day).padStart(2, "0")}`,
+                    type: "rest_day" as const,
+                })),
+            ...hoursEntries
+                .filter(h => h.source === source)
+                .map(h => ({
+                    date: toLocalDateString(h.date),
+                    type: "hours_worked" as const,
+                    hoursWorked: h.hoursWorked,
+                    otHours: h.otHours,
+                    guessed: h.guessed,
+                })),
+        ].sort((a, b) => a.date.localeCompare(b.date));
+    }
+
+    // Kicked off before the timesheet-page loop below (not awaited yet) so it runs concurrently
+    // with that loop's sequential per-file/per-page work instead of adding its own latency on top.
+    // An IPA is one MOM-issued document (unlike timesheets, never multiple files) — single page,
+    // single deterministic extraction pass (see lib/ipa.ts), so no per-page/band/temperature
+    // fan-out is needed here the way the timesheet loop needs it.
+    let ipaWarning: string | null = null;
+    const ipaPromise: Promise<IpaFields | null> = ipaFile
+        ? (async () => {
+            try {
+                const images = await loadPagesForFile(ipaFile);
+                if (images.length === 0) {
+                    ipaWarning = "IPA file had no readable pages";
+                    return null;
+                }
+                const image = rotations.ipa ? await rotateImage(images[0], rotations.ipa) : images[0];
+                const { fields, cost } = await extractIpaFields(image);
+                totalCostUsd += cost;
+                return fields;
+            } catch (e: any) {
+                ipaWarning = `could not process IPA document: ${e.message}`;
+                return null;
+            }
+        })()
+        : Promise.resolve(null);
+
+    for (let fi = 0; fi < files.length; fi++) {
+        const file = files[fi];
         let images: string[];
         try {
-            images = isImage ? await imageToPages(file.buffer) : await pdfToImages(file.buffer);
+            images = await loadPagesForFile(file);
         } catch (e: any) {
+            const isImage = file.mimetype.startsWith("image/");
             warnings.push({ source: file.originalname, reason: `could not read ${isImage ? "image" : "PDF"}: ${e.message}`, category: "system" });
             continue;
         }
 
         for (let i = 0; i < images.length; i++) {
-            const source = `${file.originalname} p${i + 1}`;
-            pageImages.push({ source, image: await resizeForDisplay(images[i]) });
+            if (excludedPages.has(`${fi}-${i}`)) continue; // dropped by a human in the staging preview — not a failure, nothing to warn about
 
-            // Read the full, uncropped page once for page-level context (e.g. a month header)
-            // before cropping into bands — a header can sit anywhere on the page depending on
-            // the source layout, and once cropped into bands, whichever band doesn't happen to
-            // include it would otherwise have no way to know what month its rows belong to. Also
-            // does two cheap classifications on the same call (lib/ocr.ts): whether this page is
-            // a timesheet at all, and which data model it seems to use.
+            const source = `${file.originalname} p${i + 1}`;
+            let displayImage = "";
             let pageContext = "";
             let dataModel: PageDataModel = "unclear";
+            // Wrapped in try/finally (rather than checking success at every one of this block's
+            // several early `continue`s) so the live progress push below always fires exactly once
+            // per page — whether it fully scanned, got skipped as a non-timesheet, or every scan
+            // attempt failed. A page the user is watching "process" should never just disappear
+            // without ever being accounted for in the live view.
             try {
-                const result = await extractPageContext(images[i]);
-                pageContext = result.context;
-                dataModel = result.dataModel;
-                pageMeta.set(source, { dataModel, pageContext });
-                totalCostUsd += result.cost;
-                if (!result.isTimesheet) {
-                    warnings.push({
-                        source,
-                        reason: `page does not appear to be a work time/attendance record${pageContext ? ` (${pageContext})` : ""} — skipped, no scan attempts made`,
-                        category: "system",
-                    });
-                    continue;
-                }
-            } catch (e: any) {
-                warnings.push({ source, reason: `could not extract page-level context (e.g. month header): ${e.message} — bands will rely on per-row reading only`, category: "scan_quality" });
-            }
-            const prompt = buildPrompt(year, pageContext, dataModel);
+                // Applied before anything else looks at this page (context extraction, band-cropping,
+                // scanning) — everything downstream sees the human-confirmed upright orientation from
+                // the /api/preview staging step, not the raw (possibly sideways) render.
+                const pageRotation = rotations.pdfs?.[`${fi}-${i}`];
+                if (pageRotation) images[i] = await rotateImage(images[i], pageRotation);
+                displayImage = await resizeForDisplay(images[i]);
+                pageImages.push({ source, image: displayImage });
 
-            const bands = await cropIntoBands(images[i], BANDS_PER_PAGE);
-
-            // flatten band x temperature into one parallel batch for max concurrency — all
-            // bands' attempts fire together rather than band-by-band, so wall-clock time stays
-            // close to a single batch's latency despite more total calls.
-            const jobs = bands.flatMap((bandImage, b) =>
-                SCAN_TEMPERATURES.map(({ temperature, seed }) => ({ bandImage, b, temperature, seed }))
-            );
-            const results = await Promise.allSettled(
-                jobs.map(({ bandImage, temperature, seed }) => scanPageImage(bandImage, prompt, temperature, seed))
-            );
-
-            const attemptsByBand: ParsedEntry[][][] = bands.map(() => []);
-            let truncatedCount = 0;
-            let failedCount = 0;
-            results.forEach((result, idx) => {
-                const { b } = jobs[idx];
-                if (result.status === "rejected") {
-                    failedCount++;
-                    return;
-                }
-                const { content, truncated, cost } = result.value;
-                totalCostUsd += cost;
-                if (truncated) truncatedCount++;
+                // Read the full, uncropped page once for page-level context (e.g. a month header)
+                // before cropping into bands — a header can sit anywhere on the page depending on
+                // the source layout, and once cropped into bands, whichever band doesn't happen to
+                // include it would otherwise have no way to know what month its rows belong to. Also
+                // does two cheap classifications on the same call (lib/ocr.ts): whether this page is
+                // a timesheet at all, and which data model it seems to use.
                 try {
-                    const parsed = JSON.parse(extractJsonBlock(content));
-                    if (!Array.isArray(parsed)) throw new Error("not a JSON array");
-                    attemptsByBand[b].push(parsed);
-                } catch {
-                    failedCount++;
-                }
-            });
-
-            const totalAttempts = jobs.length;
-            if (truncatedCount > 0) {
-                warnings.push({
-                    source,
-                    reason: `${truncatedCount}/${totalAttempts} scan attempts were truncated (hit token limit) — this page may still be missing rows, please review carefully`,
-                    category: "scan_quality",
-                });
-            }
-            if (failedCount > 0) {
-                warnings.push({
-                    source,
-                    reason: `${failedCount}/${totalAttempts} scan attempts failed or returned unparseable output`,
-                    category: "scan_quality",
-                });
-            }
-
-            // Reconcile WITHIN each band first (its own SCAN_TEMPERATURES attempts, all looking
-            // at the exact same cropped image — full participation required here, since a lone
-            // attempt hallucinating something the other attempts of the SAME image never mention
-            // is a genuine disagreement about the same source material). A band that fully
-            // failed contributes nothing (skipped, not pushed as an empty attempt) so it doesn't
-            // dilute the "X/N attempts agreed" bookkeeping for bands that did report.
-            // A punch-log page (lib/ocr.ts's PageDataModel) has no meaningful left-to-right/
-            // row order to preserve — each entry is independently timestamped by the app itself,
-            // unlike a table row where order distinguishes e.g. a real overnight shift from its
-            // reverse. Only relax reconcileAttempts's order-sensitivity for pages classified as
-            // such (see lib/reconcile.ts for why this can't safely be the default everywhere).
-            const orderMatters = dataModel !== "punch_log";
-
-            const bandResults: ParsedEntry[][] = [];
-            for (let b = 0; b < bands.length; b++) {
-                if (attemptsByBand[b].length === 0) continue;
-                const bandSource = bands.length > 1 ? `${source} (band ${b + 1}/${bands.length})` : source;
-                const { entries: bandEntries, warnings: bandWarnings } = reconcileAttempts(attemptsByBand[b], bandSource, true, year, orderMatters);
-                bandResults.push(bandEntries);
-                warnings.push(...bandWarnings);
-            }
-
-            if (bandResults.length === 0) {
-                warnings.push({ source, reason: "all scan attempts for this page failed — page was skipped entirely", category: "scan_quality" });
-                continue;
-            }
-
-            // Reconcile ACROSS bands leniently (requireFullParticipation=false): bands see
-            // genuinely different, only partially overlapping crops by design, so a day sitting
-            // in one band's region and outside another's isn't disagreement, it's expected
-            // non-coverage. Only reject when multiple bands DO report the same day with
-            // conflicting values — that's a real disagreement, not a coverage gap.
-            const { entries: reconciled, warnings: crossBandWarnings } = reconcileAttempts(bandResults, source, false, year, orderMatters);
-            warnings.push(...crossBandWarnings);
-
-            // Strict cross-attempt unanimity (lib/reconcile.ts) only catches disagreement — it
-            // can't catch the model confidently, consistently hallucinating the same fabricated
-            // date on every attempt, since there's nothing for reconciliation to disagree about.
-            // One extra focused call per page (not per date) asks specifically "does this date's
-            // row actually exist on the page", against the full uncropped image, and drops
-            // anything not confirmed rather than trusting transcription alone.
-            let parsed = reconciled;
-            const candidates = reconciled
-                .filter((e): e is ParsedEntry & { day: number; month: number } => e.day !== null && e.month !== null)
-                .map(e => ({ day: e.day, month: e.month }));
-            if (candidates.length > 0) {
-                try {
-                    const { confirmed, cost } = await verifyDatesOnPage(images[i], candidates);
-                    totalCostUsd += cost;
-                    parsed = reconciled.filter(e => {
-                        if (e.day === null || e.month === null) return true; // let existing validation handle it
-                        const isConfirmed = confirmed.has(`${e.month}-${e.day}`);
-                        if (!isConfirmed) {
-                            warnings.push({
-                                source,
-                                reason: `day=${e.day} month=${e.month}: failed page-level verification (no genuine row found for this date on a full-page recheck) — dropped, please check the source PDF for this date directly`,
-                                category: "dropped_disagreement",
-                                date: `${year}-${String(e.month).padStart(2, "0")}-${String(e.day).padStart(2, "0")}`,
-                            });
-                        }
-                        return isConfirmed;
-                    });
+                    const result = await extractPageContext(images[i]);
+                    pageContext = result.context;
+                    dataModel = result.dataModel;
+                    pageMeta.set(source, { dataModel, pageContext });
+                    totalCostUsd += result.cost;
+                    if (!result.isTimesheet) {
+                        warnings.push({
+                            source,
+                            reason: `page does not appear to be a work time/attendance record${pageContext ? ` (${pageContext})` : ""} — skipped, no scan attempts made`,
+                            category: "system",
+                        });
+                        continue;
+                    }
                 } catch (e: any) {
-                    warnings.push({ source, reason: `date verification pass failed (${e.message}) — entries for this page were NOT independently verified, please review carefully`, category: "scan_quality" });
+                    warnings.push({ source, reason: `could not extract page-level context (e.g. month header): ${e.message} — bands will rely on per-row reading only`, category: "scan_quality" });
                 }
-            }
+                const prompt = buildPrompt(year, pageContext, dataModel);
 
-            for (const entry of parsed) {
-                if (entry.day === null || entry.month === null) {
+                const bands = await cropIntoBands(images[i], BANDS_PER_PAGE);
+
+                // flatten band x temperature into one parallel batch for max concurrency — all
+                // bands' attempts fire together rather than band-by-band, so wall-clock time stays
+                // close to a single batch's latency despite more total calls.
+                const scanJobs = bands.flatMap((bandImage, b) =>
+                    SCAN_TEMPERATURES.map(({ temperature, seed }) => ({ bandImage, b, temperature, seed }))
+                );
+                const results = await Promise.allSettled(
+                    scanJobs.map(({ bandImage, temperature, seed }) => scanPageImage(bandImage, prompt, temperature, seed))
+                );
+
+                const attemptsByBand: ParsedEntry[][][] = bands.map(() => []);
+                let truncatedCount = 0;
+                let failedCount = 0;
+                results.forEach((result, idx) => {
+                    const { b, temperature, seed } = scanJobs[idx];
+                    if (result.status === "rejected") {
+                        failedCount++;
+                        // Previously silent — a rejected scan attempt (network error, the OpenRouter
+                        // SDK's internal parse bug, our own 90s timeout) gave zero trace of what
+                        // actually happened, making failure patterns like "most attempts on most
+                        // pages failed" undiagnosable after the fact.
+                        console.error(`${source} band ${b} temp=${temperature} seed=${seed}: scan attempt rejected —`, result.reason);
+                        return;
+                    }
+                    const { content, truncated, cost } = result.value;
+                    totalCostUsd += cost;
+                    if (truncated) truncatedCount++;
+                    try {
+                        const parsed = JSON.parse(extractJsonBlock(content));
+                        if (!Array.isArray(parsed)) throw new Error("not a JSON array");
+                        attemptsByBand[b].push(parsed);
+                    } catch (e: any) {
+                        failedCount++;
+                        // Same visibility gap as above, but for a response that came back at all yet
+                        // failed to parse as the expected JSON array — logging the raw text (not just
+                        // "failedCount++") is the only way to tell a truncation cutoff apart from a
+                        // genuinely malformed reply apart from extractJsonBlock picking the wrong
+                        // bracket pair.
+                        console.error(`${source} band ${b} temp=${temperature} seed=${seed} truncated=${truncated}: failed to parse scan output (${e.message}). Raw content:\n`, content);
+                    }
+                });
+
+                const totalAttempts = scanJobs.length;
+                if (truncatedCount > 0) {
                     warnings.push({
                         source,
-                        reason: `skipped a row with no determinable date (times=${entry.times ? entry.times.join(",") : entry.times})${entry.notes ? `: ${entry.notes}` : ""}`,
-                        category: "skipped_invalid",
+                        reason: `${truncatedCount}/${totalAttempts} scan attempts were truncated (hit token limit) — this page may still be missing rows, please review carefully`,
+                        category: "scan_quality",
                     });
-                    continue;
                 }
-                if (entry.month < 1 || entry.month > 12 || entry.day < 1 || entry.day > 31) {
-                    warnings.push({ source, reason: `implausible date day=${entry.day} month=${entry.month}, skipped`, category: "skipped_invalid" });
-                    continue;
-                }
-                // Generic 1-31 above isn't month-aware (e.g. April 31 doesn't exist). Entries
-                // that build a real Date (timeEntries) get this correction for free via JS's own
-                // rollover — but restDays are stored as raw numbers with no Date construction at
-                // all, so an invalid day here would silently inflate that month's day count with
-                // no bounds check downstream. Catch it here for every entry type uniformly.
-                const daysInThisMonth = new Date(year, entry.month, 0).getDate();
-                if (entry.day > daysInThisMonth) {
+                if (failedCount > 0) {
                     warnings.push({
                         source,
-                        reason: `day=${entry.day} does not exist in month=${entry.month}/${year} (only has ${daysInThisMonth} days), skipped`,
-                        category: "skipped_invalid",
+                        reason: `${failedCount}/${totalAttempts} scan attempts failed or returned unparseable output`,
+                        category: "scan_quality",
                     });
+                }
+
+                // Reconcile WITHIN each band first (its own SCAN_TEMPERATURES attempts, all looking
+                // at the exact same cropped image — full participation required here, since a lone
+                // attempt hallucinating something the other attempts of the SAME image never mention
+                // is a genuine disagreement about the same source material). A band that fully
+                // failed contributes nothing (skipped, not pushed as an empty attempt) so it doesn't
+                // dilute the "X/N attempts agreed" bookkeeping for bands that did report.
+                // A punch-log page (lib/ocr.ts's PageDataModel) has no meaningful left-to-right/
+                // row order to preserve — each entry is independently timestamped by the app itself,
+                // unlike a table row where order distinguishes e.g. a real overnight shift from its
+                // reverse. Only relax reconcileAttempts's order-sensitivity for pages classified as
+                // such (see lib/reconcile.ts for why this can't safely be the default everywhere).
+                const orderMatters = dataModel !== "punch_log";
+
+                const bandResults: ParsedEntry[][] = [];
+                for (let b = 0; b < bands.length; b++) {
+                    if (attemptsByBand[b].length === 0) continue;
+                    const bandSource = bands.length > 1 ? `${source} (band ${b + 1}/${bands.length})` : source;
+                    const { entries: bandEntries, warnings: bandWarnings } = reconcileAttempts(attemptsByBand[b], bandSource, true, year, orderMatters);
+                    bandResults.push(bandEntries);
+                    warnings.push(...bandWarnings);
+                }
+
+                if (bandResults.length === 0) {
+                    warnings.push({ source, reason: "all scan attempts for this page failed — page was skipped entirely", category: "scan_quality" });
                     continue;
                 }
-                if (entry.rest_day === true) {
-                    restDays.push({ year, month: entry.month, day: entry.day, source });
-                    continue;
+
+                // Reconcile ACROSS bands leniently (requireFullParticipation=false): bands see
+                // genuinely different, only partially overlapping crops by design, so a day sitting
+                // in one band's region and outside another's isn't disagreement, it's expected
+                // non-coverage. Only reject when multiple bands DO report the same day with
+                // conflicting values — that's a real disagreement, not a coverage gap.
+                const { entries: reconciled, warnings: crossBandWarnings } = reconcileAttempts(bandResults, source, false, year, orderMatters);
+                warnings.push(...crossBandWarnings);
+
+                // Strict cross-attempt unanimity (lib/reconcile.ts) only catches disagreement — it
+                // can't catch the model confidently, consistently hallucinating the same fabricated
+                // date on every attempt, since there's nothing for reconciliation to disagree about.
+                // One extra focused call per page (not per date) asks specifically "does this date's
+                // row actually exist on the page", against the full uncropped image, and drops
+                // anything not confirmed rather than trusting transcription alone.
+                let parsed = reconciled;
+                const candidates = reconciled
+                    .filter((e): e is ParsedEntry & { day: number; month: number } => e.day !== null && e.month !== null)
+                    .map(e => ({ day: e.day, month: e.month }));
+                if (candidates.length > 0) {
+                    try {
+                        const { confirmed, cost } = await verifyDatesOnPage(images[i], candidates);
+                        totalCostUsd += cost;
+                        parsed = reconciled.filter(e => {
+                            if (e.day === null || e.month === null) return true; // let existing validation handle it
+                            const isConfirmed = confirmed.has(`${e.month}-${e.day}`);
+                            if (!isConfirmed) {
+                                warnings.push({
+                                    source,
+                                    reason: `day=${e.day} month=${e.month}: failed page-level verification (no genuine row found for this date on a full-page recheck) — dropped, please check the source PDF for this date directly`,
+                                    category: "dropped_disagreement",
+                                    date: `${year}-${String(e.month).padStart(2, "0")}-${String(e.day).padStart(2, "0")}`,
+                                });
+                            }
+                            return isConfirmed;
+                        });
+                    } catch (e: any) {
+                        warnings.push({ source, reason: `date verification pass failed (${e.message}) — entries for this page were NOT independently verified, please review carefully`, category: "scan_quality" });
+                    }
                 }
-                const entryDate = `${year}-${String(entry.month).padStart(2, "0")}-${String(entry.day).padStart(2, "0")}`;
-                if ((!entry.times || entry.times.length === 0) && entry.hoursWorked !== null) {
-                    // hours_total data model: no clock times exist for this date, only a total
-                    // hours(+OT) figure — can't feed fillTimesheet's clock-time columns, so this
-                    // is captured for the review UI/JSON but explicitly flagged as not written to
-                    // the spreadsheet, rather than either fabricating clock times or silently
-                    // dropping genuinely-read data.
-                    hoursEntries.push({
-                        date: new Date(year, entry.month - 1, entry.day),
-                        hoursWorked: entry.hoursWorked,
-                        otHours: entry.otHours,
-                        source,
-                        guessed: entry.guessed === true,
-                    });
-                    warnings.push({
-                        source,
-                        reason: `day=${entry.day} month=${entry.month}: only a total-hours figure was found (${entry.hoursWorked}h${entry.otHours ? ` + ${entry.otHours}h OT` : ""}), no clock in/out times — NOT written to the spreadsheet (needs clock times), please enter this day manually`,
-                        category: "flagged_review",
-                        date: entryDate,
-                    });
-                    continue;
+
+                for (const entry of parsed) {
+                    if (entry.day === null || entry.month === null) {
+                        warnings.push({
+                            source,
+                            reason: `skipped a row with no determinable date (times=${entry.times ? entry.times.join(",") : entry.times})${entry.notes ? `: ${entry.notes}` : ""}`,
+                            category: "skipped_invalid",
+                        });
+                        continue;
+                    }
+                    if (entry.month < 1 || entry.month > 12 || entry.day < 1 || entry.day > 31) {
+                        warnings.push({ source, reason: `implausible date day=${entry.day} month=${entry.month}, skipped`, category: "skipped_invalid" });
+                        continue;
+                    }
+                    // Generic 1-31 above isn't month-aware (e.g. April 31 doesn't exist). Entries
+                    // that build a real Date (timeEntries) get this correction for free via JS's own
+                    // rollover — but restDays are stored as raw numbers with no Date construction at
+                    // all, so an invalid day here would silently inflate that month's day count with
+                    // no bounds check downstream. Catch it here for every entry type uniformly.
+                    const daysInThisMonth = new Date(year, entry.month, 0).getDate();
+                    if (entry.day > daysInThisMonth) {
+                        warnings.push({
+                            source,
+                            reason: `day=${entry.day} does not exist in month=${entry.month}/${year} (only has ${daysInThisMonth} days), skipped`,
+                            category: "skipped_invalid",
+                        });
+                        continue;
+                    }
+                    if (entry.rest_day === true) {
+                        restDays.push({ year, month: entry.month, day: entry.day, source });
+                        continue;
+                    }
+                    const entryDate = `${year}-${String(entry.month).padStart(2, "0")}-${String(entry.day).padStart(2, "0")}`;
+                    if ((!entry.times || entry.times.length === 0) && entry.hoursWorked !== null) {
+                        // hours_total data model: no clock times exist for this date, only a total
+                        // hours(+OT) figure — can't feed fillTimesheet's clock-time columns, so this
+                        // is captured for the review UI/JSON but explicitly flagged as not written to
+                        // the spreadsheet, rather than either fabricating clock times or silently
+                        // dropping genuinely-read data.
+                        hoursEntries.push({
+                            date: new Date(year, entry.month - 1, entry.day),
+                            hoursWorked: entry.hoursWorked,
+                            otHours: entry.otHours,
+                            source,
+                            guessed: entry.guessed === true,
+                        });
+                        warnings.push({
+                            source,
+                            reason: `day=${entry.day} month=${entry.month}: only a total-hours figure was found (${entry.hoursWorked}h${entry.otHours ? ` + ${entry.otHours}h OT` : ""}), no clock in/out times — NOT written to the spreadsheet (needs clock times), please enter this day manually`,
+                            category: "flagged_review",
+                            date: entryDate,
+                        });
+                        continue;
+                    }
+                    if (!entry.times || entry.times.length === 0) {
+                        warnings.push({
+                            source,
+                            reason: `skipped day=${entry.day} month=${entry.month} (no times detected)${entry.notes ? `: ${entry.notes}` : " — please check the source PDF for this date directly"}`,
+                            category: "skipped_invalid",
+                            date: entryDate,
+                        });
+                        continue;
+                    }
+                    if (entry.times.length % 2 !== 0) {
+                        warnings.push({
+                            source,
+                            reason: `day=${entry.day} month=${entry.month}: odd number of time values (${entry.times.join(", ")}) — cannot pair into clock-in/out shifts, skipped, please verify against the original page`,
+                            category: "skipped_invalid",
+                            date: entryDate,
+                        });
+                        continue;
+                    }
+                    if (entry.guessed === true) {
+                        warnings.push({
+                            source,
+                            reason: `day=${entry.day} month=${entry.month} is a model-derived guess (${entry.times.join(", ")})${entry.notes ? `: ${entry.notes}` : ""} — please double check`,
+                            category: "flagged_review",
+                            date: entryDate,
+                        });
+                    }
+                    // Pair consecutive values into shifts: [in1,out1,in2,out2,...] -> shift per pair.
+                    // Multiple TimeEntry objects sharing the same date is exactly how lib/xlsx.ts
+                    // already recognizes and handles a multi-shift day (see byCell grouping there).
+                    for (let ti = 0; ti < entry.times.length; ti += 2) {
+                        timeEntries.push({
+                            date: new Date(year, entry.month - 1, entry.day),
+                            clockIn: entry.times[ti],
+                            clockOut: entry.times[ti + 1],
+                            source,
+                            guessed: entry.guessed === true,
+                        });
+                    }
                 }
-                if (!entry.times || entry.times.length === 0) {
-                    warnings.push({
+            } finally {
+                // Live progress — pushed into the polled job as soon as this page's own processing
+                // reaches any exit point (success, non-timesheet skip, or total scan failure), so
+                // public/index.html can render "page N done" without waiting for the whole batch.
+                // Overwritten with the authoritative final pageReviews (including coverage-check-
+                // attached warnings) once the whole job finishes below.
+                const job = processJobs.get(jobId);
+                if (job && job.status === "running") {
+                    job.pages.push({
                         source,
-                        reason: `skipped day=${entry.day} month=${entry.month} (no times detected)${entry.notes ? `: ${entry.notes}` : " — please check the source PDF for this date directly"}`,
-                        category: "skipped_invalid",
-                        date: entryDate,
-                    });
-                    continue;
-                }
-                if (entry.times.length % 2 !== 0) {
-                    warnings.push({
-                        source,
-                        reason: `day=${entry.day} month=${entry.month}: odd number of time values (${entry.times.join(", ")}) — cannot pair into clock-in/out shifts, skipped, please verify against the original page`,
-                        category: "skipped_invalid",
-                        date: entryDate,
-                    });
-                    continue;
-                }
-                if (entry.guessed === true) {
-                    warnings.push({
-                        source,
-                        reason: `day=${entry.day} month=${entry.month} is a model-derived guess (${entry.times.join(", ")})${entry.notes ? `: ${entry.notes}` : ""} — please double check`,
-                        category: "flagged_review",
-                        date: entryDate,
-                    });
-                }
-                // Pair consecutive values into shifts: [in1,out1,in2,out2,...] -> shift per pair.
-                // Multiple TimeEntry objects sharing the same date is exactly how lib/xlsx.ts
-                // already recognizes and handles a multi-shift day (see byCell grouping there).
-                for (let i = 0; i < entry.times.length; i += 2) {
-                    timeEntries.push({
-                        date: new Date(year, entry.month - 1, entry.day),
-                        clockIn: entry.times[i],
-                        clockOut: entry.times[i + 1],
-                        source,
-                        guessed: entry.guessed === true,
+                        image: displayImage,
+                        entries: entriesForSource(source),
+                        warnings: warnings.filter(w => w.source.split(", ").includes(source)),
+                        dataModel,
+                        pageContext,
                     });
                 }
             }
@@ -481,14 +766,6 @@ app.post("/api/process", upload.array("pdfs", 10), async (req, res) => {
     // Every entry that was attempted, with its exact origin (a specific page/band scan), so a
     // wrong result (e.g. dates appearing that the source PDF never showed) can be traced back
     // without needing to reproduce the run to find out.
-    //
-    // toLocalDateString, not toISOString: .toISOString() converts to UTC, which silently shifts
-    // the calendar date by a day in timezones ahead of UTC (e.g. a local-midnight Sept 11 becomes
-    // "2025-09-10") — exactly the class of date bug this debug output exists to help catch, so
-    // shipping that here would be self-defeating. Every date elsewhere in this codebase is
-    // constructed and read in local time (new Date(year, month, day)), so this matches that.
-    const toLocalDateString = (d: Date) =>
-        `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
     const scanOutput = [
         ...timeEntries.map(e => ({
             date: toLocalDateString(e.date),
@@ -516,7 +793,9 @@ app.post("/api/process", upload.array("pdfs", 10), async (req, res) => {
     // Side-by-side review data: each page's (downscaled) image next to everything relevant to
     // it — every entry attempted from that page (written, flagged, or guessed) plus every warning
     // about it, so a user can visually compare the source handwriting against what the pipeline
-    // produced without needing the separate scan-output JSON download.
+    // produced without needing the separate scan-output JSON download. This is the authoritative
+    // version — supersedes the live in-progress snapshots pushed into processJobs during the loop
+    // above, since only here do coverage-check warnings get attached to their nearest page (below).
     //
     // Every warning attached to a page here is tracked in `assignedWarnings` and excluded from the
     // top-level `warnings` field below — a warning about a specific page belongs next to that page,
@@ -525,33 +804,8 @@ app.post("/api/process", upload.array("pdfs", 10), async (req, res) => {
     // in the general list.
     const allWarnings = warnings;
     const assignedWarnings = new Set<FillWarning>();
-    const pageReviews = pageImages.map(({ source, image }) => {
-        const entries = [
-            ...timeEntries
-                .filter(e => e.source === source)
-                .map(e => ({
-                    date: toLocalDateString(e.date),
-                    type: "worked" as const,
-                    clockIn: e.clockIn,
-                    clockOut: e.clockOut,
-                    guessed: e.guessed,
-                })),
-            ...restDays
-                .filter(r => r.source === source)
-                .map(r => ({
-                    date: `${r.year}-${String(r.month).padStart(2, "0")}-${String(r.day).padStart(2, "0")}`,
-                    type: "rest_day" as const,
-                })),
-            ...hoursEntries
-                .filter(h => h.source === source)
-                .map(h => ({
-                    date: toLocalDateString(h.date),
-                    type: "hours_worked" as const,
-                    hoursWorked: h.hoursWorked,
-                    otHours: h.otHours,
-                    guessed: h.guessed,
-                })),
-        ].sort((a, b) => a.date.localeCompare(b.date));
+    const pageReviews: PageReview[] = pageImages.map(({ source, image }) => {
+        const entries = entriesForSource(source);
 
         // Some warnings combine multiple sources into one comma-joined string (e.g. a multi-shift
         // day's shifts collapsing into one row) — split-and-match avoids a prefix false-positive
@@ -607,7 +861,14 @@ app.post("/api/process", upload.array("pdfs", 10), async (req, res) => {
 
     const generalWarnings = allWarnings.filter(w => !assignedWarnings.has(w));
 
-    res.json({
+    // Awaited last (not right after being kicked off) so its work overlapped with the timesheet
+    // loop above rather than blocking ahead of it.
+    const ipa = await ipaPromise;
+
+    const job = processJobs.get(jobId);
+    if (!job) return; // expired/evicted before the scan finished — nothing left to report to
+    job.pages = pageReviews;
+    job.result = {
         success: true,
         year,
         warnings: generalWarnings,
@@ -615,10 +876,13 @@ app.post("/api/process", upload.array("pdfs", 10), async (req, res) => {
         scanOutput,
         pageReviews,
         reviewRows,
+        ipa,
+        ipaWarning,
         costUsd: totalCostUsd,
         durationMs: Date.now() - startedAt,
-    });
-});
+    };
+    job.status = "done";
+}
 
 // Takes the human-reviewed (possibly hand-corrected) rows from the browser's edit step and writes
 // them straight to the spreadsheet — no OCR here, this is pure "given these final numbers, fill
@@ -713,6 +977,21 @@ app.post("/api/flag-page", express.json({ limit: "5mb" }), async (req, res) => {
         console.error("failed to store flagged page:", e);
         res.status(500).json({ error: `failed to store flagged page: ${e.message}` });
     }
+});
+
+// Catches multer's upload errors (e.g. a second file sent under the "ipa" field, which
+// maxCount: 1 above rejects) so they come back as the same clean JSON shape every other error on
+// these routes uses, instead of Express's default HTML 500 page — the frontend only ever expects
+// to res.json() a response body, never HTML.
+app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
+    if (err instanceof multer.MulterError) {
+        const message =
+            err.code === "LIMIT_UNEXPECTED_FILE" && err.field === "ipa"
+                ? "only 1 IPA file is accepted"
+                : err.message;
+        return res.status(400).json({ error: message });
+    }
+    next(err);
 });
 
 app.listen(PORT, () => {
