@@ -159,10 +159,9 @@ function computeSpanAndBreak(sortedShifts: Shift[]): { start: number; end: numbe
     return { start, end, spanHours, breakHours: breakMinutes / 60 };
 }
 
-// The template's own default "Meal Time hrs" (column G) baked into every row — used to pre-fill
-// the review row's lunch-break field for a single, unremarkable shift so the edit UI shows a
-// sensible starting number instead of blank/zero.
-const DEFAULT_LUNCH_BREAK_HOURS = 1;
+// Fallback "Meal Time hrs" (column G) default when the caller doesn't declare a standard — kept
+// so buildReviewRows still has a sane value with no arguments (existing callers/tests).
+const FALLBACK_LUNCH_BREAK_HOURS = 1;
 
 // Groups raw scanned TimeEntry rows into ONE ReviewRow per calendar date — collapsing 2+ shifts
 // (e.g. a morning block and an evening block) into a single span + observed gap-as-break, exactly
@@ -174,7 +173,17 @@ const DEFAULT_LUNCH_BREAK_HOURS = 1;
 // 24h+, a bad multi-shift span) still produces a best-effort row rather than being silently
 // dropped, since a human reviewing the row can fix or discard it themselves — dropping it here
 // would hide the very thing the review step exists to catch.
-export function buildReviewRows(entries: TimeEntry[], restDays: RestDay[]): ReviewRow[] {
+//
+// standardLunchHours is the caseworker's declared standard (public/index.html's lunch-break
+// radio group), used as the assumed break for a single, unremarkable shift — there's nothing
+// actually read off the page for that case (a single clock-in/clock-out pair says nothing about
+// the meal break), so adopting the declared standard directly is more accurate than a hardcoded
+// guess, and means it won't spuriously disagree with itself later (public/index.html's
+// checkLunchMismatch compares every row's lunchBreakHours against this same declared value). A
+// multi-shift day is different: the gap between shifts IS something actually observed on the
+// page, so that stays as the real measured value — genuinely comparable against the declared
+// standard, and worth a mismatch warning if it disagrees.
+export function buildReviewRows(entries: TimeEntry[], restDays: RestDay[], standardLunchHours: number = FALLBACK_LUNCH_BREAK_HOURS): ReviewRow[] {
     type Cell = { date: Date; shifts: Shift[]; source: string };
     const byDate = new Map<string, Cell>();
 
@@ -200,7 +209,7 @@ export function buildReviewRows(entries: TimeEntry[], restDays: RestDay[]): Revi
                 date: toLocalDateString(date),
                 clockIn: shifts[0].clockIn,
                 clockOut: shifts[0].clockOut,
-                lunchBreakHours: DEFAULT_LUNCH_BREAK_HOURS,
+                lunchBreakHours: standardLunchHours,
                 restDay: false,
                 guessed: anyGuessed || implausible,
                 notes: implausible ? `implausible shift duration (${hours}h) as originally scanned — please verify` : null,
@@ -214,7 +223,7 @@ export function buildReviewRows(entries: TimeEntry[], restDays: RestDay[]): Revi
                 date: toLocalDateString(date),
                 clockIn: start,
                 clockOut: end,
-                lunchBreakHours: implausible ? DEFAULT_LUNCH_BREAK_HOURS : Math.round(breakHours * 100) / 100,
+                lunchBreakHours: implausible ? standardLunchHours : Math.round(breakHours * 100) / 100,
                 restDay: false,
                 guessed: true, // a multi-shift collapse always needs a human glance, even when internally consistent
                 notes: `${shifts.length} shifts originally scanned (${sorted.map(s => `${s.clockIn}-${s.clockOut}`).join(", ")}) collapsed into one span — please verify`,

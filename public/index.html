@@ -49,6 +49,11 @@
   h1 { font-size: 20px; margin: 0 0 4px; }
   .sub { color: var(--muted); font-size: 13px; margin-bottom: 24px; }
   .upload-warning { color: var(--err); font-size: 13px; font-weight: 600; margin: 4px 0 16px; }
+  .form-section-header {
+    font-size: 14px; font-weight: 600; color: var(--text);
+    margin: 28px 0 14px; padding-top: 20px; border-top: 1px solid var(--border);
+  }
+  .form-section-header.first { margin-top: 0; padding-top: 0; border-top: none; }
   .stage-grid { display: flex; flex-direction: column; gap: 12px; margin-top: 10px; }
   .stage-file-group { border: 1px solid var(--border); border-radius: 8px; padding: 10px; background: var(--panel); }
   .stage-file-header {
@@ -79,6 +84,26 @@
   .stage-error { color: var(--err); }
   label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 6px; }
   .field { margin-bottom: 20px; }
+  /* Segmented-pill toggle — the underlying <input type="radio"> stays for real
+     single-select/keyboard/accessibility behavior, just visually hidden; the sibling label is
+     styled as the actual clickable pill, filled in with the accent color via :has() when its
+     radio is checked. */
+  .radio-group { display: flex; flex-wrap: wrap; gap: 8px; }
+  .radio-group label {
+    display: inline-flex; align-items: center; justify-content: center;
+    padding: 7px 14px; border: 1px solid var(--border); border-radius: 20px;
+    font-size: 13px; color: var(--text); margin: 0; font-weight: normal; cursor: pointer;
+    background: var(--panel); user-select: none;
+    transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+  }
+  .radio-group label:hover { border-color: var(--accent); }
+  .radio-group input[type="radio"] {
+    position: absolute; width: 0; height: 0; opacity: 0; pointer-events: none;
+  }
+  /* :has(input:checked) was tried here first — dropped after it measurably highlighted the wrong
+     (unchecked) label in testing, a real :has()-plus-position:absolute invalidation quirk, not
+     just a visual illusion. Toggled via JS instead (see wireRadioGroupHighlight). */
+  .radio-group label.radio-selected { background: var(--accent); border-color: var(--accent); color: #fff; }
   select {
     background: var(--panel);
     border: 1px solid var(--border);
@@ -275,6 +300,40 @@
 <div class="sub">Upload one worker's timesheets — PDFs or photos (jpg/png), one or more months. Each page is read by Qwen, then you review and correct the detected hours before generating the calculation.xltx spreadsheet.</div>
 
 <form id="form">
+  <h2 class="form-section-header first">Worker's schedule</h2>
+  <div class="field">
+    <label>Worker's weekly rest day</label>
+    <div class="radio-group" id="restDayGroup">
+      <label><input type="radio" name="restDayOfWeek" value="0" checked> Sun</label>
+      <label><input type="radio" name="restDayOfWeek" value="1"> Mon</label>
+      <label><input type="radio" name="restDayOfWeek" value="2"> Tue</label>
+      <label><input type="radio" name="restDayOfWeek" value="3"> Wed</label>
+      <label><input type="radio" name="restDayOfWeek" value="4"> Thu</label>
+      <label><input type="radio" name="restDayOfWeek" value="5"> Fri</label>
+      <label><input type="radio" name="restDayOfWeek" value="6"> Sat</label>
+    </div>
+  </div>
+
+  <div class="field">
+    <label>Work week</label>
+    <div class="radio-group" id="workWeekGroup">
+      <label><input type="radio" name="workWeekType" value="5.5" checked> 5.5-day week</label>
+      <label><input type="radio" name="workWeekType" value="6"> 6-day week</label>
+    </div>
+  </div>
+
+  <div class="field">
+    <label>Standard lunch break</label>
+    <div class="radio-group" id="lunchBreakGroup">
+      <label><input type="radio" name="lunchBreakStandard" value="1" checked> 1 hour</label>
+      <label><input type="radio" name="lunchBreakStandard" value="0.75"> 45 minutes</label>
+      <label><input type="radio" name="lunchBreakStandard" value="0.5"> 30 minutes</label>
+      <label><input type="radio" name="lunchBreakStandard" value="0"> 0 minutes</label>
+    </div>
+    <div class="file-list">Used to double-check each row's lunch break against what was actually extracted — a mismatch is flagged for review, not auto-corrected.</div>
+  </div>
+
+  <h2 class="form-section-header">Documents</h2>
   <div class="field">
     <label for="ipa">IPA letter (optional — PDF or photo)</label>
     <input type="file" id="ipa" name="ipa" accept="application/pdf,image/*">
@@ -289,6 +348,7 @@
     <div class="stage-grid" id="pdfsStage"></div>
   </div>
 
+  <h2 class="form-section-header">Claim details</h2>
   <div class="field">
     <label for="year">Claim year</label>
     <select id="year" name="year" required>
@@ -508,11 +568,31 @@ async function refreshIpaPreview() {
   }
 }
 
+// Highlights whichever pill is actually checked in a radio-group — driven by the 'change' event
+// rather than a CSS :has() selector (tried first, dropped: it measurably highlighted the wrong,
+// unchecked label, a real browser quirk with :has() + the visually-hidden position:absolute
+// radio, confirmed via computed-style inspection, not just eyeballing a screenshot).
+function wireRadioGroupHighlight(groupEl) {
+  const labels = [...groupEl.querySelectorAll('label')];
+  const sync = () => labels.forEach(l => l.classList.toggle('radio-selected', l.querySelector('input').checked));
+  labels.forEach(l => l.querySelector('input').addEventListener('change', sync));
+  sync(); // reflects the HTML-default `checked` radio (Sun / 5.5-day week) on first load
+}
+document.querySelectorAll('.radio-group').forEach(wireRadioGroupHighlight);
+
 pdfsInput.addEventListener('change', () => {
   updateFileListLabel();
   refreshPdfsPreview();
 });
 ipaInput.addEventListener('change', refreshIpaPreview);
+
+// Changing the declared standard re-evaluates every row already on screen, not just new ones —
+// otherwise a reviewer who adjusts this after the scan already ran would see stale warnings.
+// Delegated on the group container (radios' 'change' events bubble) rather than each radio
+// individually, same idea as wireRadioGroupHighlight.
+document.getElementById('lunchBreakGroup').addEventListener('change', () => {
+  document.querySelectorAll('.review-row').forEach(checkLunchMismatch);
+});
 
 // Scans can run for minutes on multiple/large PDFs — a browser notification means the user
 // doesn't have to keep the tab in view to know when it's done. Permission must be requested from
@@ -570,6 +650,10 @@ form.addEventListener('submit', async (e) => {
   // keys server.ts expects, matched against the exact same files/order being submitted here.
   formData.append('rotations', JSON.stringify({ pdfs: pdfsRotations, ipa: ipaRotationDeg }));
   formData.append('excludedPages', JSON.stringify([...excludedPdfsPages]));
+  // Declared standard lunch break — server.ts uses this as the single-shift default (nothing is
+  // actually observed to contradict it there) instead of a hardcoded assumption, so it agrees by
+  // construction with checkLunchMismatch's later comparison for those rows.
+  formData.append('standardLunchHours', getStandardLunchHours());
   currentYear = document.getElementById('year').value;
   formData.append('year', currentYear);
   ipaReviewEl.style.display = 'none';
@@ -856,6 +940,7 @@ function appendReviewRow(container, row) {
     <div class="field-group"><label><input type="checkbox" class="f-rest" ${row.restDay ? 'checked' : ''}> Rest day</label></div>
     <button type="button" class="row-delete-btn" title="Remove" aria-label="Remove"><svg viewBox="0 0 16 16" style="width:13px;height:13px;flex-shrink:0;" fill="currentColor" aria-hidden="true"><path d="M6 1a1 1 0 0 0-1 1v1H2.5a.5.5 0 0 0 0 1h.55l.65 9.1A1.5 1.5 0 0 0 5.2 15h5.6a1.5 1.5 0 0 0 1.5-1.4l.65-9.1h.55a.5.5 0 0 0 0-1H11V2a1 1 0 0 0-1-1H6zm0 2V2h4v1H6zM4.55 4h6.9l-.64 9h-5.62l-.64-9zM6.5 6a.5.5 0 0 1 .5.5v5a.5.5 0 0 1-1 0v-5a.5.5 0 0 1 .5-.5zm3 0a.5.5 0 0 1 .5.5v5a.5.5 0 0 1-1 0v-5a.5.5 0 0 1 .5-.5z"/></svg></button>
     ${row.notes ? `<div class="row-notes">${escapeHtml(row.notes)}</div>` : ''}
+    <div class="row-notes lunch-mismatch-note" style="display:none"></div>
   `;
   const dateInput = li.querySelector('.f-date');
   const weekdayLabel = li.querySelector('.weekday-label');
@@ -869,12 +954,34 @@ function appendReviewRow(container, row) {
     li.querySelector('.f-start').disabled = disabled;
     li.querySelector('.f-end').disabled = disabled;
     li.querySelector('.f-lunch').disabled = disabled;
+    checkLunchMismatch(li);
   });
   li.querySelectorAll('.time-input').forEach(input => {
     input.addEventListener('blur', () => { input.value = normalizeTimeInput(input.value); });
   });
+  li.querySelector('.f-lunch').addEventListener('input', () => checkLunchMismatch(li));
   li.querySelector('.row-delete-btn').addEventListener('click', () => li.remove());
   container.appendChild(li);
+  checkLunchMismatch(li);
+}
+
+function getStandardLunchHours() {
+  return Number(document.querySelector('input[name="lunchBreakStandard"]:checked').value);
+}
+
+// Flags (doesn't auto-correct) a row whose current lunch-break value doesn't match the declared
+// standard from the form above the upload fields — covers both a genuinely observed gap (a
+// multi-shift day's actual measured break) and the plain default a single-shift day starts with,
+// since either way a mismatch is something the reviewer should look at before trusting the row.
+function checkLunchMismatch(li) {
+  const note = li.querySelector('.lunch-mismatch-note');
+  if (li.querySelector('.f-rest').checked) { note.style.display = 'none'; return; }
+  const actual = li.querySelector('.f-lunch').value;
+  if (actual === '') { note.style.display = 'none'; return; }
+  const standard = getStandardLunchHours();
+  if (Math.abs(Number(actual) - standard) < 0.01) { note.style.display = 'none'; return; }
+  note.textContent = `⚠ Lunch break (${actual}h) doesn't match the declared standard (${standard}h) — please verify.`;
+  note.style.display = 'block';
 }
 
 function collectAllReviewRows() {
