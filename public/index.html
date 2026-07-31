@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Timesheet → Wage Claim Calculator</title>
+<title>Salary Claim Calculator</title>
 <style>
   :root {
     --bg: #f5f6f8;
@@ -49,6 +49,24 @@
   h1 { font-size: 20px; margin: 0 0 4px; }
   .sub { color: var(--muted); font-size: 13px; margin-bottom: 24px; }
   .upload-warning { color: var(--err); font-size: 13px; font-weight: 600; margin: 4px 0 16px; }
+  .rules-summary {
+    background: color-mix(in srgb, var(--accent) 8%, var(--panel));
+    border: 1px solid var(--accent); border-left: 5px solid var(--accent);
+    border-radius: 8px; padding: 16px 18px; margin-bottom: 24px;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+  }
+  .rules-summary-row { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  .rules-summary-cat { font-size: 11px; font-weight: 700; color: var(--text); text-transform: uppercase; letter-spacing: 0.02em; margin-bottom: 4px; }
+  .rules-summary ul { margin: 0; padding-left: 18px; font-size: 12px; color: var(--text); }
+  .rules-summary li { margin-bottom: 3px; }
+  .rules-summary-guardrails-cat { margin-top: 16px; }
+  .rules-summary-table { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 4px; }
+  .rules-summary-table th, .rules-summary-table td { text-align: left; padding: 6px 10px 6px 0; border-bottom: 1px solid var(--border); vertical-align: top; }
+  .rules-summary-table th { color: var(--muted); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: 0.02em; }
+  .rules-summary-table tr:last-child td { border-bottom: none; }
+  .rules-summary-table td:nth-child(2) { color: var(--ok); }
+  .rules-summary-table td:nth-child(3) { color: var(--err); }
+  .rules-summary-note { margin-top: 10px; font-size: 11px; color: var(--muted); font-style: italic; }
   .form-section-header {
     font-size: 14px; font-weight: 600; color: var(--text);
     margin: 28px 0 14px; padding-top: 20px; border-top: 1px solid var(--border);
@@ -157,6 +175,11 @@
   }
   .month-summary li { color: var(--muted); }
   .month-summary li.incomplete { color: var(--warn-text); }
+  .pay-total-table { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 8px; }
+  .pay-total-table th, .pay-total-table td { text-align: left; padding: 6px 10px 6px 0; border-bottom: 1px solid var(--border); vertical-align: top; }
+  .pay-total-table th { color: var(--muted); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: 0.02em; }
+  .pay-total-table tr:last-child td { border-bottom: none; }
+  .pay-total-sub { color: var(--muted); font-size: 11px; margin-top: 2px; }
   /* Breaks out of body's max-width so everything from here down spans the full browser width,
      regardless of how narrow the centered form/upload section above stays. */
   .page-reviews {
@@ -219,7 +242,9 @@
   }
   .inline-review-list .empty { padding: 4px 0; color: var(--muted); font-style: italic; }
   .inline-review-row:last-child { border-bottom: none; }
-  .inline-review-row.flagged-row { background: rgba(240, 185, 85, 0.08); }
+  .inline-review-row.flagged-row, .inline-review-row.rest-day-flag,
+  .inline-review-row.cap-flag, .inline-review-row.ph-flag, .inline-review-row.lunch-flag { background: rgba(240, 185, 85, 0.08); }
+  .inline-review-row.missing-day-row { background: rgba(220, 80, 80, 0.08); }
   .inline-review-row .field-group { display: inline-flex; align-items: center; gap: 5px; }
   /* margin: 0 overrides the generic top-level `label { margin-bottom: 6px }` rule further up —
      that leaked-in asymmetric margin (0 top / 6px bottom) was the actual root cause of a ~3px
@@ -243,6 +268,19 @@
   .inline-review-row input:disabled { opacity: 0.4; }
   .weekday-label { display: inline-block; width: 30px; text-align: center; font-size: 11px; font-weight: 600; color: var(--muted); }
   .inline-review-row .row-notes { flex-basis: 100%; font-size: 11px; color: var(--warn-text); }
+  .inline-review-row .rest-day-work-block {
+    flex-basis: 100%; margin-top: 6px; padding: 8px 10px;
+    border: 1px dashed var(--border); border-radius: 6px;
+  }
+  .inline-review-row .rest-day-work-block .rest-init-group label { padding: 4px 10px; font-size: 12px; }
+  .inline-review-row .rest-day-pay-note { margin-top: 6px; color: var(--warn-text); }
+  .shift-default-row { display: flex; align-items: center; gap: 16px; }
+  .shift-default-row .field-group { display: inline-flex; align-items: center; gap: 5px; }
+  .shift-default-row input {
+    background: #fff; border: 1px solid var(--border); color: var(--text);
+    padding: 4px 5px; border-radius: 4px; font-size: 12px; box-sizing: border-box;
+  }
+  .shift-default-row .time-input { width: 48px; }
   .spinner {
     display: inline-block; width: 12px; height: 12px;
     border: 2px solid var(--border); border-top-color: var(--accent);
@@ -265,6 +303,8 @@
   .extra-days-body-width { max-width: 1100px; margin: 0 auto; }
   .extra-days-claim-width { max-width: 720px; margin: 0 auto; }
   .review-hint { font-size: 12px; color: var(--muted); margin: 6px 0 12px; }
+  .ipa-computed-rates-list { margin: 0; padding-left: 18px; }
+  .ipa-computed-rates-list li { margin-bottom: 3px; }
   .review-actions { display: flex; align-items: center; gap: 12px; margin-top: 12px; }
   .add-day-btn {
     background: var(--accent); color: white; border: none;
@@ -296,8 +336,63 @@
 </div>
 
 <div class="container">
-<h1>Timesheet → Wage Claim Calculator</h1>
+<h1>Salary Claim Calculator</h1>
 <div class="sub">Upload one worker's timesheets — PDFs or photos (jpg/png), one or more months. Each page is read by Qwen, then you review and correct the detected hours before generating the calculation.xltx spreadsheet.</div>
+
+<div class="rules-summary">
+  <div class="rules-summary-row">
+    <div>
+      <div class="rules-summary-cat">Inputs you provide</div>
+      <ul>
+        <li>Weekly rest day</li>
+        <li>Work week (5.5/6-day)</li>
+        <li>Standard lunch break</li>
+      </ul>
+    </div>
+    <div>
+      <div class="rules-summary-cat">Computed automatically (needs IPA basic salary)</div>
+      <ul>
+        <li>Hourly basic rate</li>
+        <li>Daily basic rate</li>
+        <li>Daily gross rate</li>
+      </ul>
+    </div>
+  </div>
+  <div class="rules-summary-cat rules-summary-guardrails-cat">Guardrails — flagged live on each row</div>
+  <table class="rules-summary-table">
+    <thead>
+      <tr><th>Check</th><th>Passes (no flag)</th><th>Flags</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>Lunch break</td>
+        <td>Matches the declared standard</td>
+        <td>Differs from the declared standard</td>
+      </tr>
+      <tr>
+        <td>12-hour/day cap</td>
+        <td>Shift is 12 hours or less</td>
+        <td>Shift exceeds 12 hours</td>
+      </tr>
+      <tr>
+        <td>Monthly overtime cap</td>
+        <td>Month's overtime is 72 hours or less</td>
+        <td>Month's overtime exceeds 72 hours</td>
+      </tr>
+      <tr>
+        <td>Rest day worked</td>
+        <td>Not the declared rest day, or marked as a rest day (not worked)</td>
+        <td>The declared rest day was worked — pay differs by who requested it</td>
+      </tr>
+      <tr>
+        <td>Public holiday worked</td>
+        <td>Not a public holiday, or marked as a rest day</td>
+        <td>A public holiday was worked — paid gross pay + an extra basic day</td>
+      </tr>
+    </tbody>
+  </table>
+  <div class="rules-summary-note">Flags only — nothing here is auto-corrected or written to the spreadsheet; every row still needs your review.</div>
+</div>
 
 <form id="form">
   <h2 class="form-section-header first">Worker's schedule</h2>
@@ -322,6 +417,20 @@
     </div>
   </div>
 
+  <div class="field" id="halfDayField" style="display:none">
+    <label>Half-day (5.5-day week only)</label>
+    <div class="radio-group" id="halfDayGroup">
+      <label><input type="radio" name="halfDayOfWeek" value="0"> Sun</label>
+      <label><input type="radio" name="halfDayOfWeek" value="1"> Mon</label>
+      <label><input type="radio" name="halfDayOfWeek" value="2"> Tue</label>
+      <label><input type="radio" name="halfDayOfWeek" value="3"> Wed</label>
+      <label><input type="radio" name="halfDayOfWeek" value="4"> Thu</label>
+      <label><input type="radio" name="halfDayOfWeek" value="5"> Fri</label>
+      <label><input type="radio" name="halfDayOfWeek" value="6"> Sat</label>
+    </div>
+    <div class="file-list">Defaults to the day right before the declared rest day — change it if the worker's actual half-day falls elsewhere.</div>
+  </div>
+
   <div class="field">
     <label>Standard lunch break</label>
     <div class="radio-group" id="lunchBreakGroup">
@@ -331,6 +440,15 @@
       <label><input type="radio" name="lunchBreakStandard" value="0"> 0 minutes</label>
     </div>
     <div class="file-list">Used to double-check each row's lunch break against what was actually extracted — a mismatch is flagged for review, not auto-corrected.</div>
+  </div>
+
+  <div class="field">
+    <label>Default shift timing (used to fill in unaccounted days — see below)</label>
+    <div class="shift-default-row">
+      <div class="field-group"><span class="field-label">In</span><input type="text" inputmode="numeric" maxlength="4" placeholder="0800" class="time-input" id="defaultShiftStart"></div>
+      <div class="field-group"><span class="field-label">Out</span><input type="text" inputmode="numeric" maxlength="4" placeholder="1700" class="time-input" id="defaultShiftEnd"></div>
+    </div>
+    <div class="file-list">A day with no timesheet entry at all, in a week that otherwise falls short of the declared work week, gets filled in using this pattern — clearly marked so you know the app inserted it, not the scan.</div>
   </div>
 
   <h2 class="form-section-header">Documents</h2>
@@ -363,8 +481,10 @@
   <button type="submit" id="submitBtn">Process & Generate Claim</button>
 
   <div class="status" id="status"></div>
-  <ul class="month-summary" id="monthSummary" style="display:none"></ul>
   <div class="ipa-review" id="ipaReview" style="display:none"></div>
+  <ul class="month-summary" id="monthSummary" style="display:none"></ul>
+  <ul class="month-summary" id="otCapWarnings" style="display:none"></ul>
+  <div id="monthlyPayTotals" style="display:none"></div>
 </form>
 </div>
 
@@ -594,6 +714,30 @@ document.getElementById('lunchBreakGroup').addEventListener('change', () => {
   document.querySelectorAll('.review-row').forEach(checkLunchMismatch);
 });
 
+// Work week affects the daily-rate formula (Third Schedule); rest day affects which rows count
+// as "worked on the declared rest day" — both need every row's guardrails re-evaluated, same
+// reasoning as the lunch group above.
+document.getElementById('workWeekGroup').addEventListener('change', recomputeAllGuardrails);
+document.getElementById('restDayGroup').addEventListener('change', recomputeAllGuardrails);
+
+const halfDayField = document.getElementById('halfDayField');
+let halfDayTouched = false; // once the reviewer picks one explicitly, stop overwriting it
+document.querySelectorAll('input[name="halfDayOfWeek"]').forEach(input => {
+  input.addEventListener('change', () => { halfDayTouched = true; });
+});
+function updateHalfDayDefault() {
+  const is55 = document.querySelector('input[name="workWeekType"]:checked').value === '5.5';
+  halfDayField.style.display = is55 ? 'block' : 'none';
+  if (is55 && !halfDayTouched) {
+    const dayBeforeRest = (getDeclaredRestDayOfWeek() + 6) % 7;
+    const radio = document.querySelector(`input[name="halfDayOfWeek"][value="${dayBeforeRest}"]`);
+    if (radio && !radio.checked) { radio.checked = true; radio.dispatchEvent(new Event('change')); halfDayTouched = false; }
+  }
+}
+document.getElementById('workWeekGroup').addEventListener('change', updateHalfDayDefault);
+document.getElementById('restDayGroup').addEventListener('change', updateHalfDayDefault);
+updateHalfDayDefault();
+
 // Scans can run for minutes on multiple/large PDFs — a browser notification means the user
 // doesn't have to keep the tab in view to know when it's done. Permission must be requested from
 // a real user-gesture handler (not after an await, some browsers drop "user activation" by then),
@@ -777,6 +921,14 @@ function renderFinalResult(data) {
     ipaReviewEl.style.display = 'block';
     ipaReviewEl.innerHTML = (data.ipa ? renderIpaFields(data.ipa) : '')
       + (data.ipaWarning ? `<div class="row-notes">${escapeHtml(data.ipaWarning)}</div>` : '');
+    if (data.ipa) {
+      // Salary/allowances feed the rate formulas every row's guardrails depend on — editing
+      // either one here needs to ripple through every row on screen, not just this card.
+      ipaReviewEl.querySelectorAll('.ipa-input').forEach(input => {
+        input.addEventListener('input', recomputeAllGuardrails);
+      });
+      renderComputedRates();
+    }
   }
 
   // Shown even when zero pages came back (e.g. every file failed to read) so "Generate Excel"
@@ -819,6 +971,7 @@ function renderFinalResult(data) {
     pageReviewList.querySelectorAll('.page-flag-btn').forEach((btn, idx) => {
       btn.addEventListener('click', () => flagPage(btn, idx));
     });
+    detectAndInsertMissingDays();
   }
 }
 
@@ -919,50 +1072,376 @@ function weekdayAbbr(dateStr) {
   return WEEKDAY_ABBR[new Date(y, m - 1, d).getDay()];
 }
 
+let reviewRowCounter = 0; // namespaces each row's rest-day-initiator radio group (see below) so browsers don't cross-couple radios across different rows
+
 // Appends one editable date row into `container` — either a page card's inline-review-list (see
 // renderPageReview) or the standalone "add a missing day" list at the bottom. `.review-row` is
 // the shared marker collectAllReviewRows() uses to gather every row on the page regardless of
 // which list it lives in.
-function appendReviewRow(container, row) {
+function appendReviewRow(container, row, beforeEl) {
   const li = document.createElement('li');
-  li.className = 'inline-review-row review-row' + (row.guessed ? ' flagged-row' : '');
+  li.className = 'inline-review-row review-row' + (row.guessed ? ' flagged-row' : '') + (row.autoInserted ? ' missing-day-row' : '');
   // Carried through unedited so a flagged row the reviewer doesn't touch still gets highlighted
   // in the final spreadsheet as a fallback — the browser review is the primary check, but this
   // keeps a safety net for anything skimmed past.
   li.dataset.guessed = row.guessed ? '1' : '';
   li.dataset.notes = row.notes || '';
+  const rowId = reviewRowCounter++;
   li.innerHTML = `
     <div class="field-group weekday-group"><span class="weekday-label">${weekdayAbbr(row.date)}</span></div>
     <div class="field-group"><input type="date" class="f-date" value="${escapeHtml(row.date)}"></div>
     <div class="field-group"><span class="field-label">In</span><input type="text" inputmode="numeric" maxlength="4" placeholder="0800" class="f-start time-input" value="${hhmmToTimeInput(row.clockIn)}" ${row.restDay ? 'disabled' : ''}></div>
     <div class="field-group"><span class="field-label">Out</span><input type="text" inputmode="numeric" maxlength="4" placeholder="1700" class="f-end time-input" value="${hhmmToTimeInput(row.clockOut)}" ${row.restDay ? 'disabled' : ''}></div>
     <div class="field-group"><span class="field-label">Lunch</span><input type="number" step="0.25" min="0" class="f-lunch" value="${row.lunchBreakHours ?? ''}" ${row.restDay ? 'disabled' : ''}></div>
+    <div class="field-group"><span class="field-label">OT</span><span class="ot-hours-display">—</span></div>
     <div class="field-group"><label><input type="checkbox" class="f-rest" ${row.restDay ? 'checked' : ''}> Rest day</label></div>
     <button type="button" class="row-delete-btn" title="Remove" aria-label="Remove"><svg viewBox="0 0 16 16" style="width:13px;height:13px;flex-shrink:0;" fill="currentColor" aria-hidden="true"><path d="M6 1a1 1 0 0 0-1 1v1H2.5a.5.5 0 0 0 0 1h.55l.65 9.1A1.5 1.5 0 0 0 5.2 15h5.6a1.5 1.5 0 0 0 1.5-1.4l.65-9.1h.55a.5.5 0 0 0 0-1H11V2a1 1 0 0 0-1-1H6zm0 2V2h4v1H6zM4.55 4h6.9l-.64 9h-5.62l-.64-9zM6.5 6a.5.5 0 0 1 .5.5v5a.5.5 0 0 1-1 0v-5a.5.5 0 0 1 .5-.5zm3 0a.5.5 0 0 1 .5.5v5a.5.5 0 0 1-1 0v-5a.5.5 0 0 1 .5-.5z"/></svg></button>
     ${row.notes ? `<div class="row-notes">${escapeHtml(row.notes)}</div>` : ''}
     <div class="row-notes lunch-mismatch-note" style="display:none"></div>
+    <div class="row-notes hours-cap-note" style="display:none"></div>
+    <div class="rest-day-work-block" style="display:none">
+      <div class="review-hint">This date is your declared weekly rest day — who asked for this work?</div>
+      <div class="radio-group rest-init-group">
+        <label><input type="radio" name="restInit-${rowId}" value="worker"> Worker's own request</label>
+        <label><input type="radio" name="restInit-${rowId}" value="employer" checked> Employer's request</label>
+      </div>
+      <div class="rest-day-pay-note review-hint"></div>
+    </div>
+    <div class="row-notes ph-work-note" style="display:none"></div>
   `;
   const dateInput = li.querySelector('.f-date');
   const weekdayLabel = li.querySelector('.weekday-label');
+
+  // Every edit that can change this row's guardrails (date/times/lunch/rest-day) re-checks lunch
+  // mismatch, the three Employment Act guardrails for this row, and the monthly OT total (which
+  // this row contributes to).
+  function onRowChanged() {
+    checkLunchMismatch(li);
+    recomputeRowGuardrails(li);
+    recomputeMonthlyOtCap();
+  }
+
   // A manually-added row (see the "+ Add day" button) starts with no date at all — this keeps
   // the weekday label correct once the reviewer actually picks one, instead of staying blank.
   dateInput.addEventListener('change', () => {
     weekdayLabel.textContent = weekdayAbbr(dateInput.value);
+    onRowChanged();
   });
   li.querySelector('.f-rest').addEventListener('change', (e) => {
     const disabled = e.target.checked;
     li.querySelector('.f-start').disabled = disabled;
     li.querySelector('.f-end').disabled = disabled;
     li.querySelector('.f-lunch').disabled = disabled;
-    checkLunchMismatch(li);
+    onRowChanged();
   });
   li.querySelectorAll('.time-input').forEach(input => {
-    input.addEventListener('blur', () => { input.value = normalizeTimeInput(input.value); });
+    input.addEventListener('blur', () => { input.value = normalizeTimeInput(input.value); onRowChanged(); });
   });
-  li.querySelector('.f-lunch').addEventListener('input', () => checkLunchMismatch(li));
-  li.querySelector('.row-delete-btn').addEventListener('click', () => li.remove());
-  container.appendChild(li);
-  checkLunchMismatch(li);
+  li.querySelector('.f-lunch').addEventListener('input', onRowChanged);
+  const restInitGroup = li.querySelector('.rest-init-group');
+  wireRadioGroupHighlight(restInitGroup); // dynamically added after page load, so not covered by the initial document.querySelectorAll('.radio-group') pass
+  restInitGroup.addEventListener('change', () => recomputeRowGuardrails(li));
+  li.querySelector('.row-delete-btn').addEventListener('click', () => { li.remove(); recomputeMonthlyOtCap(); });
+  container.insertBefore(li, beforeEl || null);
+  onRowChanged();
+}
+
+// ===== Employment Act 1968 wage-claim assumptions — see docs/employment-act-1968-rules.md =====
+// All of this is advisory (flags/computed-display for the reviewer), not written into the
+// generated spreadsheet — the template's own formulas handle actual pay, this just helps a
+// caseworker spot rows worth a closer look before trusting the scan.
+
+function getBasicMonthlySalary() {
+  const el = document.querySelector('#ipaReview input[data-field="basicMonthlySalary"]');
+  if (!el || el.value === '') return null;
+  const v = Number(el.value);
+  return Number.isFinite(v) ? v : null;
+}
+function getMonthlyAllowances() {
+  const el = document.querySelector('#ipaReview input[data-field="fixedMonthlyAllowances"]');
+  if (!el || el.value === '') return 0;
+  const v = Number(el.value);
+  return Number.isFinite(v) ? v : 0;
+}
+function getWorkDaysPerWeek() {
+  const checked = document.querySelector('input[name="workWeekType"]:checked');
+  return checked ? Number(checked.value) : 5.5;
+}
+function getDeclaredRestDayOfWeek() {
+  const checked = document.querySelector('input[name="restDayOfWeek"]:checked');
+  return checked ? Number(checked.value) : 0;
+}
+// Fourth Schedule item 1 (s.38(6)) — fixed 52×44 divisor, NOT the declared work week (that's a
+// different, Third Schedule rate — see getDailyBasicRate below). This is the multiplier used for
+// OT, rest-day, and public-holiday pay alike.
+function getHourlyBasicRate() {
+  const salary = getBasicMonthlySalary();
+  return salary === null ? null : (salary * 12) / (52 * 44);
+}
+// Third Schedule item 2 (s.107A) — daily basic/gross rate, DOES use the declared work week.
+function getDailyBasicRate() {
+  const salary = getBasicMonthlySalary();
+  return salary === null ? null : (salary * 12) / (52 * getWorkDaysPerWeek());
+}
+function getDailyGrossRate() {
+  const salary = getBasicMonthlySalary();
+  if (salary === null) return null;
+  return ((salary + getMonthlyAllowances()) * 12) / (52 * getWorkDaysPerWeek());
+}
+function formatMoney(n) {
+  return (n === null || Number.isNaN(n)) ? '—' : `$${n.toFixed(2)}`;
+}
+const MONTH_ABBR = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+function formatMonthLabel(monthKey) {
+  const [y, m] = monthKey.split('-').map(Number);
+  return `${MONTH_ABBR[m - 1]} ${y}`;
+}
+
+// Official gazetted dates (data.gov.sg / MOM datasets, verified live — see
+// docs/singapore-public-holidays-2025-2026.md). Where a holiday falls on a Sunday, the date here
+// is the OBSERVED substitute weekday per s.88(1)(b) — that's the actual paid-holiday date for
+// wage purposes; the original Sunday is just an ordinary Sunday/rest-day instead, handled
+// separately by the rest-day check below rather than double-counted here.
+const PUBLIC_HOLIDAYS = {
+  2025: {
+    '2025-01-01': "New Year's Day",
+    '2025-01-29': 'Chinese New Year',
+    '2025-01-30': 'Chinese New Year (Day 2)',
+    '2025-03-31': 'Hari Raya Puasa',
+    '2025-04-18': 'Good Friday',
+    '2025-05-01': 'Labour Day',
+    '2025-05-03': 'Polling Day',
+    '2025-05-12': 'Vesak Day',
+    '2025-06-07': 'Hari Raya Haji',
+    '2025-08-09': 'National Day',
+    '2025-10-20': 'Deepavali',
+    '2025-12-25': 'Christmas Day',
+  },
+  2026: {
+    '2026-01-01': "New Year's Day",
+    '2026-02-17': 'Chinese New Year',
+    '2026-02-18': 'Chinese New Year (Day 2)',
+    '2026-03-21': 'Hari Raya Puasa',
+    '2026-04-03': 'Good Friday',
+    '2026-05-01': 'Labour Day',
+    '2026-05-27': 'Hari Raya Haji',
+    '2026-06-01': 'Vesak Day',
+    '2026-08-10': 'National Day',
+    '2026-11-09': 'Deepavali',
+    '2026-12-25': 'Christmas Day',
+  },
+};
+function isPublicHoliday(dateStr) {
+  if (!dateStr) return false;
+  const year = Number(dateStr.slice(0, 4));
+  return !!(PUBLIC_HOLIDAYS[year] || {})[dateStr];
+}
+function publicHolidayName(dateStr) {
+  if (!dateStr) return null;
+  const year = Number(dateStr.slice(0, 4));
+  return (PUBLIC_HOLIDAYS[year] || {})[dateStr] || null;
+}
+
+function weekdayIndex(dateStr) {
+  if (!dateStr) return null;
+  const [y, m, d] = dateStr.split('-').map(Number);
+  if (!y || !m || !d) return null;
+  return new Date(y, m - 1, d).getDay();
+}
+function toMinutesClient(hhmm) { return Math.trunc(hhmm / 100) * 60 + (hhmm % 100); }
+function shiftHoursClient(clockIn, clockOut) {
+  let minutes = toMinutesClient(clockOut) - toMinutesClient(clockIn);
+  if (minutes < 0) minutes += 24 * 60;
+  return minutes / 60;
+}
+// Net hours actually worked (span minus meal break) for a review row currently in the DOM — "hours
+// of work" per s.2(1). Null if the row isn't a valid worked shift yet (rest day, or times not
+// filled in — e.g. mid-edit, or a freshly-added blank row).
+function rowNetHours(li) {
+  if (li.querySelector('.f-rest').checked) return null;
+  const start = timeInputToHHMM(li.querySelector('.f-start').value);
+  const end = timeInputToHHMM(li.querySelector('.f-end').value);
+  if (start === null || end === null) return null;
+  const lunch = Number(li.querySelector('.f-lunch').value || 0);
+  return shiftHoursClient(start, end) - lunch;
+}
+
+const NORMAL_HOURS_PER_DAY = 8; // s.38's default "normal hours of work" absent a different agreed figure
+
+// s.37 rest-day-worked pay table — differs by who initiated it, which this app has no other way
+// to know than asking (see the rest-day-work-block wired in appendReviewRow).
+// Returns both the amount and a formula string with the actual numbers substituted in, so the
+// reviewer can see WHY the figure is what it is rather than just trusting a bare dollar amount.
+function computeRestDayPay(netHours, initiator) {
+  const hourly = getHourlyBasicRate();
+  const dailyBasic = getDailyBasicRate();
+  if (hourly === null || dailyBasic === null) return { pay: null, formula: null };
+  const half = NORMAL_HOURS_PER_DAY / 2;
+  const excess = Math.max(0, netHours - NORMAL_HOURS_PER_DAY);
+  const db = formatMoney(dailyBasic);
+  const hr = formatMoney(hourly);
+  if (initiator === 'worker') {
+    if (netHours <= half) return { pay: dailyBasic / 2, formula: `half day's basic rate (${db} ÷ 2)` };
+    if (netHours <= NORMAL_HOURS_PER_DAY) return { pay: dailyBasic, formula: `1 day's basic rate (${db})` };
+    return {
+      pay: dailyBasic + 1.5 * hourly * excess,
+      formula: `1 day's basic rate (${db}) + 1.5× hourly rate × excess hours (1.5 × ${hr} × ${excess.toFixed(2)}h)`,
+    };
+  }
+  if (netHours <= half) return { pay: dailyBasic, formula: `1 day's basic rate (${db})` };
+  if (netHours <= NORMAL_HOURS_PER_DAY) return { pay: dailyBasic * 2, formula: `2 × daily basic rate (${db})` };
+  return {
+    pay: dailyBasic * 2 + 1.5 * hourly * excess,
+    formula: `2 × daily basic rate (${db}) + 1.5× hourly rate × excess hours (1.5 × ${hr} × ${excess.toFixed(2)}h)`,
+  };
+}
+
+// Re-evaluates one row's three Employment Act guardrails: the 12h/day hard cap (s.38(8)), whether
+// this date is the declared weekly rest day worked (s.37, needs the initiator radio), and whether
+// it's a public holiday worked (s.88(4)). Called on every edit to this row, and whenever a global
+// input (salary, work week, declared rest day) that the underlying formulas depend on changes.
+function recomputeRowGuardrails(li) {
+  const dateVal = li.querySelector('.f-date').value;
+  const isRestDay = li.querySelector('.f-rest').checked;
+  const netHours = rowNetHours(li);
+
+  li.querySelector('.ot-hours-display').textContent =
+    netHours === null ? '—' : `${Math.max(0, netHours - NORMAL_HOURS_PER_DAY).toFixed(1)}h`;
+
+  const capNote = li.querySelector('.hours-cap-note');
+  const overCap = netHours !== null && netHours > 12;
+  if (overCap) {
+    capNote.textContent = `❗ ${netHours.toFixed(2)}h exceeds the 12h/day statutory hard cap — please verify this row.`;
+    capNote.style.display = 'block';
+  } else {
+    capNote.style.display = 'none';
+  }
+  li.classList.toggle('cap-flag', overCap);
+
+  const restBlock = li.querySelector('.rest-day-work-block');
+  const isDeclaredRestDay = dateVal && weekdayIndex(dateVal) === getDeclaredRestDayOfWeek();
+  const showRestBlock = isDeclaredRestDay && !isRestDay && netHours !== null;
+  restBlock.style.display = showRestBlock ? 'block' : 'none';
+  li.classList.toggle('rest-day-flag', showRestBlock);
+  if (showRestBlock) {
+    const initiatorInput = restBlock.querySelector('input[type="radio"]:checked');
+    const initiator = initiatorInput ? initiatorInput.value : 'employer';
+    const { pay, formula } = computeRestDayPay(netHours, initiator);
+    restBlock.querySelector('.rest-day-pay-note').textContent =
+      `Rest-day pay owed — pay = ${formula} = ${formatMoney(pay)}`;
+  }
+
+  const phNote = li.querySelector('.ph-work-note');
+  const isPh = dateVal && isPublicHoliday(dateVal);
+  const showPhNote = isPh && !isRestDay && netHours !== null;
+  if (showPhNote) {
+    const dailyGross = getDailyGrossRate();
+    const dailyBasic = getDailyBasicRate();
+    const total = (dailyGross !== null && dailyBasic !== null) ? dailyGross + dailyBasic : null;
+    phNote.textContent = `📅 ${publicHolidayName(dateVal)} worked (public holiday) — pay = daily gross rate (${formatMoney(dailyGross)}) + 1 extra daily basic rate (${formatMoney(dailyBasic)}) = ${formatMoney(total)}.`;
+    phNote.style.display = 'block';
+  } else {
+    phNote.style.display = 'none';
+  }
+  li.classList.toggle('ph-flag', showPhNote);
+}
+
+// s.38(5): overtime must not exceed 72 hours in a calendar month. OT is hours beyond
+// NORMAL_HOURS_PER_DAY, summed per month across every worked row currently on screen.
+function recomputeMonthlyOtCap() {
+  recomputeMonthlyPayTotals();
+  const otByMonth = new Map();
+  document.querySelectorAll('.review-row').forEach(li => {
+    const dateVal = li.querySelector('.f-date').value;
+    if (!dateVal) return;
+    const netHours = rowNetHours(li);
+    if (netHours === null) return;
+    const ot = Math.max(0, netHours - NORMAL_HOURS_PER_DAY);
+    if (ot <= 0) return;
+    const monthKey = dateVal.slice(0, 7);
+    otByMonth.set(monthKey, (otByMonth.get(monthKey) || 0) + ot);
+  });
+  const el = document.getElementById('otCapWarnings');
+  const overCap = [...otByMonth.entries()].filter(([, hrs]) => hrs > 72).sort();
+  if (overCap.length === 0) {
+    el.style.display = 'none';
+    el.innerHTML = '';
+    return;
+  }
+  el.style.display = 'block';
+  el.innerHTML = overCap
+    .map(([month, hrs]) => `<li class="incomplete">⚠ ${month}: ${hrs.toFixed(1)}h overtime exceeds the 72h/month statutory cap — please verify.</li>`)
+    .join('');
+}
+
+// Per-month total of the EXTRA pay owed on top of the worker's monthly basic salary — OT pay,
+// rest-day-worked pay, and public-holiday-worked pay, summed from every row currently on screen.
+// Basic salary already covers ordinary working days, so only these three components are added
+// here. Advisory only, same as every other guardrail — not written into the generated spreadsheet.
+function recomputeMonthlyPayTotals() {
+  const hourly = getHourlyBasicRate();
+  const restDayOfWeek = getDeclaredRestDayOfWeek();
+  const totals = new Map(); // monthKey -> { netHours, otHours, restDayPay, phPay }
+
+  document.querySelectorAll('.review-row').forEach(li => {
+    const dateVal = li.querySelector('.f-date').value;
+    if (!dateVal) return;
+    const isRestDayChecked = li.querySelector('.f-rest').checked;
+    const netHours = rowNetHours(li);
+    if (netHours === null) return;
+
+    const monthKey = dateVal.slice(0, 7);
+    if (!totals.has(monthKey)) totals.set(monthKey, { netHours: 0, otHours: 0, restDayPay: 0, phPay: 0 });
+    const t = totals.get(monthKey);
+    t.netHours += netHours;
+    t.otHours += Math.max(0, netHours - NORMAL_HOURS_PER_DAY);
+
+    const isDeclaredRestDay = weekdayIndex(dateVal) === restDayOfWeek;
+    if (isDeclaredRestDay && !isRestDayChecked) {
+      const initiatorInput = li.querySelector('.rest-init-group input[type="radio"]:checked');
+      const initiator = initiatorInput ? initiatorInput.value : 'employer';
+      const { pay } = computeRestDayPay(netHours, initiator);
+      if (pay !== null) t.restDayPay += pay;
+    } else if (isPublicHoliday(dateVal) && !isRestDayChecked) {
+      const dailyGross = getDailyGrossRate();
+      const dailyBasic = getDailyBasicRate();
+      if (dailyGross !== null && dailyBasic !== null) t.phPay += dailyGross + dailyBasic;
+    }
+  });
+
+  const el = document.getElementById('monthlyPayTotals');
+  const entries = [...totals.entries()].sort(([a], [b]) => a.localeCompare(b));
+  const basicSalary = getBasicMonthlySalary();
+  if (entries.length === 0 || hourly === null || basicSalary === null) {
+    el.style.display = 'none';
+    el.innerHTML = '';
+    return;
+  }
+  el.style.display = 'block';
+  const rows = entries.map(([month, t]) => {
+    const otPay = 1.5 * hourly * t.otHours;
+    const total = basicSalary + otPay + t.restDayPay + t.phPay;
+    return `<tr>
+      <td>${formatMonthLabel(month)}</td>
+      <td>${formatMoney(basicSalary)}</td>
+      <td>${formatMoney(otPay)}${t.otHours > 0 ? `<div class="pay-total-sub">${t.otHours.toFixed(1)}h × 1.5 × ${formatMoney(hourly)}/hr</div>` : ''}</td>
+      <td>${t.restDayPay > 0 ? formatMoney(t.restDayPay) : '—'}</td>
+      <td>${t.phPay > 0 ? formatMoney(t.phPay) : '—'}</td>
+      <td><strong>${formatMoney(total)}</strong></td>
+    </tr>`;
+  }).join('');
+  el.innerHTML = `<table class="pay-total-table">
+    <thead><tr><th>Month</th><th>Basic pay</th><th>Overtime</th><th>Rest-day worked</th><th>Public holiday worked</th><th>Total</th></tr></thead>
+    <tbody>${rows}</tbody>
+  </table>`;
+}
+
+// Top-level orchestrator — called whenever something ALL rows' guardrails depend on changes
+// (salary, allowances, work week, declared rest day), as opposed to a single row's own edit.
+function recomputeAllGuardrails() {
+  renderComputedRates();
+  document.querySelectorAll('.review-row').forEach(recomputeRowGuardrails);
+  recomputeMonthlyOtCap();
 }
 
 function getStandardLunchHours() {
@@ -975,13 +1454,126 @@ function getStandardLunchHours() {
 // since either way a mismatch is something the reviewer should look at before trusting the row.
 function checkLunchMismatch(li) {
   const note = li.querySelector('.lunch-mismatch-note');
-  if (li.querySelector('.f-rest').checked) { note.style.display = 'none'; return; }
+  if (li.querySelector('.f-rest').checked) { note.style.display = 'none'; li.classList.remove('lunch-flag'); return; }
   const actual = li.querySelector('.f-lunch').value;
-  if (actual === '') { note.style.display = 'none'; return; }
+  if (actual === '') { note.style.display = 'none'; li.classList.remove('lunch-flag'); return; }
   const standard = getStandardLunchHours();
-  if (Math.abs(Number(actual) - standard) < 0.01) { note.style.display = 'none'; return; }
+  if (Math.abs(Number(actual) - standard) < 0.01) { note.style.display = 'none'; li.classList.remove('lunch-flag'); return; }
   note.textContent = `⚠ Lunch break (${actual}h) doesn't match the declared standard (${standard}h) — please verify.`;
   note.style.display = 'block';
+  li.classList.add('lunch-flag');
+}
+
+function getHalfDayOfWeek() {
+  const checked = document.querySelector('input[name="halfDayOfWeek"]:checked');
+  return checked ? Number(checked.value) : null;
+}
+
+// Finds which page's own extracted-rows list a missing date belongs with — the page (if any)
+// whose rows include another date in the same Sun–Sat week. Keeps the auto-inserted row sitting
+// right next to the scan it's filling a gap in, in the SAME list as the extracted rows (not a
+// separate "+ Add day" list) so it can be slotted into date order alongside them.
+function findPageListForWeek(dateStr, pageCards) {
+  const [y, m, d] = dateStr.split('-').map(Number);
+  const target = new Date(y, m - 1, d);
+  const targetWeekStart = new Date(target);
+  targetWeekStart.setDate(target.getDate() - target.getDay());
+  const weekKey = targetWeekStart.toDateString();
+
+  for (const card of pageCards) {
+    const list = card.querySelector('.review-target-list');
+    const rowDates = [...list.querySelectorAll('.review-row .f-date')].map(inp => inp.value).filter(Boolean);
+    for (const rd of rowDates) {
+      const [ry, rm, rdd] = rd.split('-').map(Number);
+      const rDate = new Date(ry, rm - 1, rdd);
+      const rWeekStart = new Date(rDate);
+      rWeekStart.setDate(rDate.getDate() - rDate.getDay());
+      if (rWeekStart.toDateString() === weekKey) return list;
+    }
+  }
+  return null;
+}
+
+// Inserts a row into `container` in date order alongside whatever's already there (extracted
+// rows + any auto-inserted ones from an earlier date in this same pass), instead of appending at
+// the bottom — so the reviewer reads the whole page top-to-bottom as one chronological list.
+// Clears the "No entries extracted from this page" placeholder if this is the first row landing.
+function insertReviewRowSorted(container, row) {
+  const emptyLi = container.querySelector('li.empty');
+  if (emptyLi) emptyLi.remove();
+  let beforeEl = null;
+  for (const li of container.querySelectorAll(':scope > li.review-row')) {
+    const d = li.querySelector('.f-date').value;
+    if (d && row.date && d > row.date) { beforeEl = li; break; }
+  }
+  appendReviewRow(container, row, beforeEl);
+}
+
+// Runs automatically once a scan's rows are all rendered (see renderFinalResult) — silently does
+// nothing if there's not enough data yet (no rows, or no default shift timing set), since there's
+// no user action here to report back to.
+function detectAndInsertMissingDays() {
+  const rows = collectAllReviewRows();
+  if (rows.length === 0) return;
+  const start = timeInputToHHMM(document.getElementById('defaultShiftStart').value);
+  const end = timeInputToHHMM(document.getElementById('defaultShiftEnd').value);
+  if (start === null || end === null) return;
+
+  const accountedDates = new Set(rows.map(r => r.date));
+  const dates = [...accountedDates].sort();
+  const [ey, em, ed] = dates[0].split('-').map(Number);
+  const [ly, lm, ld] = dates[dates.length - 1].split('-').map(Number);
+  const earliestDate = new Date(ey, em - 1, ed);
+  const latestDate = new Date(ly, lm - 1, ld);
+
+  // Only fill in days that fall within a Sun–Sat week FULLY covered by the earliest→latest
+  // scanned range — otherwise a partial week at either edge (the scan simply starting or ending
+  // mid-week) would get falsely flagged as missing days outside the actual employment period.
+  const firstWeekStart = new Date(earliestDate);
+  firstWeekStart.setDate(firstWeekStart.getDate() - firstWeekStart.getDay());
+  if (firstWeekStart < earliestDate) firstWeekStart.setDate(firstWeekStart.getDate() + 7);
+
+  const lastWeekEnd = new Date(latestDate);
+  lastWeekEnd.setDate(lastWeekEnd.getDate() + (6 - lastWeekEnd.getDay()));
+  if (lastWeekEnd > latestDate) lastWeekEnd.setDate(lastWeekEnd.getDate() - 7);
+
+  const restDayOfWeek = getDeclaredRestDayOfWeek();
+  const workWeek = getWorkDaysPerWeek();
+  const halfDayOfWeek = workWeek === 5.5 ? getHalfDayOfWeek() : null;
+  const standardLunch = getStandardLunchHours();
+
+  const missingDates = [];
+  for (let weekStart = new Date(firstWeekStart); weekStart <= lastWeekEnd; weekStart.setDate(weekStart.getDate() + 7)) {
+    for (let i = 0; i < 7; i++) {
+      const d = new Date(weekStart);
+      d.setDate(d.getDate() + i);
+      if (d.getDay() === restDayOfWeek) continue; // declared rest day - expected to have no entry
+      const dateStr = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+      if (accountedDates.has(dateStr)) continue;
+      missingDates.push(dateStr);
+    }
+  }
+
+  if (missingDates.length === 0) return;
+
+  const pageCards = [...document.querySelectorAll('.page-review-row')];
+  for (const dateStr of missingDates) {
+    const targetList = findPageListForWeek(dateStr, pageCards)
+      || pageCards[pageCards.length - 1]?.querySelector('.review-target-list');
+    if (!targetList) continue;
+    const isHalfDay = halfDayOfWeek !== null && weekdayIndex(dateStr) === halfDayOfWeek;
+    insertReviewRowSorted(targetList, {
+      date: dateStr,
+      clockIn: start,
+      clockOut: end,
+      lunchBreakHours: standardLunch,
+      restDay: false,
+      guessed: false,
+      notes: `❗ Auto-inserted${isHalfDay ? ' (half-day)' : ''} — no timesheet entry found for this expected work day. Verify against the source document.`,
+      source: 'auto-inserted (missing day)',
+      autoInserted: true,
+    });
+  }
 }
 
 function collectAllReviewRows() {
@@ -1117,7 +1709,26 @@ function renderIpaFields(f) {
     <div class="ipa-field-grid">
       ${ipaField('basicMonthlySalary', 'Basic monthly salary ($)', f.basicMonthlySalary)}
       ${ipaField('fixedMonthlyAllowances', 'Fixed monthly allowances ($)', allowanceTotal)}
-    </div>`;
+    </div>
+    <div class="review-hint" id="ipaComputedRates"></div>`;
+}
+
+// Fourth Schedule item 1 (s.38(6)) — hourly basic rate used as the OT/rest-day/PH multiplier.
+// Fixed 52×44 divisor regardless of the declared work week — do NOT substitute
+// getWorkDaysPerWeek() here, that's a different (Third Schedule) rate below.
+function renderComputedRates() {
+  const el = document.getElementById('ipaComputedRates');
+  if (!el) return;
+  const hourly = getHourlyBasicRate();
+  if (hourly === null) { el.innerHTML = ''; return; }
+  const dailyBasic = getDailyBasicRate();
+  const dailyGross = getDailyGrossRate();
+  el.innerHTML = `
+    <ul class="ipa-computed-rates-list">
+      <li>Hourly basic rate (overtime / rest-day / public holiday multiplier): <strong>${formatMoney(hourly)}/hr</strong></li>
+      <li>Daily basic rate (${getWorkDaysPerWeek()}-day week): <strong>${formatMoney(dailyBasic)}/day</strong></li>
+      <li>Daily gross rate: <strong>${formatMoney(dailyGross)}/day</strong></li>
+    </ul>`;
 }
 
 function formatDuration(ms) {
