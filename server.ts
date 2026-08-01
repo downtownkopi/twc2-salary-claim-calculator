@@ -7,6 +7,7 @@ import { buildReviewRows, fillTimesheetFromRows, MONTH_ABBR, type TimeEntry, typ
 import { reconcileAttempts, type ParsedEntry } from "./lib/reconcile";
 import { uploadFlaggedPage, type FlaggedPageEntry } from "./lib/feedback";
 import { extractIpaFields, type IpaFields } from "./lib/ipa";
+import { extractMatchingTransactions, type BankTransaction } from "./lib/bankstatement";
 
 const TEMPLATE_PATH = path.join(__dirname, "calculation.xltx");
 const PORT = process.env.PORT || 3000;
@@ -86,6 +87,22 @@ const processJobs = new Map<string, ProcessJob>();
 const JOB_TTL_MS = 30 * 60 * 1000;
 function scheduleJobCleanup(jobId: string) {
     setTimeout(() => processJobs.delete(jobId), JOB_TTL_MS);
+}
+
+// Separate job type/store from ProcessJob above — a bank-statement scan is a standalone
+// cross-check against a worker's own claimed payments, not part of the timesheet/IPA pipeline
+// (different files, no year, no spreadsheet output), so it gets its own background-job track
+// rather than being bolted onto processJobs' shape.
+type BankStatementPageResult = { source: string; image: string; transactions: BankTransaction[] };
+type BankStatementJob = {
+    status: "running" | "done" | "error";
+    pages: BankStatementPageResult[];
+    result: { transactions: (BankTransaction & { source: string })[]; totalCredits: number; costUsd: number; durationMs: number } | null;
+    error: string | null;
+};
+const bankJobs = new Map<string, BankStatementJob>();
+function scheduleBankJobCleanup(jobId: string) {
+    setTimeout(() => bankJobs.delete(jobId), JOB_TTL_MS);
 }
 
 // Fanning out many parallel scan calls per page (bands x temperatures) means far more surface
@@ -204,11 +221,13 @@ app.post(
     upload.fields([
         { name: "pdfs", maxCount: 10 },
         { name: "ipa", maxCount: 1 },
+        { name: "bankStatement", maxCount: 10 },
     ]),
     async (req, res) => {
         const uploadedFields = req.files as { [field: string]: Express.Multer.File[] } | undefined;
         const files = uploadedFields?.pdfs ?? [];
         const ipaFile = uploadedFields?.ipa?.[0];
+        const bankStatementFiles = uploadedFields?.bankStatement ?? [];
 
         const pdfsPreview: { fileIndex: number; pageIndex: number; fileName: string; image: string }[] = [];
         const pdfsErrors: { fileName: string; error: string }[] = [];
@@ -237,7 +256,23 @@ app.post(
             }
         }
 
-        res.json({ pdfsPreview, pdfsErrors, ipaPreview, ipaError });
+        // Same staging idea as pdfs above — a bank statement is just as likely to be a phone
+        // photo as a clean digital export, so it gets the same rotate/exclude-before-scan step.
+        const bankStatementPreview: { fileIndex: number; pageIndex: number; fileName: string; image: string }[] = [];
+        const bankStatementErrors: { fileName: string; error: string }[] = [];
+        for (let fi = 0; fi < bankStatementFiles.length; fi++) {
+            const file = bankStatementFiles[fi];
+            try {
+                const images = await loadPagesForFile(file);
+                for (let pi = 0; pi < images.length; pi++) {
+                    bankStatementPreview.push({ fileIndex: fi, pageIndex: pi, fileName: file.originalname, image: await resizeForDisplay(images[pi], 400) });
+                }
+            } catch (e: any) {
+                bankStatementErrors.push({ fileName: file.originalname, error: e.message });
+            }
+        }
+
+        res.json({ pdfsPreview, pdfsErrors, ipaPreview, ipaError, bankStatementPreview, bankStatementErrors });
     }
 );
 
@@ -402,6 +437,10 @@ async function runProcessJob(
     // single deterministic extraction pass (see lib/ipa.ts), so no per-page/band/temperature
     // fan-out is needed here the way the timesheet loop needs it.
     let ipaWarning: string | null = null;
+    // Resized display copy of the IPA's own page, alongside its extracted fields — public/index.html
+    // shows this next to the editable salary/allowance inputs in the page-by-page review, the same
+    // "verify against the source scan" pattern every timesheet page already gets.
+    let ipaImage: string | null = null;
     const ipaPromise: Promise<IpaFields | null> = ipaFile
         ? (async () => {
             try {
@@ -411,6 +450,7 @@ async function runProcessJob(
                     return null;
                 }
                 const image = rotations.ipa ? await rotateImage(images[0], rotations.ipa) : images[0];
+                ipaImage = await resizeForDisplay(image, 500);
                 const { fields, cost } = await extractIpaFields(image);
                 totalCostUsd += cost;
                 return fields;
@@ -886,10 +926,125 @@ async function runProcessJob(
         pageReviews,
         reviewRows,
         ipa,
+        ipaImage,
         ipaWarning,
         costUsd: totalCostUsd,
         durationMs: Date.now() - startedAt,
     };
+    job.status = "done";
+}
+
+// Standalone cross-check tool: caseworker uploads the worker's own bank statement(s) and a list
+// of keywords/phrases to look for (e.g. "SALARY", the employer's name), and every page is scanned
+// for transactions the model judges related to those keywords — surfaced as a plain list for the
+// caseworker to compare against the claim total by eye. Not wired into /api/generate or the
+// spreadsheet at all (v1 scope is "surface matches", not automated gap calculation).
+app.post(
+    "/api/bank-statement",
+    upload.fields([{ name: "statements", maxCount: 10 }]),
+    (req, res) => {
+        const uploadedFields = req.files as { [field: string]: Express.Multer.File[] } | undefined;
+        const files = uploadedFields?.statements;
+        if (!files || files.length === 0) {
+            return res.status(400).json({ error: "No bank statement files uploaded." });
+        }
+
+        let keywords: string[] = [];
+        try {
+            const parsed = JSON.parse(req.body.keywords ?? "[]");
+            if (Array.isArray(parsed)) keywords = parsed.filter((k): k is string => typeof k === "string" && k.trim().length > 0).map(k => k.trim());
+        } catch {
+            // ignore — falls through to the empty-keywords check below
+        }
+        if (keywords.length === 0) {
+            return res.status(400).json({ error: "At least one keyword/line item to look for is required." });
+        }
+
+        // Same staging-confirmed rotation/exclusion pattern as /api/process — keyed
+        // "<fileIndex>-<pageIndex>", from the /api/preview-backed staging step in public/index.html.
+        let rotations: Record<string, number> = {};
+        try {
+            const parsed = JSON.parse(req.body.rotations ?? "{}");
+            if (parsed && typeof parsed === "object") rotations = parsed;
+        } catch {
+            // ignore — fall through with no rotations applied
+        }
+        let excludedPages = new Set<string>();
+        try {
+            const parsed = JSON.parse(req.body.excludedPages ?? "[]");
+            if (Array.isArray(parsed)) excludedPages = new Set(parsed);
+        } catch {
+            // ignore — fall through with no exclusions applied
+        }
+
+        const jobId = randomUUID();
+        bankJobs.set(jobId, { status: "running", pages: [], result: null, error: null });
+        runBankStatementJob(jobId, files, keywords, rotations, excludedPages)
+            .catch(e => {
+                const job = bankJobs.get(jobId);
+                if (job) { job.status = "error"; job.error = e.message; }
+            })
+            .finally(() => scheduleBankJobCleanup(jobId));
+
+        res.json({ jobId });
+    }
+);
+
+app.get("/api/bank-statement/:jobId", (req, res) => {
+    const job = bankJobs.get(req.params.jobId);
+    if (!job) return res.status(404).json({ error: "job not found or expired" });
+    res.json(job);
+});
+
+async function runBankStatementJob(
+    jobId: string,
+    files: Express.Multer.File[],
+    keywords: string[],
+    rotations: Record<string, number>,
+    excludedPages: Set<string>
+) {
+    const job = bankJobs.get(jobId);
+    if (!job) return;
+    const startedAt = Date.now();
+    let totalCostUsd = 0;
+    const pages: BankStatementPageResult[] = [];
+
+    for (let fi = 0; fi < files.length; fi++) {
+        const file = files[fi];
+        let images: string[];
+        try {
+            images = await loadPagesForFile(file);
+        } catch (e: any) {
+            console.error(`failed to load pages for ${file.originalname}:`, e);
+            continue;
+        }
+        for (let pi = 0; pi < images.length; pi++) {
+            const key = `${fi}-${pi}`;
+            if (excludedPages.has(key)) continue;
+            const rotation = rotations[key] || 0;
+            if (rotation) images[pi] = await rotateImage(images[pi], rotation);
+
+            const source = `${file.originalname} p${pi + 1}`;
+            const page: BankStatementPageResult = { source, image: await resizeForDisplay(images[pi], 500), transactions: [] };
+            try {
+                const { transactions, cost } = await extractMatchingTransactions(images[pi], keywords);
+                page.transactions = transactions;
+                totalCostUsd += cost;
+            } catch (e: any) {
+                console.error(`bank statement scan failed for ${source}:`, e);
+            }
+            pages.push(page);
+            job.pages = [...pages]; // live snapshot for polling clients
+        }
+    }
+
+    const transactions = pages
+        .flatMap(p => p.transactions.map(t => ({ ...t, source: p.source })))
+        .sort((a, b) => a.date.localeCompare(b.date));
+    const totalCredits = transactions.filter(t => t.direction !== "debit").reduce((sum, t) => sum + t.amount, 0);
+
+    job.pages = pages;
+    job.result = { transactions, totalCredits, costUsd: totalCostUsd, durationMs: Date.now() - startedAt };
     job.status = "done";
 }
 

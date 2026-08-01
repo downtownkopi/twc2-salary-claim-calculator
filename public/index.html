@@ -78,10 +78,10 @@
     display: flex; align-items: center; justify-content: space-between; gap: 10px;
     font-size: 12px; color: var(--muted); margin-bottom: 8px; word-break: break-all;
   }
-  .stage-file-pages { display: flex; flex-wrap: wrap; gap: 12px; }
-  .stage-tile { width: 170px; }
+  .stage-file-pages { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+  .stage-tile { width: 100%; }
   .stage-tile-img-wrap {
-    width: 170px; height: 170px; overflow: hidden; border: 1px solid var(--border); border-radius: 6px;
+    width: 100%; aspect-ratio: 1 / 1; overflow: hidden; border: 1px solid var(--border); border-radius: 6px;
     display: flex; align-items: center; justify-content: center; background: var(--bg); position: relative;
   }
   .stage-tile-img-wrap img { max-width: 100%; max-height: 100%; object-fit: contain; transition: transform 0.15s ease; }
@@ -122,7 +122,7 @@
      (unchecked) label in testing, a real :has()-plus-position:absolute invalidation quirk, not
      just a visual illusion. Toggled via JS instead (see wireRadioGroupHighlight). */
   .radio-group label.radio-selected { background: var(--accent); border-color: var(--accent); color: #fff; }
-  select {
+  select, input[type="text"], input[type="date"] {
     background: var(--panel);
     border: 1px solid var(--border);
     color: var(--text);
@@ -130,6 +130,7 @@
     border-radius: 6px;
     font-size: 13px;
   }
+  input[type="text"] { width: 100%; box-sizing: border-box; }
   input[type="file"] {
     width: 100%;
     background: var(--panel);
@@ -180,6 +181,29 @@
   .pay-total-table th { color: var(--muted); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: 0.02em; }
   .pay-total-table tr:last-child td { border-bottom: none; }
   .pay-total-sub { color: var(--muted); font-size: 11px; margin-top: 2px; }
+  .pay-total-row td { border-top: 2px solid var(--border); font-weight: 600; }
+  .pay-total-table input {
+    background: var(--bg); border: 1px solid var(--border); color: var(--text);
+    padding: 4px 6px; border-radius: 4px; font-size: 12px; box-sizing: border-box;
+  }
+  .pay-total-table .bt-amount { width: 80px; }
+  /* Page-by-page bank rows specifically (not the Summary table) — the amount input/delete button
+     sit at a different natural baseline than plain text, so top-align (the table's default,
+     right for the mostly-static Summary rows) leaves them looking misaligned against the
+     date/description text next to them. */
+  .pay-total-table .bt-row td { vertical-align: middle; }
+  /* The headline figure the whole app builds up to — deliberately loud (big text, strong border,
+     tinted background) so it can't be skimmed past on the way to the Generate button. Color
+     reflects the delta: red/warn for underpaid (the common case this app exists to catch), green
+     for fully paid/overpaid, matching --err/--ok used elsewhere for the same meaning. */
+  .owed-vs-paid {
+    margin-top: 28px; padding: 20px; border-radius: 10px; border: 2px solid var(--border);
+  }
+  .owed-vs-paid.underpaid { border-color: var(--err); background: color-mix(in srgb, var(--err) 8%, var(--panel)); }
+  .owed-vs-paid.settled { border-color: var(--ok); background: color-mix(in srgb, var(--ok) 8%, var(--panel)); }
+  .owed-vs-paid-delta { font-size: 22px; font-weight: 700; }
+  .owed-vs-paid.underpaid .owed-vs-paid-delta { color: var(--err); }
+  .owed-vs-paid.settled .owed-vs-paid-delta { color: var(--ok); }
   /* Breaks out of body's max-width so everything from here down spans the full browser width,
      regardless of how narrow the centered form/upload section above stays. */
   .page-reviews {
@@ -228,13 +252,7 @@
     top: 16px;
     align-self: flex-start;
   }
-  .page-review-source { font-size: 12px; color: var(--muted); margin-bottom: 8px; word-break: break-all; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-  .flag-btn {
-    background: transparent; color: var(--muted); border: 1px solid var(--border);
-    padding: 3px 9px; border-radius: 4px; font-size: 11px; cursor: pointer; flex-shrink: 0;
-  }
-  .flag-btn:hover { opacity: 0.85; border-color: var(--muted); }
-  .flag-btn.flagged { background: var(--warn-text); color: white; border-color: transparent; cursor: default; }
+  .page-review-source { font-size: 12px; color: var(--muted); margin-bottom: 8px; word-break: break-all; }
   .inline-review-list { list-style: none; margin: 0 0 4px; padding: 0; font-size: 12px; }
   .inline-review-row {
     display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px;
@@ -278,7 +296,7 @@
   .shift-default-row .field-group { display: inline-flex; align-items: center; gap: 5px; }
   .shift-default-row input {
     background: #fff; border: 1px solid var(--border); color: var(--text);
-    padding: 4px 5px; border-radius: 4px; font-size: 12px; box-sizing: border-box;
+    padding: 4px 5px; border-radius: 4px; font-size: 12px; box-sizing: border-box; height: 31px;
   }
   .shift-default-row .time-input { width: 48px; }
   .spinner {
@@ -345,16 +363,19 @@
       <div class="rules-summary-cat">Inputs you provide</div>
       <ul>
         <li>Weekly rest day</li>
-        <li>Work week (5.5/6-day)</li>
+        <li>Work week (5.5/6-day) and half-day, for 5.5-day weeks</li>
         <li>Standard lunch break</li>
+        <li>Default shift timing — used to fill in days with no timesheet entry</li>
+        <li>Contract start/end dates (optional) — keeps auto-filled days inside the actual employment period</li>
+        <li>Bank statement line item(s) to look for (optional)</li>
       </ul>
     </div>
     <div>
       <div class="rules-summary-cat">Computed automatically (needs IPA basic salary)</div>
       <ul>
-        <li>Hourly basic rate</li>
-        <li>Daily basic rate</li>
-        <li>Daily gross rate</li>
+        <li>Hourly / daily basic rate, daily gross rate</li>
+        <li>Payment breakdown — basic + overtime + rest-day + public holiday pay, per month</li>
+        <li>Owed vs Paid delta (also needs a bank statement scan)</li>
       </ul>
     </div>
   </div>
@@ -366,28 +387,38 @@
     <tbody>
       <tr>
         <td>Lunch break</td>
-        <td>Matches the declared standard</td>
-        <td>Differs from the declared standard</td>
+        <td>Lunch break matches what you set above</td>
+        <td>Lunch break is different from what you set — check the row</td>
       </tr>
       <tr>
         <td>12-hour/day cap</td>
-        <td>Shift is 12 hours or less</td>
-        <td>Shift exceeds 12 hours</td>
+        <td>Worked 12 hours or less that day</td>
+        <td>Worked more than 12 hours in one day</td>
       </tr>
       <tr>
         <td>Monthly overtime cap</td>
-        <td>Month's overtime is 72 hours or less</td>
-        <td>Month's overtime exceeds 72 hours</td>
+        <td>Under 72 overtime hours that month</td>
+        <td>Over 72 overtime hours in one month</td>
       </tr>
       <tr>
         <td>Rest day worked</td>
-        <td>Not the declared rest day, or marked as a rest day (not worked)</td>
-        <td>The declared rest day was worked — pay differs by who requested it</td>
+        <td>Worker didn't work on their rest day</td>
+        <td>Worker worked on their rest day — extra pay applies</td>
       </tr>
       <tr>
         <td>Public holiday worked</td>
-        <td>Not a public holiday, or marked as a rest day</td>
-        <td>A public holiday was worked — paid gross pay + an extra basic day</td>
+        <td>Worker didn't work on a public holiday</td>
+        <td>Worker worked on a public holiday — extra pay applies</td>
+      </tr>
+      <tr>
+        <td>Missing work day</td>
+        <td>Every expected work day is accounted for</td>
+        <td>A work day had no entry — app filled it in for you</td>
+      </tr>
+      <tr>
+        <td>Bank statement match</td>
+        <td>Transaction wording matches your keyword(s) exactly</td>
+        <td>Wording doesn't exactly match — flagged as an AI-judged guess</td>
       </tr>
     </tbody>
   </table>
@@ -451,6 +482,15 @@
     <div class="file-list">A day with no timesheet entry at all, in a week that otherwise falls short of the declared work week, gets filled in using this pattern — clearly marked so you know the app inserted it, not the scan.</div>
   </div>
 
+  <div class="field">
+    <label>Contract dates (optional)</label>
+    <div class="shift-default-row">
+      <div class="field-group"><span class="field-label">Start</span><input type="date" id="contractStartDate"></div>
+      <div class="field-group"><span class="field-label">End</span><input type="date" id="contractEndDate"></div>
+    </div>
+    <div class="file-list">Stops the app from inventing work days before the worker started or after they left — e.g. if they started on a Wednesday, Monday/Tuesday that same week won't be auto-filled even if the rest of the month otherwise falls short.</div>
+  </div>
+
   <h2 class="form-section-header">Documents</h2>
   <div class="field">
     <label for="ipa">IPA letter (optional — PDF or photo)</label>
@@ -464,6 +504,15 @@
     <input type="file" id="pdfs" name="pdfs" accept="application/pdf,image/*" multiple required>
     <div class="file-list" id="fileList"></div>
     <div class="stage-grid" id="pdfsStage"></div>
+  </div>
+
+  <div class="field">
+    <label for="bankStatementInput">Bank statement (optional — PDF or photo)</label>
+    <input type="file" id="bankStatementInput" accept=".pdf,image/*" multiple>
+    <div class="file-list" id="bankFileList"></div>
+    <div class="stage-grid" id="bankStatementStage"></div>
+    <input type="text" id="bankKeywords" placeholder="Line item(s) to look for, e.g. SALARY, ABC Engineering Pte Ltd, PAYROLL" style="margin-top: 10px;">
+    <div class="file-list">A worker sometimes says they were paid "some" but not all of what's owed — this is a separate check against their own bank statement, not tied to the claim scan above and not written to the spreadsheet. Comma-separate multiple line items; the wording on the statement often won't match exactly (abbreviated company name, a GIRO/PayNow reference, a manager's name), so the model uses judgement rather than an exact match. Payments can be daily, monthly, or one-off/irregular.</div>
   </div>
 
   <h2 class="form-section-header">Claim details</h2>
@@ -481,17 +530,34 @@
   <button type="submit" id="submitBtn">Process & Generate Claim</button>
 
   <div class="status" id="status"></div>
-  <div class="ipa-review" id="ipaReview" style="display:none"></div>
-  <ul class="month-summary" id="monthSummary" style="display:none"></ul>
+  <div class="status" id="bankStatus"></div>
   <ul class="month-summary" id="otCapWarnings" style="display:none"></ul>
-  <div id="monthlyPayTotals" style="display:none"></div>
 </form>
 </div>
 
 <div class="page-reviews" id="pageReviews" style="display:none">
   <h2>Page-by-page review</h2>
-  <div class="sub">Every date's Start/End/Lunch is editable right beside its source page — fix anything the scan got wrong, remove a row that shouldn't be there, or add a missing day below. Rows highlighted yellow were flagged by the scan (a guess, a multi-shift day, or an implausible reading) and are worth a closer look. Nothing is written to the spreadsheet until you click Generate. If a page's scan was wrong, correct the row(s) to the right values first, then click that page's "🚩 Flag as wrong" — it saves both the scan's original (wrong) reading and your correction, which is what actually helps improve future scans.</div>
+  <div class="sub">Every date's Start/End/Lunch is editable right beside its source page — fix anything the scan got wrong, remove a row that shouldn't be there, or add a missing day below. Rows highlighted yellow were flagged by the scan (a guess, a multi-shift day, or an implausible reading) and are worth a closer look. Nothing is written to the spreadsheet until you click Generate. Any page you edit is automatically saved (original scan + your correction) when you click Generate — this is what helps improve future scans.</div>
+  <div id="ipaPageReview" style="display:none"></div>
   <div id="pageReviewList"></div>
+  <div id="bankPageReviewList" style="display:none"></div>
+
+  <div class="extra-days-body-width">
+    <div class="extra-days-claim-width">
+      <div id="summarySection" style="display:none">
+        <h2 class="form-section-header">Summary</h2>
+        <div class="ipa-review" id="ipaReview" style="display:none"></div>
+        <div class="ipa-review" id="monthlyPayTotals" style="display:none; margin-top: 20px;"></div>
+        <div class="ipa-review" id="bankResults" style="display:none; margin-top: 20px;"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="extra-days-body-width">
+    <div class="extra-days-claim-width">
+      <div class="owed-vs-paid" id="owedVsPaidBox" style="display:none"></div>
+    </div>
+  </div>
 
   <div class="extra-days-section">
     <div class="extra-days-body-width">
@@ -532,16 +598,57 @@ const submitBtn = document.getElementById('submitBtn');
 const statusEl = document.getElementById('status');
 const ipaReviewEl = document.getElementById('ipaReview');
 
-const monthSummaryEl = document.getElementById('monthSummary');
 const pageReviewsEl = document.getElementById('pageReviews');
+const ipaPageReviewEl = document.getElementById('ipaPageReview');
 const pageReviewList = document.getElementById('pageReviewList');
+const bankPageReviewListEl = document.getElementById('bankPageReviewList');
+const summarySectionEl = document.getElementById('summarySection');
+// The Summary section (IPA / payment breakdown / bank statement boxes) should only appear once
+// at least one of its three boxes actually has something to show — called after each of those
+// three toggles its own display, from wherever that happens (renderFinalResult,
+// recomputeMonthlyPayTotals, runBankStatementScan).
+function updateSummarySectionVisibility() {
+  const anyVisible = ['ipaReview', 'monthlyPayTotals', 'bankResults']
+    .some(id => document.getElementById(id).style.display !== 'none');
+  summarySectionEl.style.display = anyVisible ? 'block' : 'none';
+}
+const owedVsPaidBoxEl = document.getElementById('owedVsPaidBox');
+// The headline "what does the company still owe" figure — stays hidden until BOTH totals are
+// actually known (totalOwedCache needs a basic salary; totalPaidCache needs a bank statement scan
+// to have run at least once), since a delta computed from only one real number and a guessed
+// zero would misrepresent an unchecked payment as a confirmed non-payment.
+function updateOwedVsPaidBox() {
+  if (totalOwedCache === null || totalPaidCache === null) {
+    owedVsPaidBoxEl.style.display = 'none';
+    owedVsPaidBoxEl.innerHTML = '';
+    return;
+  }
+  const delta = totalOwedCache - totalPaidCache;
+  const isUnderpaid = delta > 0.005; // guards against float noise landing a cent either side of zero
+  owedVsPaidBoxEl.className = 'owed-vs-paid ' + (isUnderpaid ? 'underpaid' : 'settled');
+  owedVsPaidBoxEl.style.display = 'block';
+  owedVsPaidBoxEl.innerHTML = `
+    <div class="owed-vs-paid-delta">
+      ${isUnderpaid
+        ? `⚠ Amount still owed to worker: ${formatMoney(delta)}`
+        : delta < -0.005
+          ? `Overpaid by ${formatMoney(-delta)}`
+          : `✓ Fully paid — no shortfall detected`}
+    </div>`;
+}
 const generateBtn = document.getElementById('generateBtn');
 const generateStatusEl = document.getElementById('generateStatus');
 let currentYear = null; // captured at scan time, reused when generating so the two stay in sync
 // The /api/process response's pageReviews (pre-edit, reconciled OCR output per page) — kept here
-// so the "Flag as wrong" button can still diff against it after the initial render, instead of
-// only living inside the submit handler's closure and vanishing once rendering finishes.
+// so autoFlagChangedPages can still diff against it at Generate time, instead of only living
+// inside the submit handler's closure and vanishing once rendering finishes.
 let currentPageReviews = [];
+// Cached by recomputeMonthlyPayTotals/refreshBankSummary each time either recomputes (both are
+// already wired to fire on every relevant edit) — updateOwedVsPaidBox reads both rather than
+// recomputing them itself, so it never has to know how either total is derived. null means "not
+// available yet" (no salary set / bank statement never scanned), not "zero".
+let totalOwedCache = null;
+let totalPaidCache = null;
 
 const pdfsStageEl = document.getElementById('pdfsStage');
 const ipaStageEl = document.getElementById('ipaStage');
@@ -780,9 +887,6 @@ form.addEventListener('submit', async (e) => {
   if (typeof Notification !== 'undefined' && Notification.permission === 'default') {
     Notification.requestPermission();
   }
-  monthSummaryEl.style.display = 'none';
-  monthSummaryEl.innerHTML = '';
-  pageReviewsEl.style.display = 'block';
   pageReviewList.innerHTML = '';
   generateStatusEl.className = 'status';
   generateStatusEl.textContent = '';
@@ -802,25 +906,50 @@ form.addEventListener('submit', async (e) => {
   formData.append('year', currentYear);
   ipaReviewEl.style.display = 'none';
   ipaReviewEl.innerHTML = '';
+  ipaPageReviewEl.style.display = 'none';
+  ipaPageReviewEl.innerHTML = '';
+  totalOwedCache = null;
+  totalPaidCache = null;
+  updateSummarySectionVisibility();
+  updateOwedVsPaidBox();
 
   submitBtn.disabled = true;
   livePagesProcessedCount = 0;
   startScanTimer();
+  const submitStartedAt = Date.now();
+  let mainErrored = false;
 
-  try {
-    const res = await fetch('/api/process', { method: 'POST', body: formData });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || `Server returned ${res.status}`);
+  // Runs alongside the main timesheet/IPA scan (not sequentially after it) — separate job, so a
+  // bank statement failure can't block or fail the main claim scan and vice versa. No-ops
+  // immediately if no bank statement file is attached. Each resolves with its own costUsd rather
+  // than writing status text directly — combined into ONE "Scan done" line below, written only
+  // once BOTH have settled (so it never shows before either is actually done, and there's a
+  // single total instead of two separate lines). An error is still surfaced immediately in its
+  // own status area, not held back or overwritten by the combined line.
+  const mainScan = (async () => {
+    try {
+      const res = await fetch('/api/process', { method: 'POST', body: formData });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `Server returned ${res.status}`);
 
-    await pollJobUntilDone(data.jobId);
-  } catch (err) {
-    stopScanTimer();
-    statusEl.className = 'status error';
-    statusEl.textContent = 'Error: ' + err.message;
-    notifyIfPermitted('Scan failed', err.message);
-  } finally {
-    submitBtn.disabled = false;
+      return await pollJobUntilDone(data.jobId);
+    } catch (err) {
+      mainErrored = true;
+      stopScanTimer();
+      statusEl.className = 'status error';
+      statusEl.textContent = 'Error: ' + err.message;
+      notifyIfPermitted('Scan failed', err.message);
+    }
+  })();
+
+  const [mainResult, bankResult] = await Promise.allSettled([mainScan, runBankStatementScan()]);
+  if (!mainErrored) {
+    const mainCost = mainResult.status === 'fulfilled' && typeof mainResult.value === 'number' ? mainResult.value : 0;
+    const bankCost = bankResult.status === 'fulfilled' && typeof bankResult.value === 'number' ? bankResult.value : 0;
+    statusEl.className = 'status success';
+    statusEl.textContent = `Scan done in ${formatDuration(Date.now() - submitStartedAt)}${formatCost(mainCost + bankCost)}`;
   }
+  submitBtn.disabled = false;
 });
 
 const POLL_INTERVAL_MS = 3000;
@@ -852,8 +981,8 @@ function pollJobUntilDone(jobId) {
 
       if (data.status === 'done') {
         stopScanTimer();
-        renderFinalResult(data.result);
-        resolve();
+        const message = renderFinalResult(data.result);
+        resolve(message);
         return;
       }
 
@@ -882,6 +1011,7 @@ function formatLiveEntry(e) {
 // view is fully replaced by renderFinalResult's editable cards once status flips to "done".
 function renderLivePages(pages) {
   livePagesProcessedCount = pages.length;
+  if (pages.length > 0) pageReviewsEl.style.display = 'block'; // reveal only once there's something to show
   pageReviewList.innerHTML = pages.map(page => {
     const entriesHtml = page.entries.length
       ? `<ul class="inline-review-list">${page.entries.map(e => `<li class="empty">${escapeHtml(formatLiveEntry(e))}</li>`).join('')}</ul>`
@@ -905,31 +1035,53 @@ function renderLivePages(pages) {
 
 // The complete, editable review UI — built once a job's status is "done" (data.result, same
 // shape /api/process used to return directly before it became a polled background job).
+// Renders everything as soon as this scan's own job finishes (page cards, IPA card, rows), and
+// returns its costUsd rather than writing a "Scan done" status text directly — the caller (the
+// form's submit handler) combines this with the bank statement scan's own cost into ONE status
+// line, written only once every concurrent scan has settled, so there's a single total instead
+// of two separate "Scan done" messages.
 function renderFinalResult(data) {
-  statusEl.className = 'status success';
-  statusEl.textContent = `Scan done in ${formatDuration(data.durationMs)}${formatCost(data.costUsd)} — review the rows below, then generate the spreadsheet.`;
   notifyIfPermitted('Scan complete', `Done in ${formatDuration(data.durationMs)} — ready to review.`);
 
-  if (data.monthSummary && data.monthSummary.length > 0) {
-    monthSummaryEl.style.display = 'block';
-    monthSummaryEl.innerHTML = data.monthSummary
-      .map(m => `<li class="${m.filled < m.total ? 'incomplete' : ''}">- ${escapeHtml(m.label)} ${m.filled}/${m.total} day(s) filled</li>`)
-      .join('');
-  }
-
-  if (data.ipa || data.ipaWarning) {
-    ipaReviewEl.style.display = 'block';
-    ipaReviewEl.innerHTML = (data.ipa ? renderIpaFields(data.ipa) : '')
-      + (data.ipaWarning ? `<div class="row-notes">${escapeHtml(data.ipaWarning)}</div>` : '');
+  // Editable version (thumbnail + inputs) lives in the page-by-page review, same "verify against
+  // the source scan" pattern as every timesheet page — this is the ONLY place basic salary and
+  // allowances are actually editable. The Summary section's IPA box is a separate, read-only
+  // rendering of the same data (see ipaReviewEl below), not something to edit twice.
+  if (data.ipaImage || data.ipa || data.ipaWarning) {
+    ipaPageReviewEl.style.display = 'block';
+    ipaPageReviewEl.innerHTML = `
+      <div class="page-review-row">
+        ${data.ipaImage ? `<div class="page-review-image"><img src="data:image/png;base64,${data.ipaImage}" alt="IPA letter"></div>` : ''}
+        <div class="page-review-details">
+          <div class="page-review-source"><span>IPA letter</span></div>
+          ${data.ipa ? renderIpaFieldsEditable(data.ipa) : ''}
+          ${data.ipaWarning ? `<div class="row-notes">${escapeHtml(data.ipaWarning)}</div>` : ''}
+        </div>
+      </div>`;
     if (data.ipa) {
-      // Salary/allowances feed the rate formulas every row's guardrails depend on — editing
-      // either one here needs to ripple through every row on screen, not just this card.
-      ipaReviewEl.querySelectorAll('.ipa-input').forEach(input => {
-        input.addEventListener('input', recomputeAllGuardrails);
+      // Salary/allowances feed the rate formulas every row's guardrails depend on, AND the
+      // Summary card's read-only figures — editing either one here needs to ripple through both,
+      // not just the row guardrails, otherwise Summary would keep showing the stale scanned
+      // value right next to rates already recomputed from the edited one.
+      ipaPageReviewEl.querySelectorAll('.ipa-input').forEach(input => {
+        input.addEventListener('input', () => { renderIpaSummaryText(); recomputeAllGuardrails(); });
       });
-      renderComputedRates();
     }
   }
+
+  if (data.ipa) {
+    ipaReviewEl.style.display = 'block';
+    // Must run before renderComputedRates() below — that function fills in the #ipaComputedRates
+    // placeholder that renderIpaSummaryText's own template creates, so calling it any earlier
+    // (before that placeholder exists in the DOM) would silently no-op and leave the bullets
+    // missing until the first edit.
+    renderIpaSummaryText();
+    renderComputedRates();
+  } else {
+    ipaReviewEl.style.display = 'none';
+    ipaReviewEl.innerHTML = '';
+  }
+  updateSummarySectionVisibility();
 
   // Shown even when zero pages came back (e.g. every file failed to read) so "Generate Excel"
   // at the bottom always stays reachable after a scan completes.
@@ -968,11 +1120,10 @@ function renderFinalResult(data) {
         appendReviewRow(extraLists[idx], { date: '', clockIn: null, clockOut: null, lunchBreakHours: 1, restDay: false, guessed: false, notes: null, source: 'manually added' });
       });
     });
-    pageReviewList.querySelectorAll('.page-flag-btn').forEach((btn, idx) => {
-      btn.addEventListener('click', () => flagPage(btn, idx));
-    });
     detectAndInsertMissingDays();
   }
+
+  return data.costUsd;
 }
 
 generateBtn.addEventListener('click', async () => {
@@ -982,6 +1133,7 @@ generateBtn.addEventListener('click', async () => {
     generateStatusEl.textContent = 'No rows to generate — add at least one day first.';
     return;
   }
+  autoFlagChangedPages(); // fire-and-forget, doesn't block Generate
   generateBtn.disabled = true;
   generateStatusEl.className = 'status loading';
   generateStatusEl.innerHTML = '<span class="spinner"></span>Generating spreadsheet…';
@@ -997,13 +1149,6 @@ generateBtn.addEventListener('click', async () => {
 
     generateStatusEl.className = 'status success';
     generateStatusEl.textContent = `Generated — ${data.entriesWritten} day(s) written.`;
-
-    if (data.monthSummary && data.monthSummary.length > 0) {
-      monthSummaryEl.style.display = 'block';
-      monthSummaryEl.innerHTML = data.monthSummary
-        .map(m => `<li class="${m.filled < m.total ? 'incomplete' : ''}">- ${escapeHtml(m.label)} ${m.filled}/${m.total} day(s) filled</li>`)
-        .join('');
-    }
     const bytes = Uint8Array.from(atob(data.file), c => c.charCodeAt(0));
     const blob = new Blob([bytes], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
     const url = URL.createObjectURL(blob);
@@ -1152,13 +1297,13 @@ function appendReviewRow(container, row, beforeEl) {
 // caseworker spot rows worth a closer look before trusting the scan.
 
 function getBasicMonthlySalary() {
-  const el = document.querySelector('#ipaReview input[data-field="basicMonthlySalary"]');
+  const el = document.querySelector('#ipaPageReview input[data-field="basicMonthlySalary"]');
   if (!el || el.value === '') return null;
   const v = Number(el.value);
   return Number.isFinite(v) ? v : null;
 }
 function getMonthlyAllowances() {
-  const el = document.querySelector('#ipaReview input[data-field="fixedMonthlyAllowances"]');
+  const el = document.querySelector('#ipaPageReview input[data-field="fixedMonthlyAllowances"]');
   if (!el || el.value === '') return 0;
   const v = Number(el.value);
   return Number.isFinite(v) ? v : 0;
@@ -1189,7 +1334,7 @@ function getDailyGrossRate() {
   return ((salary + getMonthlyAllowances()) * 12) / (52 * getWorkDaysPerWeek());
 }
 function formatMoney(n) {
-  return (n === null || Number.isNaN(n)) ? '—' : `$${n.toFixed(2)}`;
+  return (n === null || Number.isNaN(n)) ? '—' : `$${n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 const MONTH_ABBR = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 function formatMonthLabel(monthKey) {
@@ -1328,7 +1473,7 @@ function recomputeRowGuardrails(li) {
     const initiator = initiatorInput ? initiatorInput.value : 'employer';
     const { pay, formula } = computeRestDayPay(netHours, initiator);
     restBlock.querySelector('.rest-day-pay-note').textContent =
-      `Rest-day pay owed — pay = ${formula} = ${formatMoney(pay)}`;
+      `🛏️ Rest-day pay owed — pay = ${formula} = ${formatMoney(pay)}`;
   }
 
   const phNote = li.querySelector('.ph-work-note');
@@ -1415,12 +1560,19 @@ function recomputeMonthlyPayTotals() {
   if (entries.length === 0 || hourly === null || basicSalary === null) {
     el.style.display = 'none';
     el.innerHTML = '';
+    totalOwedCache = null;
+    updateSummarySectionVisibility();
+    updateOwedVsPaidBox();
     return;
   }
   el.style.display = 'block';
+  // Grand total across every month, added as a bottom Total row — each month's own row is a
+  // sub-amount, this is the figure the caseworker actually wants to hand to the worker.
+  let sumTotal = 0;
   const rows = entries.map(([month, t]) => {
     const otPay = 1.5 * hourly * t.otHours;
     const total = basicSalary + otPay + t.restDayPay + t.phPay;
+    sumTotal += total;
     return `<tr>
       <td>${formatMonthLabel(month)}</td>
       <td>${formatMoney(basicSalary)}</td>
@@ -1430,10 +1582,17 @@ function recomputeMonthlyPayTotals() {
       <td><strong>${formatMoney(total)}</strong></td>
     </tr>`;
   }).join('');
-  el.innerHTML = `<table class="pay-total-table">
+  const totalRow = `<tr class="pay-total-row">
+      <td colspan="5">Total</td>
+      <td><strong>${formatMoney(sumTotal)}</strong></td>
+    </tr>`;
+  el.innerHTML = `<h3>Payment breakdown</h3><table class="pay-total-table">
     <thead><tr><th>Month</th><th>Basic pay</th><th>Overtime</th><th>Rest-day worked</th><th>Public holiday worked</th><th>Total</th></tr></thead>
-    <tbody>${rows}</tbody>
+    <tbody>${rows}${totalRow}</tbody>
   </table>`;
+  totalOwedCache = sumTotal;
+  updateSummarySectionVisibility();
+  updateOwedVsPaidBox();
 }
 
 // Top-level orchestrator — called whenever something ALL rows' guardrails depend on changes
@@ -1521,21 +1680,64 @@ function detectAndInsertMissingDays() {
 
   const accountedDates = new Set(rows.map(r => r.date));
   const dates = [...accountedDates].sort();
-  const [ey, em, ed] = dates[0].split('-').map(Number);
-  const [ly, lm, ld] = dates[dates.length - 1].split('-').map(Number);
-  const earliestDate = new Date(ey, em - 1, ed);
-  const latestDate = new Date(ly, lm - 1, ld);
 
-  // Only fill in days that fall within a Sun–Sat week FULLY covered by the earliest→latest
-  // scanned range — otherwise a partial week at either edge (the scan simply starting or ending
-  // mid-week) would get falsely flagged as missing days outside the actual employment period.
-  const firstWeekStart = new Date(earliestDate);
-  firstWeekStart.setDate(firstWeekStart.getDate() - firstWeekStart.getDay());
-  if (firstWeekStart < earliestDate) firstWeekStart.setDate(firstWeekStart.getDate() + 7);
+  // Bounded by the full calendar month(s) actually touched by extracted rows, not just the
+  // earliest/latest INDIVIDUAL row — a monthly timecard page still covers every day of that
+  // month even if the model only reported rows for the ones with handwriting on them. Trimming
+  // to the last non-blank row (the earlier approach) meant a genuinely blank trailing week (e.g.
+  // the worker not paid for the last week of the month) silently never got flagged at all, which
+  // is exactly the case this feature exists to catch. Assumes touched months are contiguous — a
+  // gap month with zero rows getting bridged in is a rare edge case the caseworker can just
+  // delete any wrongly-inserted rows for, versus a real missing week going undetected.
+  const [ey, em] = dates[0].split('-').map(Number);
+  const [ly, lm] = dates[dates.length - 1].split('-').map(Number);
+  let earliestDate = new Date(ey, em - 1, 1);
+  let latestDate = new Date(ly, lm, 0); // day 0 of next month = last day of this month
 
-  const lastWeekEnd = new Date(latestDate);
-  lastWeekEnd.setDate(lastWeekEnd.getDate() + (6 - lastWeekEnd.getDay()));
-  if (lastWeekEnd > latestDate) lastWeekEnd.setDate(lastWeekEnd.getDate() - 7);
+  // Clamp against the caseworker-declared contract dates, if given — the calendar-month
+  // expansion above assumes the worker was employed the whole month, which breaks the moment
+  // employment actually starts or ends mid-month (e.g. hired on a Wednesday — filling in that
+  // week's Monday/Tuesday would invent days they were never employed at all, not just catch a
+  // blank timesheet row). Only narrows the range, never widens it past the touched months.
+  const contractStartVal = document.getElementById('contractStartDate').value;
+  const hasContractStart = !!contractStartVal;
+  if (hasContractStart) {
+    const [csy, csm, csd] = contractStartVal.split('-').map(Number);
+    const contractStart = new Date(csy, csm - 1, csd);
+    if (contractStart > earliestDate) earliestDate = contractStart;
+  }
+  const contractEndVal = document.getElementById('contractEndDate').value;
+  const hasContractEnd = !!contractEndVal;
+  if (hasContractEnd) {
+    const [cey, cem, ced] = contractEndVal.split('-').map(Number);
+    const contractEnd = new Date(cey, cem - 1, ced);
+    if (contractEnd < latestDate) latestDate = contractEnd;
+  }
+  if (earliestDate > latestDate) return; // contract dates leave no valid range at all
+
+  // Calendar-month edges (no contract date given for that side) still fill straight through with
+  // no week-completeness check — a month boundary isn't a real employment signal, just where the
+  // scanned page happens to stop, so there's no genuine "did they even work this day" ambiguity.
+  // A CONTRACT date, though, is a real declared boundary — if it lands mid-week, the rest of that
+  // week (e.g. Sun 20–Sat 26 when the contract ends Thu 24) isn't a period we actually know the
+  // normal work pattern applied to (last day could've been a half day, exit formalities, etc), so
+  // the whole partial week at that edge is left for the caseworker to fill in by hand instead of
+  // guessed at.
+  let fillStart = new Date(earliestDate);
+  if (hasContractStart) {
+    const weekStart = new Date(earliestDate);
+    weekStart.setDate(weekStart.getDate() - weekStart.getDay());
+    if (weekStart < earliestDate) weekStart.setDate(weekStart.getDate() + 7);
+    fillStart = weekStart;
+  }
+  let fillEnd = new Date(latestDate);
+  if (hasContractEnd) {
+    const weekEnd = new Date(latestDate);
+    weekEnd.setDate(weekEnd.getDate() + (6 - weekEnd.getDay()));
+    if (weekEnd > latestDate) weekEnd.setDate(weekEnd.getDate() - 7);
+    fillEnd = weekEnd;
+  }
+  if (fillStart > fillEnd) return; // the contract boundary week(s) ate the entire range
 
   const restDayOfWeek = getDeclaredRestDayOfWeek();
   const workWeek = getWorkDaysPerWeek();
@@ -1543,20 +1745,20 @@ function detectAndInsertMissingDays() {
   const standardLunch = getStandardLunchHours();
 
   const missingDates = [];
-  for (let weekStart = new Date(firstWeekStart); weekStart <= lastWeekEnd; weekStart.setDate(weekStart.getDate() + 7)) {
-    for (let i = 0; i < 7; i++) {
-      const d = new Date(weekStart);
-      d.setDate(d.getDate() + i);
-      if (d.getDay() === restDayOfWeek) continue; // declared rest day - expected to have no entry
-      const dateStr = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-      if (accountedDates.has(dateStr)) continue;
-      missingDates.push(dateStr);
-    }
+  for (let d = new Date(fillStart); d <= fillEnd; d.setDate(d.getDate() + 1)) {
+    if (d.getDay() === restDayOfWeek) continue; // declared rest day - expected to have no entry
+    const dateStr = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    if (accountedDates.has(dateStr)) continue;
+    missingDates.push(dateStr);
   }
 
   if (missingDates.length === 0) return;
 
-  const pageCards = [...document.querySelectorAll('.page-review-row')];
+  // Scoped to pageReviewList specifically — .page-review-row is also used by the IPA and bank
+  // statement cards now (page-by-page review), which don't have a .review-target-list and would
+  // otherwise throw inside findPageListForWeek, silently aborting this whole function before any
+  // row got inserted.
+  const pageCards = [...pageReviewList.querySelectorAll('.page-review-row')];
   for (const dateStr of missingDates) {
     const targetList = findPageListForWeek(dateStr, pageCards)
       || pageCards[pageCards.length - 1]?.querySelector('.review-target-list');
@@ -1600,12 +1802,7 @@ function collectAllReviewRows() {
 // original pre-edit OCR output (currentPageReviews[idx].entries, from /api/process) to
 // /api/flag-page — building a raw-vs-corrected ground-truth pair for this specific misread,
 // rather than just recording that "something" was wrong.
-async function flagPage(btn, idx) {
-  const page = currentPageReviews[idx];
-  if (!page) return;
-  const note = prompt('Have you already corrected the row(s) below to the right values? This sends both the original scan and your correction.\n\nWhat did the scan get wrong on this page? (optional, but helps a lot)') || '';
-
-  const card = btn.closest('.page-review-row');
+function buildCorrectedEntries(card) {
   const correctedEntries = [];
   for (const li of card.querySelectorAll('.review-row')) {
     const date = li.querySelector('.f-date').value;
@@ -1623,32 +1820,51 @@ async function flagPage(btn, idx) {
           }
     );
   }
+  return correctedEntries;
+}
 
-  btn.disabled = true;
-  btn.textContent = 'Flagging…';
-  try {
-    const res = await fetch('/api/flag-page', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        source: page.source,
-        image: page.image,
-        rawEntries: page.entries,
-        correctedEntries,
-        note,
-        dataModel: page.dataModel,
-        pageContext: page.pageContext,
-      }),
-    });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || `Server returned ${res.status}`);
-    btn.textContent = '🚩 Flagged — thanks';
-    btn.classList.add('flagged');
-  } catch (err) {
-    btn.disabled = false;
-    btn.textContent = '🚩 Flag as wrong';
-    alert('Could not flag this page: ' + err.message);
-  }
+// Order-independent signature of a page's worked/rest-day entries, for detecting whether the
+// reviewer changed anything from the raw scan (edited a time, added a row, or removed one) —
+// hours_worked entries aren't part of the editable rows so aren't comparable here.
+function entrySetSignature(entries) {
+  return entries
+    .map(e => e.type === 'rest_day' ? `${e.date}|rest_day` : e.type === 'worked' ? `${e.date}|worked|${e.clockIn}|${e.clockOut}` : null)
+    .filter(Boolean)
+    .sort()
+    .join('\n');
+}
+
+// Silently saves a raw-vs-corrected ground-truth pair for every page whose rows no longer match
+// what the scan originally produced — replaces the old manual "Flag as wrong" button so a
+// reviewer's edits get captured automatically instead of relying on them to notice and click it.
+// Best-effort and non-blocking: a storage hiccup here shouldn't look like a Generate failure.
+async function autoFlagChangedPages() {
+  // Scoped to pageReviewList — .page-review-row is also used by the IPA/bank statement page-by-page
+  // cards now, which would misalign this against currentPageReviews (positional, timesheet-only).
+  const cards = [...pageReviewList.querySelectorAll('.page-review-row')];
+  await Promise.all(cards.map(async (card, idx) => {
+    const page = currentPageReviews[idx];
+    if (!page) return;
+    const correctedEntries = buildCorrectedEntries(card);
+    if (entrySetSignature(correctedEntries) === entrySetSignature(page.entries)) return;
+    try {
+      await fetch('/api/flag-page', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          source: page.source,
+          image: page.image,
+          rawEntries: page.entries,
+          correctedEntries,
+          note: null,
+          dataModel: page.dataModel,
+          pageContext: page.pageContext,
+        }),
+      });
+    } catch (err) {
+      console.error(`failed to auto-save correction for ${page.source}:`, err);
+    }
+  }));
 }
 
 function renderPageReview(page) {
@@ -1673,10 +1889,7 @@ function renderPageReview(page) {
         <img src="data:image/png;base64,${page.image}" alt="${escapeHtml(page.source)}">
       </div>
       <div class="page-review-details">
-        <div class="page-review-source">
-          <span>${escapeHtml(page.source)}</span>
-          <button type="button" class="flag-btn page-flag-btn" title="Fix the row(s) below to the correct values first, then click this — it sends both the scan's original reading and your correction">🚩 Flag as wrong</button>
-        </div>
+        <div class="page-review-source"><span>${escapeHtml(page.source)}</span></div>
         ${hoursOnlyHtml ? `<ul class="inline-review-list">${hoursOnlyHtml}</ul>` : ''}
         <ul class="inline-review-list review-target-list"></ul>
         <div class="page-add-day">
@@ -1699,16 +1912,35 @@ function ipaField(field, label, value) {
   return `<div class="ipa-field-group"><label>${escapeHtml(label)}</label><input type="number" class="ipa-input" data-field="${field}" value="${v}"></div>`;
 }
 
-function renderIpaFields(f) {
+// The ONLY editable version — goes in the page-by-page review, next to the IPA letter's own
+// thumbnail. Bare inputs, no heading/computed-rates clutter (that lives in the read-only Summary
+// card below instead).
+function renderIpaFieldsEditable(f) {
   const allowanceTotal = f.fixedMonthlyAllowances.length
     ? f.fixedMonthlyAllowances.reduce((sum, a) => sum + (typeof a.amount === 'number' ? a.amount : 0), 0)
     : null;
+  return `<div class="ipa-field-grid">
+    ${ipaField('basicMonthlySalary', 'Basic monthly salary ($)', f.basicMonthlySalary)}
+    ${ipaField('fixedMonthlyAllowances', 'Fixed monthly allowances ($)', allowanceTotal)}
+  </div>`;
+}
 
-  return `
+// Read-only rollup for the Summary section — plain text, not inputs, since Summary isn't meant
+// to be edited (the page-by-page card above is the one and only place that happens).
+// Reads straight from the editable inputs in #ipaPageReview (not the original scanned data), so
+// re-rendering this on every edit keeps Summary's figures in sync with whatever the caseworker
+// last typed there — otherwise this would show the stale scanned value right next to computed
+// rates that already reflect the edit (see the .ipa-input listener in renderFinalResult).
+function renderIpaSummaryText() {
+  const salaryEl = document.querySelector('#ipaPageReview input[data-field="basicMonthlySalary"]');
+  const allowEl = document.querySelector('#ipaPageReview input[data-field="fixedMonthlyAllowances"]');
+  const salary = salaryEl && salaryEl.value !== '' ? Number(salaryEl.value) : null;
+  const allowances = allowEl && allowEl.value !== '' ? Number(allowEl.value) : null;
+  ipaReviewEl.innerHTML = `
     <h3>IPA — declared employment terms</h3>
     <div class="ipa-field-grid">
-      ${ipaField('basicMonthlySalary', 'Basic monthly salary ($)', f.basicMonthlySalary)}
-      ${ipaField('fixedMonthlyAllowances', 'Fixed monthly allowances ($)', allowanceTotal)}
+      <div class="ipa-field-group"><span class="field-label">Basic monthly salary</span><strong>${formatMoney(salary)}</strong></div>
+      <div class="ipa-field-group"><span class="field-label">Fixed monthly allowances</span><strong>${formatMoney(allowances)}</strong></div>
     </div>
     <div class="review-hint" id="ipaComputedRates"></div>`;
 }
@@ -1750,6 +1982,297 @@ function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, c => ({
     '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
   }[c]));
+}
+
+// ===== Bank statement cross-check — standalone tool, no OCR/xlsx pipeline reuse =====
+// Separate upload + scan flow from the claim form above: different files (worker's own bank
+// statement), a caseworker-supplied keyword list instead of a fixed extraction schema, and no
+// spreadsheet output. See lib/bankstatement.ts / server.ts's /api/bank-statement.
+const bankStatementInput = document.getElementById('bankStatementInput');
+const bankFileListEl = document.getElementById('bankFileList');
+const bankStatementStageEl = document.getElementById('bankStatementStage');
+const bankKeywordsInput = document.getElementById('bankKeywords');
+const bankStatusEl = document.getElementById('bankStatus');
+const bankResultsEl = document.getElementById('bankResults');
+
+// Same staging idea as pdfsRotations/excludedPdfsPages (see refreshPdfsPreview above) — kept as
+// its own separate state/functions rather than generalizing the pdfs ones, so nothing here can
+// risk regressing the already-working timesheet staging flow. Keyed "<fileIndex>-<pageIndex>".
+let bankStatementRotations = {};
+let excludedBankStatementPages = new Set();
+
+function renderBankStageTile(key, label, imageB64) {
+  const rotation = bankStatementRotations[key] || 0;
+  return `
+    <div class="stage-tile" data-key="${key}">
+      <div class="stage-tile-img-wrap">
+        <img src="data:image/png;base64,${imageB64}" style="transform: rotate(${rotation}deg);">
+        <button type="button" class="stage-tile-rotate-btn" title="Rotate">⟳</button>
+        <button type="button" class="stage-tile-delete-btn" title="Remove this page">✕</button>
+      </div>
+      <div class="stage-tile-label">${escapeHtml(label)}</div>
+    </div>`;
+}
+
+function wireBankStageRotateButtons(container) {
+  container.querySelectorAll('.stage-tile').forEach(tile => {
+    const key = tile.dataset.key;
+    const img = tile.querySelector('img');
+    tile.querySelector('.stage-tile-rotate-btn').addEventListener('click', () => {
+      const next = ((bankStatementRotations[key] || 0) + 90) % 360;
+      bankStatementRotations[key] = next;
+      img.style.transform = `rotate(${next}deg)`;
+    });
+  });
+}
+
+// No OCR here, same as refreshPdfsPreview — just thumbnails so a sideways/unwanted page can be
+// fixed before the real (model-calling) scan runs.
+async function refreshBankStatementPreview() {
+  const files = [...bankStatementInput.files];
+  bankFileListEl.textContent = files.length === 0 ? '' : files.map(f => f.name).join(', ');
+  bankStatementRotations = {};
+  excludedBankStatementPages = new Set();
+
+  if (files.length === 0) {
+    bankStatementStageEl.innerHTML = '';
+    return;
+  }
+  bankStatementStageEl.innerHTML = '<div class="stage-loading"><span class="spinner"></span>Loading previews…</div>';
+
+  const formData = new FormData();
+  for (const file of files) formData.append('bankStatement', file);
+
+  try {
+    const res = await fetch('/api/preview', { method: 'POST', body: formData });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || `Server returned ${res.status}`);
+
+    const byFile = new Map();
+    for (const p of data.bankStatementPreview || []) {
+      if (!byFile.has(p.fileIndex)) byFile.set(p.fileIndex, { fileName: p.fileName, tiles: [] });
+      byFile.get(p.fileIndex).tiles.push(renderBankStageTile(`${p.fileIndex}-${p.pageIndex}`, `p${p.pageIndex + 1}`, p.image));
+    }
+    bankStatementStageEl.innerHTML = [...byFile.entries()].map(([fileIndex, { fileName, tiles }]) => `
+      <div class="stage-file-group">
+        <div class="stage-file-header"><span>${escapeHtml(fileName)}</span></div>
+        <div class="stage-file-pages">${tiles.join('')}</div>
+      </div>`).join('')
+      + (data.bankStatementErrors || []).map(e => `<div class="stage-error">${escapeHtml(e.fileName)}: ${escapeHtml(e.error)}</div>`).join('');
+
+    wireBankStageRotateButtons(bankStatementStageEl);
+    bankStatementStageEl.querySelectorAll('.stage-tile-delete-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const tile = btn.closest('.stage-tile');
+        excludedBankStatementPages.add(tile.dataset.key);
+        const group = tile.closest('.stage-file-group');
+        tile.remove();
+        if (group && group.querySelectorAll('.stage-tile').length === 0) group.remove();
+      });
+    });
+  } catch (err) {
+    bankStatementStageEl.innerHTML = `<div class="stage-error">Preview failed: ${escapeHtml(err.message)}</div>`;
+  }
+}
+
+bankStatementInput.addEventListener('change', refreshBankStatementPreview);
+
+// Read-only — used for the Summary section's aggregated bank-results box only. Matches
+// formatBankTransactionsTableEditable's Total math exactly, just without the inputs.
+// Case-insensitive "does this description literally contain any of the caseworker's keywords" —
+// mirrors lib/bankstatement.ts's own server-side check, so a row edited client-side (description
+// changed, or the keyword list itself edited before a re-scan) gets re-evaluated the same way.
+function escapeRegExpClient(s) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+function isKeywordVerified(description) {
+  const keywords = bankKeywordsInput.value.split(',').map(k => k.trim()).filter(Boolean);
+  if (keywords.length === 0) return true;
+  return new RegExp(keywords.map(escapeRegExpClient).join('|'), 'i').test(description);
+}
+
+function formatBankTransactionsTable(transactions) {
+  const rows = transactions.map(t => `
+    <tr>
+      <td>${escapeHtml(t.date)}</td>
+      <td>${escapeHtml(t.description)}${t.keywordVerified === false ? '<div class="pay-total-sub">⚠ doesn\'t literally match a keyword — model matched by judgement, worth verifying</div>' : ''}</td>
+      <td><strong>${t.direction === 'debit' ? '−' : ''}${formatMoney(t.amount)}</strong></td>
+      <td>${escapeHtml(t.source)}</td>
+    </tr>`).join('');
+  // Debits net out against credits in the bottom Total, same sign convention as each row's own
+  // "−" prefix, rather than just summing every transaction's amount regardless of direction.
+  const net = transactions.reduce((sum, t) => sum + (t.direction === 'debit' ? -t.amount : t.amount), 0);
+  const totalRow = `<tr class="pay-total-row">
+      <td colspan="2">Total</td>
+      <td><strong>${net < 0 ? '−' : ''}${formatMoney(Math.abs(net))}</strong></td>
+      <td></td>
+    </tr>`;
+  return `<table class="pay-total-table">
+    <thead><tr><th>Date</th><th>Description</th><th>Amount</th><th>Source page</th></tr></thead>
+    <tbody>${rows}${totalRow}</tbody>
+  </table>`;
+}
+
+// Editable version — used in the page-by-page review, same "edit right beside the source page"
+// pattern as the timesheet rows and the IPA card. Each row's date/description/amount/direction
+// are plain inputs, with a delete button matching the timesheet rows' own (.row-delete-btn).
+// Wired up by wireBankPageCard below, which also keeps the Summary section's read-only table and
+// Total in sync with whatever's currently in these inputs.
+// Date/description come straight off the scan and aren't editable here — only the amount is,
+// since that's the one figure worth double-checking against the source image. Source page and
+// credit/debit are dropped from this view entirely (still tracked internally via data attributes,
+// just not shown/edited here).
+function formatBankTransactionsTableEditable(transactions) {
+  const rows = transactions.map(t => `
+    <tr class="bt-row" data-source="${escapeHtml(t.source)}" data-date="${escapeHtml(t.date)}" data-description="${escapeHtml(t.description)}" data-direction="${t.direction || 'credit'}">
+      <td>${escapeHtml(t.date)}</td>
+      <td>
+        ${escapeHtml(t.description)}
+        <div class="pay-total-sub bt-keyword-note" style="display:${t.keywordVerified === false ? 'block' : 'none'}">⚠ doesn't literally match a keyword — verify</div>
+      </td>
+      <td><input type="number" step="0.01" class="bt-amount" value="${t.amount}"></td>
+      <td><button type="button" class="row-delete-btn bt-delete-btn" title="Remove" aria-label="Remove"><svg viewBox="0 0 16 16" style="width:13px;height:13px;flex-shrink:0;" fill="currentColor" aria-hidden="true"><path d="M6 1a1 1 0 0 0-1 1v1H2.5a.5.5 0 0 0 0 1h.55l.65 9.1A1.5 1.5 0 0 0 5.2 15h5.6a1.5 1.5 0 0 0 1.5-1.4l.65-9.1h.55a.5.5 0 0 0 0-1H11V2a1 1 0 0 0-1-1H6zm0 2V2h4v1H6zM4.55 4h6.9l-.64 9h-5.62l-.64-9zM6.5 6a.5.5 0 0 1 .5.5v5a.5.5 0 0 1-1 0v-5a.5.5 0 0 1 .5-.5zm3 0a.5.5 0 0 1 .5.5v5a.5.5 0 0 1-1 0v-5a.5.5 0 0 1 .5-.5z"/></svg></button></td>
+    </tr>`).join('');
+  return `<table class="pay-total-table">
+    <thead><tr><th>Date</th><th>Description</th><th>Amount</th><th></th></tr></thead>
+    <tbody>${rows}</tbody>
+  </table>`;
+}
+
+// Reads every bank transaction row currently in the page-by-page review (across every page card,
+// after whatever edits/deletions the reviewer has made) and rebuilds the Summary section's
+// read-only bank-results box + Total from that live state — called on every edit so Summary never
+// drifts out of sync with what's actually in the editable rows, same idea as renderIpaSummaryText.
+function collectAllBankTransactions() {
+  return [...bankPageReviewListEl.querySelectorAll('.bt-row')].map(tr => ({
+    date: tr.dataset.date,
+    description: tr.dataset.description,
+    amount: Number(tr.querySelector('.bt-amount').value) || 0,
+    direction: tr.dataset.direction,
+    source: tr.dataset.source,
+    keywordVerified: isKeywordVerified(tr.dataset.description),
+  }));
+}
+
+// Toggles every row's own "⚠ doesn't literally match" note in place, without a full re-render —
+// date/description are fixed, but the keyword list itself can still be edited after the scan, so
+// this re-checks against that.
+function refreshBankKeywordNotes() {
+  bankPageReviewListEl.querySelectorAll('.bt-row').forEach(tr => {
+    tr.querySelector('.bt-keyword-note').style.display = isKeywordVerified(tr.dataset.description) ? 'none' : 'block';
+  });
+}
+
+function refreshBankSummary() {
+  const transactions = collectAllBankTransactions();
+  if (transactions.length > 0) {
+    bankResultsEl.style.display = 'block';
+    bankResultsEl.innerHTML = `<h3>Bank statement — matched payments</h3>${formatBankTransactionsTable(transactions)}`;
+  } else {
+    bankResultsEl.style.display = 'none';
+    bankResultsEl.innerHTML = '';
+  }
+  // This only ever runs once a bank statement scan has actually produced page data (or the
+  // reviewer edited/deleted an existing row) — never speculatively — so an empty list here is a
+  // confirmed "$0 matched", not "never checked". That distinction is what lets
+  // updateOwedVsPaidBox tell "nothing paid" apart from "we don't know".
+  totalPaidCache = transactions.reduce((sum, t) => sum + (t.direction === 'debit' ? -t.amount : t.amount), 0);
+  updateSummarySectionVisibility();
+  updateOwedVsPaidBox();
+}
+
+// Wires one page card's editable rows (input/change -> refreshBankSummary, delete -> remove row
+// then refreshBankSummary) — called once per card right after its HTML lands in the DOM.
+function wireBankPageCard(card) {
+  card.querySelectorAll('.bt-amount').forEach(input => {
+    input.addEventListener('input', refreshBankSummary);
+    input.addEventListener('change', refreshBankSummary);
+  });
+  card.querySelectorAll('.bt-delete-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      btn.closest('.bt-row').remove();
+      refreshBankSummary();
+    });
+  });
+}
+bankKeywordsInput.addEventListener('input', () => { refreshBankKeywordNotes(); refreshBankSummary(); });
+
+// Renders each page as it finishes, same live-progress pattern as the timesheet scan
+// (pollJobUntilDone/renderLivePages) — a multi-page statement can take a while page by page.
+// Page-by-page view of the bank statement scan — one card per page WITH its thumbnail (same
+// "verify against the source scan" pattern as the timesheet page cards), showing every page
+// scanned so far regardless of whether it had a match. This is distinct from the Summary
+// section's bank-results box, which stays thumbnail-free and only lists actual matches — see
+// runBankStatementScan's own final render for that one.
+function renderBankLivePages(pages) {
+  if (pages.length === 0) return;
+  pageReviewsEl.style.display = 'block'; // reveal page-by-page review even if the main scan hasn't produced anything yet
+  bankPageReviewListEl.style.display = 'block';
+  bankPageReviewListEl.innerHTML = pages.map(p => `
+    <div class="page-review-row">
+      <div class="page-review-image"><img src="data:image/png;base64,${p.image}" alt="${escapeHtml(p.source)}"></div>
+      <div class="page-review-details">
+        <div class="page-review-source"><span>${escapeHtml(p.source)}</span></div>
+        ${p.transactions.length === 0
+          ? '<div class="review-hint">No matching transactions on this page.</div>'
+          : formatBankTransactionsTableEditable(p.transactions.map(t => ({ ...t, source: p.source })))}
+      </div>
+    </div>`).join('');
+  bankPageReviewListEl.querySelectorAll('.page-review-row').forEach(wireBankPageCard);
+  refreshBankSummary();
+}
+
+async function pollBankJobUntilDone(jobId) {
+  for (;;) {
+    const res = await fetch(`/api/bank-statement/${jobId}`);
+    const job = await res.json();
+    if (!res.ok) throw new Error(job.error || `Server returned ${res.status}`);
+    renderBankLivePages(job.pages);
+    if (job.status === 'done') return job.result;
+    if (job.status === 'error') throw new Error(job.error || 'Scan failed');
+    await new Promise(r => setTimeout(r, 2000));
+  }
+}
+
+// Runs as part of the main "Process & Generate Claim" submit (see form's submit listener below),
+// not its own button — optional, so it's a silent no-op if nothing's attached. Runs concurrently
+// with the main timesheet/IPA scan (Promise.allSettled in the submit handler), independent job
+// and status/results area, since a bank statement scan failing shouldn't block or be blocked by
+// the main claim scan.
+async function runBankStatementScan() {
+  const files = [...bankStatementInput.files];
+  if (files.length === 0) return;
+  const keywords = bankKeywordsInput.value.split(',').map(k => k.trim()).filter(Boolean);
+  if (keywords.length === 0) {
+    bankStatusEl.className = 'status error';
+    bankStatusEl.textContent = 'Enter at least one line item to look for, or remove the attached bank statement file(s).';
+    return;
+  }
+
+  bankStatusEl.className = 'status';
+  bankStatusEl.textContent = '';
+  bankResultsEl.style.display = 'none';
+  bankResultsEl.innerHTML = '';
+
+  const formData = new FormData();
+  for (const f of files) formData.append('statements', f);
+  formData.append('keywords', JSON.stringify(keywords));
+  formData.append('rotations', JSON.stringify(bankStatementRotations));
+  formData.append('excludedPages', JSON.stringify([...excludedBankStatementPages]));
+
+  try {
+    const res = await fetch('/api/bank-statement', { method: 'POST', body: formData });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || `Server returned ${res.status}`);
+    // renderBankLivePages (called on every poll tick, including this final one) already renders
+    // the editable page-by-page rows and calls refreshBankSummary(), so the Summary box is
+    // already up to date by the time this resolves — nothing left to do here but read the cost.
+    const result = await pollBankJobUntilDone(data.jobId);
+    return result.costUsd;
+  } catch (err) {
+    bankStatusEl.className = 'status error';
+    bankStatusEl.textContent = 'Error: ' + err.message;
+  }
 }
 </script>
 </body>
