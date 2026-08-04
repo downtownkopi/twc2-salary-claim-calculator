@@ -469,6 +469,7 @@
       <label><input type="radio" name="lunchBreakStandard" value="0.75"> 45 minutes</label>
       <label><input type="radio" name="lunchBreakStandard" value="0.5"> 30 minutes</label>
       <label><input type="radio" name="lunchBreakStandard" value="0"> 0 minutes</label>
+      <label><input type="radio" name="lunchBreakStandard" value="other" id="lunchBreakOtherRadio"> Others: <input type="number" step="0.25" min="0" id="lunchBreakOtherHours" placeholder="hrs" style="width:60px;margin-left:6px" disabled></label>
     </div>
     <div class="file-list">Used to double-check each row's lunch break against what was actually extracted — a mismatch is flagged for review, not auto-corrected.</div>
   </div>
@@ -818,6 +819,12 @@ ipaInput.addEventListener('change', refreshIpaPreview);
 // Delegated on the group container (radios' 'change' events bubble) rather than each radio
 // individually, same idea as wireRadioGroupHighlight.
 document.getElementById('lunchBreakGroup').addEventListener('change', () => {
+  document.getElementById('lunchBreakOtherHours').disabled = !document.getElementById('lunchBreakOtherRadio').checked;
+  document.querySelectorAll('.review-row').forEach(checkLunchMismatch);
+});
+// Typing a new value doesn't fire the group's 'change' event (no radio was clicked), so it needs
+// its own listener to re-evaluate rows against the updated custom standard.
+document.getElementById('lunchBreakOtherHours').addEventListener('input', () => {
   document.querySelectorAll('.review-row').forEach(checkLunchMismatch);
 });
 
@@ -1336,6 +1343,12 @@ function getDailyGrossRate() {
 function formatMoney(n) {
   return (n === null || Number.isNaN(n)) ? '—' : `$${n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
+// Underlying data/dataset.date stays YYYY-MM-DD (what the scan produces and what date math above
+// keys off) — this is display-only, for the bank statement date columns.
+function formatDateDMY(dateStr) {
+  const [y, m, d] = (dateStr || '').split('-');
+  return (y && m && d) ? `${d}-${m}-${y}` : (dateStr || '');
+}
 const MONTH_ABBR = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 function formatMonthLabel(monthKey) {
   const [y, m] = monthKey.split('-').map(Number);
@@ -1604,7 +1617,9 @@ function recomputeAllGuardrails() {
 }
 
 function getStandardLunchHours() {
-  return Number(document.querySelector('input[name="lunchBreakStandard"]:checked').value);
+  const checked = document.querySelector('input[name="lunchBreakStandard"]:checked').value;
+  if (checked === 'other') return Number(document.getElementById('lunchBreakOtherHours').value || 0);
+  return Number(checked);
 }
 
 // Flags (doesn't auto-correct) a row whose current lunch-break value doesn't match the declared
@@ -2094,7 +2109,7 @@ function isKeywordVerified(description) {
 function formatBankTransactionsTable(transactions) {
   const rows = transactions.map(t => `
     <tr>
-      <td>${escapeHtml(t.date)}</td>
+      <td>${escapeHtml(formatDateDMY(t.date))}</td>
       <td>${escapeHtml(t.description)}${t.keywordVerified === false ? '<div class="pay-total-sub">⚠ doesn\'t literally match a keyword — model matched by judgement, worth verifying</div>' : ''}</td>
       <td><strong>${t.direction === 'debit' ? '−' : ''}${formatMoney(t.amount)}</strong></td>
       <td>${escapeHtml(t.source)}</td>
@@ -2122,17 +2137,29 @@ function formatBankTransactionsTable(transactions) {
 // since that's the one figure worth double-checking against the source image. Source page and
 // credit/debit are dropped from this view entirely (still tracked internally via data attributes,
 // just not shown/edited here).
-function formatBankTransactionsTableEditable(transactions) {
-  const rows = transactions.map(t => `
-    <tr class="bt-row" data-source="${escapeHtml(t.source)}" data-date="${escapeHtml(t.date)}" data-description="${escapeHtml(t.description)}" data-direction="${t.direction || 'credit'}">
-      <td>${escapeHtml(t.date)}</td>
+// manual=true is used for rows added via "+ Add amount" (see wireBankPageCard) — there's no scan
+// data for those, so date/description are inputs too instead of the plain scanned text.
+function formatBankTransactionRow(t, manual) {
+  const dateCell = manual
+    ? `<input type="date" class="bt-date-input" value="${escapeHtml(t.date || '')}">`
+    : escapeHtml(formatDateDMY(t.date));
+  const descCell = manual
+    ? `<input type="text" class="bt-desc-input" placeholder="Description" value="${escapeHtml(t.description || '')}">`
+    : escapeHtml(t.description);
+  return `
+    <tr class="bt-row" data-source="${escapeHtml(t.source)}" data-date="${escapeHtml(t.date || '')}" data-description="${escapeHtml(t.description || '')}" data-direction="${t.direction || 'credit'}">
+      <td>${dateCell}</td>
       <td>
-        ${escapeHtml(t.description)}
+        ${descCell}
         <div class="pay-total-sub bt-keyword-note" style="display:${t.keywordVerified === false ? 'block' : 'none'}">⚠ doesn't literally match a keyword — verify</div>
       </td>
       <td><input type="number" step="0.01" class="bt-amount" value="${t.amount}"></td>
       <td><button type="button" class="row-delete-btn bt-delete-btn" title="Remove" aria-label="Remove"><svg viewBox="0 0 16 16" style="width:13px;height:13px;flex-shrink:0;" fill="currentColor" aria-hidden="true"><path d="M6 1a1 1 0 0 0-1 1v1H2.5a.5.5 0 0 0 0 1h.55l.65 9.1A1.5 1.5 0 0 0 5.2 15h5.6a1.5 1.5 0 0 0 1.5-1.4l.65-9.1h.55a.5.5 0 0 0 0-1H11V2a1 1 0 0 0-1-1H6zm0 2V2h4v1H6zM4.55 4h6.9l-.64 9h-5.62l-.64-9zM6.5 6a.5.5 0 0 1 .5.5v5a.5.5 0 0 1-1 0v-5a.5.5 0 0 1 .5-.5zm3 0a.5.5 0 0 1 .5.5v5a.5.5 0 0 1-1 0v-5a.5.5 0 0 1 .5-.5z"/></svg></button></td>
-    </tr>`).join('');
+    </tr>`;
+}
+
+function formatBankTransactionsTableEditable(transactions) {
+  const rows = transactions.map(t => formatBankTransactionRow(t, false)).join('');
   return `<table class="pay-total-table">
     <thead><tr><th>Date</th><th>Description</th><th>Amount</th><th></th></tr></thead>
     <tbody>${rows}</tbody>
@@ -2163,6 +2190,29 @@ function refreshBankKeywordNotes() {
   });
 }
 
+// Wires a single bt-row's inputs/delete button — shared by wireBankPageCard's initial pass and by
+// the "+ Add amount" handler for the one row it just inserted.
+function wireBankRow(tr) {
+  const amountInput = tr.querySelector('.bt-amount');
+  amountInput.addEventListener('input', refreshBankSummary);
+  amountInput.addEventListener('change', refreshBankSummary);
+  // Only present on manually-added rows (see formatBankTransactionRow) — scanned rows' date/
+  // description are fixed text, kept in sync via the dataset attributes read by
+  // collectAllBankTransactions.
+  const dateInput = tr.querySelector('.bt-date-input');
+  if (dateInput) dateInput.addEventListener('input', () => { tr.dataset.date = dateInput.value; refreshBankSummary(); });
+  const descInput = tr.querySelector('.bt-desc-input');
+  if (descInput) descInput.addEventListener('input', () => {
+    tr.dataset.description = descInput.value;
+    refreshBankKeywordNotes();
+    refreshBankSummary();
+  });
+  tr.querySelector('.bt-delete-btn').addEventListener('click', () => {
+    tr.remove();
+    refreshBankSummary();
+  });
+}
+
 function refreshBankSummary() {
   const transactions = collectAllBankTransactions();
   if (transactions.length > 0) {
@@ -2181,18 +2231,21 @@ function refreshBankSummary() {
   updateOwedVsPaidBox();
 }
 
-// Wires one page card's editable rows (input/change -> refreshBankSummary, delete -> remove row
-// then refreshBankSummary) — called once per card right after its HTML lands in the DOM.
+// Wires one page card's editable rows (see wireBankRow) plus its "+ Add amount" button — called
+// once per card right after its HTML lands in the DOM.
 function wireBankPageCard(card) {
-  card.querySelectorAll('.bt-amount').forEach(input => {
-    input.addEventListener('input', refreshBankSummary);
-    input.addEventListener('change', refreshBankSummary);
-  });
-  card.querySelectorAll('.bt-delete-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-      btn.closest('.bt-row').remove();
-      refreshBankSummary();
-    });
+  card.querySelectorAll('.bt-row').forEach(wireBankRow);
+  const addBtn = card.querySelector('.bt-add-amount-btn');
+  if (!addBtn) return;
+  addBtn.addEventListener('click', () => {
+    const container = card.querySelector('.bt-table-container');
+    // First manual add on a page the scan found nothing on — swap the "no matches" hint for an
+    // actual (empty) table so there's a tbody to append into.
+    if (!container.querySelector('tbody')) container.innerHTML = formatBankTransactionsTableEditable([]);
+    const row = { date: '', description: '', amount: 0, direction: 'credit', source: addBtn.dataset.source, keywordVerified: true };
+    container.querySelector('tbody').insertAdjacentHTML('beforeend', formatBankTransactionRow(row, true));
+    wireBankRow(container.querySelector('tbody').lastElementChild);
+    refreshBankSummary();
   });
 }
 bankKeywordsInput.addEventListener('input', () => { refreshBankKeywordNotes(); refreshBankSummary(); });
@@ -2213,9 +2266,13 @@ function renderBankLivePages(pages) {
       <div class="page-review-image"><img src="data:image/png;base64,${p.image}" alt="${escapeHtml(p.source)}"></div>
       <div class="page-review-details">
         <div class="page-review-source"><span>${escapeHtml(p.source)}</span></div>
-        ${p.transactions.length === 0
+        <div class="bt-table-container">${p.transactions.length === 0
           ? '<div class="review-hint">No matching transactions on this page.</div>'
-          : formatBankTransactionsTableEditable(p.transactions.map(t => ({ ...t, source: p.source })))}
+          : formatBankTransactionsTableEditable(p.transactions.map(t => ({ ...t, source: p.source })))}</div>
+        <div class="page-add-day">
+          <div class="review-hint">Add a payment this page's scan didn't pick up.</div>
+          <button type="button" class="add-day-btn bt-add-amount-btn" data-source="${escapeHtml(p.source)}">+ Add amount</button>
+        </div>
       </div>
     </div>`).join('');
   bankPageReviewListEl.querySelectorAll('.page-review-row').forEach(wireBankPageCard);
