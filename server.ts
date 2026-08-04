@@ -322,13 +322,13 @@ app.post(
         // ignore — fall through with no exclusions applied
     }
 
-    // The caseworker's declared standard lunch break (public/index.html's radio group) — used as
+    // The caseworker's declared standard break (public/index.html's radio group) — used as
     // the assumed break for single-shift days (nothing is actually observed to contradict it
     // there) and as the value a multi-shift day's genuinely observed gap gets compared against
-    // client-side (checkLunchMismatch). Falls back to 1h on anything unparseable/out of range,
+    // client-side (checkBreakMismatch). Falls back to 1h on anything unparseable/out of range,
     // matching the form's own default.
-    const parsedLunchHours = Number(req.body.standardLunchHours);
-    const standardLunchHours = Number.isFinite(parsedLunchHours) && parsedLunchHours >= 0 ? parsedLunchHours : 1;
+    const parsedBreakHours = Number(req.body.standardBreakHours);
+    const standardBreakHours = Number.isFinite(parsedBreakHours) && parsedBreakHours >= 0 ? parsedBreakHours : 1;
 
     // A real scan (many pages, sequential) can run 15-20+ minutes — long enough that holding this
     // HTTP request open the whole time is fragile (proxies/networks can drop a connection that
@@ -338,7 +338,7 @@ app.post(
     // than waiting for the entire batch.
     const jobId = randomUUID();
     processJobs.set(jobId, { status: "running", pages: [], result: null, error: null });
-    runProcessJob(jobId, files, ipaFile, year, rotations, excludedPages, standardLunchHours)
+    runProcessJob(jobId, files, ipaFile, year, rotations, excludedPages, standardBreakHours)
         .catch(e => {
             const job = processJobs.get(jobId);
             if (job) { job.status = "error"; job.error = e.message; }
@@ -368,7 +368,7 @@ async function runProcessJob(
     year: number,
     rotations: RotationMap,
     excludedPages: Set<string>,
-    standardLunchHours: number
+    standardBreakHours: number
 ): Promise<void> {
     const startedAt = Date.now();
 
@@ -768,7 +768,7 @@ async function runProcessJob(
     // One row per calendar date (multi-shift days already collapsed into a single span+break) —
     // this is the editable seed for the human-review step in the browser. Nothing gets written to
     // the spreadsheet until the reviewer submits their (possibly corrected) rows to /api/generate.
-    const reviewRows = buildReviewRows(timeEntries, restDays, standardLunchHours);
+    const reviewRows = buildReviewRows(timeEntries, restDays, standardBreakHours);
 
     // A day is "covered" once it has a review row at all (worked or rest day) — this is a
     // pre-generate PREVIEW of coverage, not the final word (fillTimesheetFromRows does its own

@@ -202,6 +202,7 @@
   .owed-vs-paid.underpaid { border-color: var(--err); background: color-mix(in srgb, var(--err) 8%, var(--panel)); }
   .owed-vs-paid.settled { border-color: var(--ok); background: color-mix(in srgb, var(--ok) 8%, var(--panel)); }
   .owed-vs-paid-delta { font-size: 22px; font-weight: 700; }
+  .owed-vs-paid-sub { margin-top: 8px; font-size: 12px; color: var(--muted); font-weight: 400; }
   .owed-vs-paid.underpaid .owed-vs-paid-delta { color: var(--err); }
   .owed-vs-paid.settled .owed-vs-paid-delta { color: var(--ok); }
   /* Breaks out of body's max-width so everything from here down spans the full browser width,
@@ -261,7 +262,7 @@
   .inline-review-list .empty { padding: 4px 0; color: var(--muted); font-style: italic; }
   .inline-review-row:last-child { border-bottom: none; }
   .inline-review-row.flagged-row, .inline-review-row.rest-day-flag,
-  .inline-review-row.cap-flag, .inline-review-row.ph-flag, .inline-review-row.lunch-flag { background: rgba(240, 185, 85, 0.08); }
+  .inline-review-row.cap-flag, .inline-review-row.ph-flag, .inline-review-row.break-flag { background: rgba(240, 185, 85, 0.08); }
   .inline-review-row.missing-day-row { background: rgba(220, 80, 80, 0.08); }
   .inline-review-row .field-group { display: inline-flex; align-items: center; gap: 5px; }
   /* margin: 0 overrides the generic top-level `label { margin-bottom: 6px }` rule further up —
@@ -270,7 +271,7 @@
      flex item's MARGIN box, so an asymmetric margin shifts the visible content off-center even
      though every other alignment rule was correct. Rest day's <label> wraps its checkbox + text
      together (so clicking the text toggles the checkbox) — display:inline-flex + align-items:center
-     centers those two children against each other. The plain In/Out/Lunch captions use
+     centers those two children against each other. The plain In/Out/Break captions use
      <span class="field-label"> instead (see appendReviewRow), which was never affected since the
      generic rule only targets <label> tags — kept as spans rather than converted back to label
      now that the real cause is fixed, since they don't need label's click-to-focus behavior. */
@@ -323,6 +324,7 @@
   .review-hint { font-size: 12px; color: var(--muted); margin: 6px 0 12px; }
   .ipa-computed-rates-list { margin: 0; padding-left: 18px; }
   .ipa-computed-rates-list li { margin-bottom: 3px; }
+  .ipa-formula { color: var(--muted); font-size: 11px; }
   .review-actions { display: flex; align-items: center; gap: 12px; margin-top: 12px; }
   .add-day-btn {
     background: var(--accent); color: white; border: none;
@@ -364,7 +366,7 @@
       <ul>
         <li>Weekly rest day</li>
         <li>Work week (5.5/6-day) and half-day, for 5.5-day weeks</li>
-        <li>Standard lunch break</li>
+        <li>Standard break</li>
         <li>Default shift timing — used to fill in days with no timesheet entry</li>
         <li>Contract start/end dates (optional) — keeps auto-filled days inside the actual employment period</li>
         <li>Bank statement line item(s) to look for (optional)</li>
@@ -386,9 +388,9 @@
     </thead>
     <tbody>
       <tr>
-        <td>Lunch break</td>
-        <td>Lunch break matches what you set above</td>
-        <td>Lunch break is different from what you set — check the row</td>
+        <td>Break</td>
+        <td>Break matches what you set above</td>
+        <td>Break is different from what you set — check the row</td>
       </tr>
       <tr>
         <td>12-hour/day cap</td>
@@ -463,15 +465,15 @@
   </div>
 
   <div class="field">
-    <label>Standard lunch break</label>
-    <div class="radio-group" id="lunchBreakGroup">
-      <label><input type="radio" name="lunchBreakStandard" value="1" checked> 1 hour</label>
-      <label><input type="radio" name="lunchBreakStandard" value="0.75"> 45 minutes</label>
-      <label><input type="radio" name="lunchBreakStandard" value="0.5"> 30 minutes</label>
-      <label><input type="radio" name="lunchBreakStandard" value="0"> 0 minutes</label>
-      <label><input type="radio" name="lunchBreakStandard" value="other" id="lunchBreakOtherRadio"> Others: <input type="number" step="0.25" min="0" id="lunchBreakOtherHours" placeholder="hrs" style="width:60px;margin-left:6px" disabled></label>
+    <label>Standard break</label>
+    <div class="radio-group" id="breakGroup">
+      <label><input type="radio" name="breakStandard" value="1" checked> 1 hour</label>
+      <label><input type="radio" name="breakStandard" value="0.75"> 45 minutes</label>
+      <label><input type="radio" name="breakStandard" value="0.5"> 30 minutes</label>
+      <label><input type="radio" name="breakStandard" value="0"> 0 minutes</label>
+      <label><input type="radio" name="breakStandard" value="other" id="breakOtherRadio"> Others: <input type="number" step="0.25" min="0" id="breakOtherHours" placeholder="hrs" style="width:60px;margin-left:6px" disabled></label>
     </div>
-    <div class="file-list">Used to double-check each row's lunch break against what was actually extracted — a mismatch is flagged for review, not auto-corrected.</div>
+    <div class="file-list">Used to double-check each row's break against what was actually extracted — a mismatch is flagged for review, not auto-corrected.</div>
   </div>
 
   <div class="field">
@@ -538,7 +540,7 @@
 
 <div class="page-reviews" id="pageReviews" style="display:none">
   <h2>Page-by-page review</h2>
-  <div class="sub">Every date's Start/End/Lunch is editable right beside its source page — fix anything the scan got wrong, remove a row that shouldn't be there, or add a missing day below. Rows highlighted yellow were flagged by the scan (a guess, a multi-shift day, or an implausible reading) and are worth a closer look. Nothing is written to the spreadsheet until you click Generate. Any page you edit is automatically saved (original scan + your correction) when you click Generate — this is what helps improve future scans.</div>
+  <div class="sub">Every date's Start/End/Break is editable right beside its source page — fix anything the scan got wrong, remove a row that shouldn't be there, or add a missing day below. Rows highlighted yellow were flagged by the scan (a guess, a multi-shift day, or an implausible reading) and are worth a closer look. Nothing is written to the spreadsheet until you click Generate. Any page you edit is automatically saved (original scan + your correction) when you click Generate — this is what helps improve future scans.</div>
   <div id="ipaPageReview" style="display:none"></div>
   <div id="pageReviewList"></div>
   <div id="bankPageReviewList" style="display:none"></div>
@@ -614,10 +616,11 @@ function updateSummarySectionVisibility() {
   summarySectionEl.style.display = anyVisible ? 'block' : 'none';
 }
 const owedVsPaidBoxEl = document.getElementById('owedVsPaidBox');
-// The headline "what does the company still owe" figure — stays hidden until BOTH totals are
-// actually known (totalOwedCache needs a basic salary; totalPaidCache needs a bank statement scan
-// to have run at least once), since a delta computed from only one real number and a guessed
-// zero would misrepresent an unchecked payment as a confirmed non-payment.
+// The headline "what does the company still owe" figure — stays hidden until totalOwedCache is
+// known (needs a basic salary). totalPaidCache is either a confirmed figure from an actual bank
+// statement scan, or — if no statement was attached at all — assumed $0 (see runBankStatementScan
+// / paidIsAssumedZero), so the box can still show a worst-case number rather than staying hidden;
+// the assumption is called out in the box itself so it isn't mistaken for a confirmed read.
 function updateOwedVsPaidBox() {
   if (totalOwedCache === null || totalPaidCache === null) {
     owedVsPaidBoxEl.style.display = 'none';
@@ -635,7 +638,8 @@ function updateOwedVsPaidBox() {
         : delta < -0.005
           ? `Overpaid by ${formatMoney(-delta)}`
           : `✓ Fully paid — no shortfall detected`}
-    </div>`;
+    </div>
+    ${paidIsAssumedZero ? `<div class="owed-vs-paid-sub">No bank statement attached — assuming $0 paid so far. Attach one to check against an actual figure.</div>` : ''}`;
 }
 const generateBtn = document.getElementById('generateBtn');
 const generateStatusEl = document.getElementById('generateStatus');
@@ -650,6 +654,10 @@ let currentPageReviews = [];
 // available yet" (no salary set / bank statement never scanned), not "zero".
 let totalOwedCache = null;
 let totalPaidCache = null;
+// True only when totalPaidCache was set to 0 because no bank statement was attached at all (see
+// runBankStatementScan), as opposed to a real scan that genuinely found $0 in matching payments —
+// updateOwedVsPaidBox uses this to label the figure as an assumption rather than a confirmed read.
+let paidIsAssumedZero = false;
 
 const pdfsStageEl = document.getElementById('pdfsStage');
 const ipaStageEl = document.getElementById('ipaStage');
@@ -818,19 +826,19 @@ ipaInput.addEventListener('change', refreshIpaPreview);
 // otherwise a reviewer who adjusts this after the scan already ran would see stale warnings.
 // Delegated on the group container (radios' 'change' events bubble) rather than each radio
 // individually, same idea as wireRadioGroupHighlight.
-document.getElementById('lunchBreakGroup').addEventListener('change', () => {
-  document.getElementById('lunchBreakOtherHours').disabled = !document.getElementById('lunchBreakOtherRadio').checked;
-  document.querySelectorAll('.review-row').forEach(checkLunchMismatch);
+document.getElementById('breakGroup').addEventListener('change', () => {
+  document.getElementById('breakOtherHours').disabled = !document.getElementById('breakOtherRadio').checked;
+  document.querySelectorAll('.review-row').forEach(checkBreakMismatch);
 });
 // Typing a new value doesn't fire the group's 'change' event (no radio was clicked), so it needs
 // its own listener to re-evaluate rows against the updated custom standard.
-document.getElementById('lunchBreakOtherHours').addEventListener('input', () => {
-  document.querySelectorAll('.review-row').forEach(checkLunchMismatch);
+document.getElementById('breakOtherHours').addEventListener('input', () => {
+  document.querySelectorAll('.review-row').forEach(checkBreakMismatch);
 });
 
 // Work week affects the daily-rate formula (Third Schedule); rest day affects which rows count
 // as "worked on the declared rest day" — both need every row's guardrails re-evaluated, same
-// reasoning as the lunch group above.
+// reasoning as the break group above.
 document.getElementById('workWeekGroup').addEventListener('change', recomputeAllGuardrails);
 document.getElementById('restDayGroup').addEventListener('change', recomputeAllGuardrails);
 
@@ -905,10 +913,10 @@ form.addEventListener('submit', async (e) => {
   // keys server.ts expects, matched against the exact same files/order being submitted here.
   formData.append('rotations', JSON.stringify({ pdfs: pdfsRotations, ipa: ipaRotationDeg }));
   formData.append('excludedPages', JSON.stringify([...excludedPdfsPages]));
-  // Declared standard lunch break — server.ts uses this as the single-shift default (nothing is
+  // Declared standard break — server.ts uses this as the single-shift default (nothing is
   // actually observed to contradict it there) instead of a hardcoded assumption, so it agrees by
-  // construction with checkLunchMismatch's later comparison for those rows.
-  formData.append('standardLunchHours', getStandardLunchHours());
+  // construction with checkBreakMismatch's later comparison for those rows.
+  formData.append('standardBreakHours', getStandardBreakHours());
   currentYear = document.getElementById('year').value;
   formData.append('year', currentYear);
   ipaReviewEl.style.display = 'none';
@@ -917,6 +925,7 @@ form.addEventListener('submit', async (e) => {
   ipaPageReviewEl.innerHTML = '';
   totalOwedCache = null;
   totalPaidCache = null;
+  paidIsAssumedZero = false;
   updateSummarySectionVisibility();
   updateOwedVsPaidBox();
 
@@ -1098,7 +1107,7 @@ function renderFinalResult(data) {
     pageReviewList.innerHTML = data.pageReviews.map(renderPageReview).join('');
     // Each page card was rendered with an empty placeholder list (see renderPageReview) — now
     // that they're in the DOM, populate each with the reviewRows whose `source` traces back to
-    // that page, so the editable Start/End/Lunch inputs sit right beside their source image.
+    // that page, so the editable Start/End/Break inputs sit right beside their source image.
     // Matched by position (Nth list <-> Nth pageReviews entry, same render order) rather than a
     // CSS attribute selector on the source string, which can contain characters (quotes,
     // parens) that aren't safe to drop straight into a selector.
@@ -1124,7 +1133,7 @@ function renderFinalResult(data) {
     const extraLists = pageReviewList.querySelectorAll('.page-extra-list');
     addDayBtns.forEach((btn, idx) => {
       btn.addEventListener('click', () => {
-        appendReviewRow(extraLists[idx], { date: '', clockIn: null, clockOut: null, lunchBreakHours: 1, restDay: false, guessed: false, notes: null, source: 'manually added' });
+        appendReviewRow(extraLists[idx], { date: '', clockIn: null, clockOut: null, breakHours: 1, restDay: false, guessed: false, notes: null, source: 'manually added' });
       });
     });
     detectAndInsertMissingDays();
@@ -1238,18 +1247,22 @@ function appendReviewRow(container, row, beforeEl) {
   // keeps a safety net for anything skimmed past.
   li.dataset.guessed = row.guessed ? '1' : '';
   li.dataset.notes = row.notes || '';
+  // No checkbox to toggle this anymore — carried through as-is from however the row was created
+  // (scan result, auto-inserted missing day, or manually added), read by rowNetHours/
+  // recomputeRowGuardrails/collectAllReviewRows/buildCorrectedEntries below instead of a live
+  // checkbox state.
+  li.dataset.restDay = row.restDay ? '1' : '';
   const rowId = reviewRowCounter++;
   li.innerHTML = `
     <div class="field-group weekday-group"><span class="weekday-label">${weekdayAbbr(row.date)}</span></div>
     <div class="field-group"><input type="date" class="f-date" value="${escapeHtml(row.date)}"></div>
     <div class="field-group"><span class="field-label">In</span><input type="text" inputmode="numeric" maxlength="4" placeholder="0800" class="f-start time-input" value="${hhmmToTimeInput(row.clockIn)}" ${row.restDay ? 'disabled' : ''}></div>
     <div class="field-group"><span class="field-label">Out</span><input type="text" inputmode="numeric" maxlength="4" placeholder="1700" class="f-end time-input" value="${hhmmToTimeInput(row.clockOut)}" ${row.restDay ? 'disabled' : ''}></div>
-    <div class="field-group"><span class="field-label">Lunch</span><input type="number" step="0.25" min="0" class="f-lunch" value="${row.lunchBreakHours ?? ''}" ${row.restDay ? 'disabled' : ''}></div>
+    <div class="field-group"><span class="field-label">Break</span><input type="number" step="0.25" min="0" class="f-break" value="${row.breakHours ?? ''}" ${row.restDay ? 'disabled' : ''}></div>
     <div class="field-group"><span class="field-label">OT</span><span class="ot-hours-display">—</span></div>
-    <div class="field-group"><label><input type="checkbox" class="f-rest" ${row.restDay ? 'checked' : ''}> Rest day</label></div>
     <button type="button" class="row-delete-btn" title="Remove" aria-label="Remove"><svg viewBox="0 0 16 16" style="width:13px;height:13px;flex-shrink:0;" fill="currentColor" aria-hidden="true"><path d="M6 1a1 1 0 0 0-1 1v1H2.5a.5.5 0 0 0 0 1h.55l.65 9.1A1.5 1.5 0 0 0 5.2 15h5.6a1.5 1.5 0 0 0 1.5-1.4l.65-9.1h.55a.5.5 0 0 0 0-1H11V2a1 1 0 0 0-1-1H6zm0 2V2h4v1H6zM4.55 4h6.9l-.64 9h-5.62l-.64-9zM6.5 6a.5.5 0 0 1 .5.5v5a.5.5 0 0 1-1 0v-5a.5.5 0 0 1 .5-.5zm3 0a.5.5 0 0 1 .5.5v5a.5.5 0 0 1-1 0v-5a.5.5 0 0 1 .5-.5z"/></svg></button>
     ${row.notes ? `<div class="row-notes">${escapeHtml(row.notes)}</div>` : ''}
-    <div class="row-notes lunch-mismatch-note" style="display:none"></div>
+    <div class="row-notes break-mismatch-note" style="display:none"></div>
     <div class="row-notes hours-cap-note" style="display:none"></div>
     <div class="rest-day-work-block" style="display:none">
       <div class="review-hint">This date is your declared weekly rest day — who asked for this work?</div>
@@ -1264,11 +1277,11 @@ function appendReviewRow(container, row, beforeEl) {
   const dateInput = li.querySelector('.f-date');
   const weekdayLabel = li.querySelector('.weekday-label');
 
-  // Every edit that can change this row's guardrails (date/times/lunch/rest-day) re-checks lunch
+  // Every edit that can change this row's guardrails (date/times/break/rest-day) re-checks break
   // mismatch, the three Employment Act guardrails for this row, and the monthly OT total (which
   // this row contributes to).
   function onRowChanged() {
-    checkLunchMismatch(li);
+    checkBreakMismatch(li);
     recomputeRowGuardrails(li);
     recomputeMonthlyOtCap();
   }
@@ -1279,17 +1292,10 @@ function appendReviewRow(container, row, beforeEl) {
     weekdayLabel.textContent = weekdayAbbr(dateInput.value);
     onRowChanged();
   });
-  li.querySelector('.f-rest').addEventListener('change', (e) => {
-    const disabled = e.target.checked;
-    li.querySelector('.f-start').disabled = disabled;
-    li.querySelector('.f-end').disabled = disabled;
-    li.querySelector('.f-lunch').disabled = disabled;
-    onRowChanged();
-  });
   li.querySelectorAll('.time-input').forEach(input => {
     input.addEventListener('blur', () => { input.value = normalizeTimeInput(input.value); onRowChanged(); });
   });
-  li.querySelector('.f-lunch').addEventListener('input', onRowChanged);
+  li.querySelector('.f-break').addEventListener('input', onRowChanged);
   const restInitGroup = li.querySelector('.rest-init-group');
   wireRadioGroupHighlight(restInitGroup); // dynamically added after page load, so not covered by the initial document.querySelectorAll('.radio-group') pass
   restInitGroup.addEventListener('change', () => recomputeRowGuardrails(li));
@@ -1416,12 +1422,12 @@ function shiftHoursClient(clockIn, clockOut) {
 // of work" per s.2(1). Null if the row isn't a valid worked shift yet (rest day, or times not
 // filled in — e.g. mid-edit, or a freshly-added blank row).
 function rowNetHours(li) {
-  if (li.querySelector('.f-rest').checked) return null;
+  if (li.dataset.restDay === '1') return null;
   const start = timeInputToHHMM(li.querySelector('.f-start').value);
   const end = timeInputToHHMM(li.querySelector('.f-end').value);
   if (start === null || end === null) return null;
-  const lunch = Number(li.querySelector('.f-lunch').value || 0);
-  return shiftHoursClient(start, end) - lunch;
+  const brk = Number(li.querySelector('.f-break').value || 0);
+  return shiftHoursClient(start, end) - brk;
 }
 
 const NORMAL_HOURS_PER_DAY = 8; // s.38's default "normal hours of work" absent a different agreed figure
@@ -1460,7 +1466,7 @@ function computeRestDayPay(netHours, initiator) {
 // input (salary, work week, declared rest day) that the underlying formulas depend on changes.
 function recomputeRowGuardrails(li) {
   const dateVal = li.querySelector('.f-date').value;
-  const isRestDay = li.querySelector('.f-rest').checked;
+  const isRestDay = li.dataset.restDay === '1';
   const netHours = rowNetHours(li);
 
   li.querySelector('.ot-hours-display').textContent =
@@ -1544,7 +1550,7 @@ function recomputeMonthlyPayTotals() {
   document.querySelectorAll('.review-row').forEach(li => {
     const dateVal = li.querySelector('.f-date').value;
     if (!dateVal) return;
-    const isRestDayChecked = li.querySelector('.f-rest').checked;
+    const isRestDayChecked = li.dataset.restDay === '1';
     const netHours = rowNetHours(li);
     if (netHours === null) return;
 
@@ -1616,26 +1622,26 @@ function recomputeAllGuardrails() {
   recomputeMonthlyOtCap();
 }
 
-function getStandardLunchHours() {
-  const checked = document.querySelector('input[name="lunchBreakStandard"]:checked').value;
-  if (checked === 'other') return Number(document.getElementById('lunchBreakOtherHours').value || 0);
+function getStandardBreakHours() {
+  const checked = document.querySelector('input[name="breakStandard"]:checked').value;
+  if (checked === 'other') return Number(document.getElementById('breakOtherHours').value || 0);
   return Number(checked);
 }
 
-// Flags (doesn't auto-correct) a row whose current lunch-break value doesn't match the declared
+// Flags (doesn't auto-correct) a row whose current break value doesn't match the declared
 // standard from the form above the upload fields — covers both a genuinely observed gap (a
 // multi-shift day's actual measured break) and the plain default a single-shift day starts with,
 // since either way a mismatch is something the reviewer should look at before trusting the row.
-function checkLunchMismatch(li) {
-  const note = li.querySelector('.lunch-mismatch-note');
-  if (li.querySelector('.f-rest').checked) { note.style.display = 'none'; li.classList.remove('lunch-flag'); return; }
-  const actual = li.querySelector('.f-lunch').value;
-  if (actual === '') { note.style.display = 'none'; li.classList.remove('lunch-flag'); return; }
-  const standard = getStandardLunchHours();
-  if (Math.abs(Number(actual) - standard) < 0.01) { note.style.display = 'none'; li.classList.remove('lunch-flag'); return; }
-  note.textContent = `⚠ Lunch break (${actual}h) doesn't match the declared standard (${standard}h) — please verify.`;
+function checkBreakMismatch(li) {
+  const note = li.querySelector('.break-mismatch-note');
+  if (li.dataset.restDay === '1') { note.style.display = 'none'; li.classList.remove('break-flag'); return; }
+  const actual = li.querySelector('.f-break').value;
+  if (actual === '') { note.style.display = 'none'; li.classList.remove('break-flag'); return; }
+  const standard = getStandardBreakHours();
+  if (Math.abs(Number(actual) - standard) < 0.01) { note.style.display = 'none'; li.classList.remove('break-flag'); return; }
+  note.textContent = `⚠ Break (${actual}h) doesn't match the declared standard (${standard}h) — please verify.`;
   note.style.display = 'block';
-  li.classList.add('lunch-flag');
+  li.classList.add('break-flag');
 }
 
 function getHalfDayOfWeek() {
@@ -1757,7 +1763,7 @@ function detectAndInsertMissingDays() {
   const restDayOfWeek = getDeclaredRestDayOfWeek();
   const workWeek = getWorkDaysPerWeek();
   const halfDayOfWeek = workWeek === 5.5 ? getHalfDayOfWeek() : null;
-  const standardLunch = getStandardLunchHours();
+  const standardBreak = getStandardBreakHours();
 
   const missingDates = [];
   for (let d = new Date(fillStart); d <= fillEnd; d.setDate(d.getDate() + 1)) {
@@ -1783,7 +1789,7 @@ function detectAndInsertMissingDays() {
       date: dateStr,
       clockIn: start,
       clockOut: end,
-      lunchBreakHours: standardLunch,
+      breakHours: standardBreak,
       restDay: false,
       guessed: false,
       notes: `❗ Auto-inserted${isHalfDay ? ' (half-day)' : ''} — no timesheet entry found for this expected work day. Verify against the source document.`,
@@ -1798,12 +1804,12 @@ function collectAllReviewRows() {
   for (const li of document.querySelectorAll('.review-row')) {
     const date = li.querySelector('.f-date').value;
     if (!date) continue; // a row with no date can't be written anywhere — skip rather than error
-    const restDay = li.querySelector('.f-rest').checked;
+    const restDay = li.dataset.restDay === '1';
     rows.push({
       date,
       clockIn: restDay ? null : timeInputToHHMM(li.querySelector('.f-start').value),
       clockOut: restDay ? null : timeInputToHHMM(li.querySelector('.f-end').value),
-      lunchBreakHours: restDay ? null : (li.querySelector('.f-lunch').value === '' ? null : Number(li.querySelector('.f-lunch').value)),
+      breakHours: restDay ? null : (li.querySelector('.f-break').value === '' ? null : Number(li.querySelector('.f-break').value)),
       restDay,
       guessed: li.dataset.guessed === '1',
       notes: li.dataset.notes || null,
@@ -1822,7 +1828,7 @@ function buildCorrectedEntries(card) {
   for (const li of card.querySelectorAll('.review-row')) {
     const date = li.querySelector('.f-date').value;
     if (!date) continue;
-    const restDay = li.querySelector('.f-rest').checked;
+    const restDay = li.dataset.restDay === '1';
     correctedEntries.push(
       restDay
         ? { date, type: 'rest_day' }
@@ -1897,7 +1903,7 @@ function renderPageReview(page) {
 
   // The <ul class="inline-review-list"> is left empty here — populated right after this page's
   // card lands in the DOM (see the /api/process success handler) with the reviewRows that trace
-  // back to this exact page, so the editable Start/End/Lunch inputs sit right beside the image.
+  // back to this exact page, so the editable Start/End/Break inputs sit right beside the image.
   return `
     <div class="page-review-row">
       <div class="page-review-image">
@@ -1968,13 +1974,17 @@ function renderComputedRates() {
   if (!el) return;
   const hourly = getHourlyBasicRate();
   if (hourly === null) { el.innerHTML = ''; return; }
+  const salary = getBasicMonthlySalary();
+  const allowances = getMonthlyAllowances();
+  const workWeek = getWorkDaysPerWeek();
   const dailyBasic = getDailyBasicRate();
   const dailyGross = getDailyGrossRate();
+  const sal = formatMoney(salary);
   el.innerHTML = `
     <ul class="ipa-computed-rates-list">
-      <li>Hourly basic rate (overtime / rest-day / public holiday multiplier): <strong>${formatMoney(hourly)}/hr</strong></li>
-      <li>Daily basic rate (${getWorkDaysPerWeek()}-day week): <strong>${formatMoney(dailyBasic)}/day</strong></li>
-      <li>Daily gross rate: <strong>${formatMoney(dailyGross)}/day</strong></li>
+      <li>Hourly basic rate (overtime / rest-day / public holiday multiplier): <span class="ipa-formula">${sal} basic pay × 12 months ÷ (52 weeks × 44 hours/week) =</span> <strong>${formatMoney(hourly)}/hr</strong></li>
+      <li>Daily basic rate (${workWeek}-day week): <span class="ipa-formula">${sal} basic pay × 12 months ÷ (52 weeks × ${workWeek} days/week) =</span> <strong>${formatMoney(dailyBasic)}/day</strong></li>
+      <li>Daily gross rate: <span class="ipa-formula">(${sal} basic pay + ${formatMoney(allowances)} allowances) × 12 months ÷ (52 weeks × ${workWeek} days/week) =</span> <strong>${formatMoney(dailyGross)}/day</strong></li>
     </ul>`;
 }
 
@@ -2227,6 +2237,7 @@ function refreshBankSummary() {
   // confirmed "$0 matched", not "never checked". That distinction is what lets
   // updateOwedVsPaidBox tell "nothing paid" apart from "we don't know".
   totalPaidCache = transactions.reduce((sum, t) => sum + (t.direction === 'debit' ? -t.amount : t.amount), 0);
+  paidIsAssumedZero = false; // a real scan ran — whatever it found (even $0) is confirmed, not assumed
   updateSummarySectionVisibility();
   updateOwedVsPaidBox();
 }
@@ -2298,7 +2309,17 @@ async function pollBankJobUntilDone(jobId) {
 // the main claim scan.
 async function runBankStatementScan() {
   const files = [...bankStatementInput.files];
-  if (files.length === 0) return;
+  if (files.length === 0) {
+    // Nothing to check payments against — rather than leave the Owed vs Paid box hidden
+    // indefinitely, assume $0 paid so far (the worst case) and say so explicitly in the box
+    // itself, so it reads as an assumption rather than a confirmed bank-statement read.
+    totalPaidCache = 0;
+    paidIsAssumedZero = true;
+    updateSummarySectionVisibility();
+    updateOwedVsPaidBox();
+    return;
+  }
+  paidIsAssumedZero = false;
   const keywords = bankKeywordsInput.value.split(',').map(k => k.trim()).filter(Boolean);
   if (keywords.length === 0) {
     bankStatusEl.className = 'status error';

@@ -36,7 +36,7 @@ function toLocalDateString(d: Date): string {
 // (the model read and reported it directly), not something inferred or fabricated.
 export type RestDay = { year: number; month: number; day: number; source: string }; // month is 1-12
 
-// One row per calendar date, already collapsed to a single start/end/lunch-break — the shape the
+// One row per calendar date, already collapsed to a single start/end/break — the shape the
 // human-review step (public/index.html) edits before generating the final spreadsheet. Multi-shift
 // days are pre-collapsed into this same shape (span + observed gap as the break) so the review UI
 // only ever needs to show three plain fields per date, matching how a person would actually
@@ -45,7 +45,7 @@ export type ReviewRow = {
     date: string; // YYYY-MM-DD
     clockIn: number | null; // HHMM 24hr, null only when restDay
     clockOut: number | null;
-    lunchBreakHours: number | null; // null only when restDay
+    breakHours: number | null; // null only when restDay
     restDay: boolean;
     guessed: boolean; // true if any underlying shift was a model guess or an implausible reading — surfaced as a "please double-check" hint, not enforced
     notes: string | null;
@@ -161,7 +161,7 @@ function computeSpanAndBreak(sortedShifts: Shift[]): { start: number; end: numbe
 
 // Fallback "Meal Time hrs" (column G) default when the caller doesn't declare a standard — kept
 // so buildReviewRows still has a sane value with no arguments (existing callers/tests).
-const FALLBACK_LUNCH_BREAK_HOURS = 1;
+const FALLBACK_BREAK_HOURS = 1;
 
 // Groups raw scanned TimeEntry rows into ONE ReviewRow per calendar date — collapsing 2+ shifts
 // (e.g. a morning block and an evening block) into a single span + observed gap-as-break, exactly
@@ -174,16 +174,16 @@ const FALLBACK_LUNCH_BREAK_HOURS = 1;
 // dropped, since a human reviewing the row can fix or discard it themselves — dropping it here
 // would hide the very thing the review step exists to catch.
 //
-// standardLunchHours is the caseworker's declared standard (public/index.html's lunch-break
-// radio group), used as the assumed break for a single, unremarkable shift — there's nothing
+// standardBreakHours is the caseworker's declared standard (public/index.html's break radio
+// group), used as the assumed break for a single, unremarkable shift — there's nothing
 // actually read off the page for that case (a single clock-in/clock-out pair says nothing about
-// the meal break), so adopting the declared standard directly is more accurate than a hardcoded
+// the break), so adopting the declared standard directly is more accurate than a hardcoded
 // guess, and means it won't spuriously disagree with itself later (public/index.html's
-// checkLunchMismatch compares every row's lunchBreakHours against this same declared value). A
+// checkBreakMismatch compares every row's breakHours against this same declared value). A
 // multi-shift day is different: the gap between shifts IS something actually observed on the
 // page, so that stays as the real measured value — genuinely comparable against the declared
 // standard, and worth a mismatch warning if it disagrees.
-export function buildReviewRows(entries: TimeEntry[], restDays: RestDay[], standardLunchHours: number = FALLBACK_LUNCH_BREAK_HOURS): ReviewRow[] {
+export function buildReviewRows(entries: TimeEntry[], restDays: RestDay[], standardBreakHours: number = FALLBACK_BREAK_HOURS): ReviewRow[] {
     type Cell = { date: Date; shifts: Shift[]; source: string };
     const byDate = new Map<string, Cell>();
 
@@ -209,7 +209,7 @@ export function buildReviewRows(entries: TimeEntry[], restDays: RestDay[], stand
                 date: toLocalDateString(date),
                 clockIn: shifts[0].clockIn,
                 clockOut: shifts[0].clockOut,
-                lunchBreakHours: standardLunchHours,
+                breakHours: standardBreakHours,
                 restDay: false,
                 guessed: anyGuessed || implausible,
                 notes: implausible ? `implausible shift duration (${hours}h) as originally scanned — please verify` : null,
@@ -223,7 +223,7 @@ export function buildReviewRows(entries: TimeEntry[], restDays: RestDay[], stand
                 date: toLocalDateString(date),
                 clockIn: start,
                 clockOut: end,
-                lunchBreakHours: implausible ? standardLunchHours : Math.round(breakHours * 100) / 100,
+                breakHours: implausible ? standardBreakHours : Math.round(breakHours * 100) / 100,
                 restDay: false,
                 guessed: true, // a multi-shift collapse always needs a human glance, even when internally consistent
                 notes: `${shifts.length} shifts originally scanned (${sorted.map(s => `${s.clockIn}-${s.clockOut}`).join(", ")}) collapsed into one span — please verify`,
@@ -237,7 +237,7 @@ export function buildReviewRows(entries: TimeEntry[], restDays: RestDay[], stand
             date: `${r.year}-${String(r.month).padStart(2, "0")}-${String(r.day).padStart(2, "0")}`,
             clockIn: null,
             clockOut: null,
-            lunchBreakHours: null,
+            breakHours: null,
             restDay: true,
             guessed: false,
             notes: null,
@@ -250,8 +250,8 @@ export function buildReviewRows(entries: TimeEntry[], restDays: RestDay[], stand
 
 // Loads calculation.xltx and writes each (already human-reviewed) row directly.
 // - Every day, goes into "Start Time w/o :" (N) / "End Time w/o :" (O), which feed the template's
-//   own B/C/D/E/I/L formulas. The lunch break (column G) is always written from the row's
-//   lunchBreakHours — every row carries an explicit value (defaulted by buildReviewRows, editable
+//   own B/C/D/E/I/L formulas. The break (column G) is always written from the row's
+//   breakHours — every row carries an explicit value (defaulted by buildReviewRows, editable
 //   by the human reviewer), so there's no separate "leave the template default" case to handle
 //   here.
 // - A row still marked `guessed` (the human reviewer didn't clear it) gets a "Remarks" note and a
@@ -333,11 +333,11 @@ export async function fillTimesheetFromRows(
         }
 
         const hours = shiftHours(r.clockIn, r.clockOut);
-        const lunchBreak = r.lunchBreakHours ?? 0;
-        if (hours <= 0 || hours >= MAX_DAILY_HOURS || lunchBreak < 0 || lunchBreak >= hours) {
+        const breakHours = r.breakHours ?? 0;
+        if (hours <= 0 || hours >= MAX_DAILY_HOURS || breakHours < 0 || breakHours >= hours) {
             warnings.push({
                 source: r.source,
-                reason: `${date.toDateString()}: ${r.clockIn}-${r.clockOut} with ${lunchBreak}h break (${hours}h span) is not a valid shift — skipped, please fix and regenerate`,
+                reason: `${date.toDateString()}: ${r.clockIn}-${r.clockOut} with ${breakHours}h break (${hours}h span) is not a valid shift — skipped, please fix and regenerate`,
                 category: "skipped_invalid",
                 date: r.date,
             });
@@ -350,7 +350,7 @@ export async function fillTimesheetFromRows(
         const gCell = worksheet.getCell(`G${row}`);
         setCell(nCell, r.clockIn);
         setCell(oCell, r.clockOut);
-        setCell(gCell, lunchBreak);
+        setCell(gCell, breakHours);
         writtenDates.push(date);
     }
 
