@@ -9,7 +9,7 @@
   "scripts": {
     "dev": "tsx --env-file=.env test.ts",
     "server": "node --max-old-space-size=4096 --require tsx/cjs --env-file=.env server.ts",
-    "start": "node --max-old-space-size=4096 --require tsx/cjs server.ts",
+    "start": "node --max-old-space-size=1536 --require tsx/cjs server.ts",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "dependencies": {
