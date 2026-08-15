@@ -3,6 +3,19 @@ import { pdf } from "pdf-to-img";
 import sharp from "sharp";
 import { traceable } from "langsmith/traceable";
 
+// The default model every call uses unless a caller explicitly overrides it (see the `model`
+// param on sendVisionRequest/scanPageImage/extractPageContext/verifyDatesOnPage). IPA extraction
+// (lib/ipa.ts) and bank statement extraction (lib/bankstatement.ts) never override, so they always
+// use this; server.ts's timesheet pipeline also uses this directly now (see timesheetModel there).
+// Currently both set to xiaomi/mimo-v2.5 per user testing — beat qwen3-vl-32b-instruct AND
+// gemini-2.5-flash on the two hardest real cases found this session (dash+holiday-label combo, "no
+// lunch" attribution), at roughly half gemini-2.5-flash's cost. FALLBACK_VISION_MODEL is currently
+// identical to PRIMARY_VISION_MODEL, so server.ts's hybrid escalation step (re-asking a disputed
+// date with the fallback model) is a no-op while they match — repoint FALLBACK_VISION_MODEL to a
+// genuinely different model to restore that escalation's value.
+export const PRIMARY_VISION_MODEL = "xiaomi/mimo-v2.5";
+export const FALLBACK_VISION_MODEL = "xiaomi/mimo-v2.5";
+
 let client: OpenRouter | null = null;
 
 function getClient(): OpenRouter {
@@ -204,7 +217,8 @@ export const sendVisionRequest = traceable(
         prompt: string,
         temperature: number,
         seed: number,
-        maxTokens: number
+        maxTokens: number,
+        model: string = PRIMARY_VISION_MODEL
     ): Promise<{ content: string; truncated: boolean; cost: number }> {
     const MAX_ATTEMPTS = 3;
     for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
@@ -217,22 +231,12 @@ export const sendVisionRequest = traceable(
                         // published per-token pricing — exact and correct even if a request happens to
                         // route to a different-priced provider/quantization tier than expected.
                         usage: { include: true },
-                        // Switched from google/gemini-2.5-flash after user side-by-side testing found
-                        // it underperformed on dense handwritten timesheets. nex-agi/nex-n2-pro is a
-                        // MoE model (17B active / 397B total, Qwen3.5 arch) with two OpenRouter
-                        // endpoints: Nex AGI (fp8) and SiliconFlow (unknown quantization). Filtering to
-                        // known, higher-precision quant tiers only (same reasoning as the earlier Qwen
-                        // setup) to avoid the lower-confidence unknown-quant provider.
-                        // Switched from nex-n2-pro per user request to try qwen3-vl-32b-instruct.
                         // reasoning: effort "none" is kept as a harmless no-op for non-reasoning
-                        // models (confirmed via a live call — response comes back with
-                        // reasoning: null, doesn't error) so we don't need to special-case it per
-                        // model. qwen3-vl-32b-instruct has only one OpenRouter endpoint (Alibaba,
-                        // quantization "unknown") — the fp8/fp16/bf16/fp32 filter used for Qwen's
-                        // larger models would exclude that one endpoint entirely and leave nothing to
-                        // route to, so it's dropped here (same reasoning as the earlier Gemini swap).
+                        // models (confirmed via a live call on qwen3-vl-32b-instruct — response comes
+                        // back with reasoning: null, doesn't error) so callers don't need to
+                        // special-case it per model, including FALLBACK_VISION_MODEL.
                         reasoning: { effort: "none" },
-                        model: "qwen/qwen3-vl-32b-instruct",
+                        model,
                         maxTokens,
                         temperature,
                         seed,
@@ -287,9 +291,9 @@ export const sendVisionRequest = traceable(
         // positional args (not a single object) means the traced shape is { args: [...] }, per
         // langsmith's ProcessInputs typing — index 0 is base64Image.
         processInputs: ({ args }) => {
-            const [base64Image, prompt, temperature, seed, maxTokens] = args;
+            const [base64Image, prompt, temperature, seed, maxTokens, model] = args;
             return {
-                args: [`<image, ${base64Image?.length ?? 0} base64 chars>`, prompt, temperature, seed, maxTokens],
+                args: [`<image, ${base64Image?.length ?? 0} base64 chars>`, prompt, temperature, seed, maxTokens, model],
             };
         },
     }
@@ -299,9 +303,10 @@ export async function scanPageImage(
     base64Image: string,
     prompt: string,
     temperature = 0,
-    seed = 42
+    seed = 42,
+    model: string = PRIMARY_VISION_MODEL
 ): Promise<{ content: string; truncated: boolean; cost: number }> {
-    return sendVisionRequest(base64Image, prompt, temperature, seed, 8000);
+    return sendVisionRequest(base64Image, prompt, temperature, seed, 8000, model);
 }
 
 export type PageDataModel = "clock_times" | "hours_total" | "punch_log" | "unclear";
@@ -332,7 +337,8 @@ export type PageDataModel = "clock_times" | "hours_total" | "punch_log" | "uncle
 // claim-wide year from the page headers it can find (majority vote across pages) instead of asking
 // the caller to pick it.
 export async function extractPageContext(
-    base64Image: string
+    base64Image: string,
+    model: string = PRIMARY_VISION_MODEL
 ): Promise<{ context: string; isTimesheet: boolean; dataModel: PageDataModel; year: number | null; cost: number }> {
     const prompt = `Look at this ENTIRE page of a worker's daily time/attendance record. It may be handwritten or typed, in any language, and in any layout — a row-per-day table, a calendar grid, a free-form list, a punch card, etc.
 
@@ -343,7 +349,7 @@ Answer four things:
 4. year: the 4-digit calendar year this page's date rows belong to, ONLY if it's stated as part of the DOCUMENT'S OWN content — a title naming the claim/pay period (e.g. "Timesheet - Jan 2026"), a filename like "2026_01_timesheet.pdf", or a printed form field for the period being recorded. Do NOT use a scanner, fax, photocopier, or "received/printed on" transmission timestamp/date-stamp banner (these usually sit right at the very top or bottom edge of the page, often with a time down to the second, e.g. "12/08/2026 17:41:57") — that is when the PAGE WAS SCANNED, not the period the timesheet covers, and using it is a common, serious mistake. Do NOT infer it from handwritten day/month digits in the row data itself either, and do NOT guess — if no genuine document-content year label exists anywhere on the page, reply null.
 
 Output ONLY a JSON object: {"context": string, "isTimesheet": boolean, "dataModel": "clock_times" | "hours_total" | "punch_log" | "unclear", "year": number | null}. No markdown fences, no other text.`;
-    const { content, cost } = await sendVisionRequest(base64Image, prompt, 0, 42, 300);
+    const { content, cost } = await sendVisionRequest(base64Image, prompt, 0, 42, 300, model);
     try {
         const parsed = JSON.parse(extractJsonBlock(content));
         const dataModel: PageDataModel =
@@ -376,7 +382,8 @@ Output ONLY a JSON object: {"context": string, "isTimesheet": boolean, "dataMode
 // the cost to one extra call per page regardless of how many dates were reported.
 export async function verifyDatesOnPage(
     base64Image: string,
-    candidates: { day: number; month: number }[]
+    candidates: { day: number; month: number }[],
+    model: string = PRIMARY_VISION_MODEL
 ): Promise<{ confirmed: Set<string>; cost: number }> {
     if (candidates.length === 0) return { confirmed: new Set(), cost: 0 };
 
@@ -396,7 +403,7 @@ Genuine content includes not just clock times, but ANY deliberate mark — a das
 
 After going through every date individually, end your reply with a JSON array with exactly one object per date in the list, in the same order, as {day, month, confirmed}, where confirmed is true only if you found genuine handwritten content for that date's row. You may write your brief per-date notes first; put the JSON array last, in a \`\`\`json code fence.`;
 
-    const { content, cost } = await sendVisionRequest(base64Image, prompt, 0, 42, 4000);
+    const { content, cost } = await sendVisionRequest(base64Image, prompt, 0, 42, 4000, model);
     const parsed = JSON.parse(extractJsonBlock(content)) as { day: number; month: number; confirmed: boolean }[];
 
     const confirmed = new Set<string>();

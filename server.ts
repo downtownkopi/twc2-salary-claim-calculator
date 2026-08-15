@@ -2,7 +2,7 @@ import express from "express";
 import multer from "multer";
 import * as path from "path";
 import { randomUUID } from "crypto";
-import { pdfToImages, imageToPages, scanPageImage, extractJsonBlock, cropIntoBands, extractPageContext, verifyDatesOnPage, resizeForDisplay, rotateImage, type PageDataModel } from "./lib/ocr";
+import { pdfToImages, imageToPages, scanPageImage, extractJsonBlock, cropIntoBands, extractPageContext, verifyDatesOnPage, resizeForDisplay, rotateImage, PRIMARY_VISION_MODEL, FALLBACK_VISION_MODEL, type PageDataModel } from "./lib/ocr";
 import { buildReviewRows, fillTimesheetFromRows, MONTH_ABBR, type TimeEntry, type FillWarning, type RestDay, type ReviewRow } from "./lib/xlsx";
 import { reconcileAttempts, type ParsedEntry } from "./lib/reconcile";
 import { uploadFlaggedPage, type FlaggedPageEntry } from "./lib/feedback";
@@ -70,6 +70,7 @@ type PageReview = {
     warnings: FillWarning[];
     dataModel: PageDataModel;
     pageContext: string;
+    modelsUsed: string[]; // every model that touched this page — always PRIMARY_VISION_MODEL, plus FALLBACK_VISION_MODEL if that page's escalation step ran
 };
 
 // /api/process kicks off a scan as a background job (12 real-world pages can take 15-20+ minutes
@@ -468,6 +469,8 @@ export function buildPrompt(
 
         If an unfamiliar notation is visible but its meaning cannot be determined, transcribe it in notes rather than inventing an interpretation.
 
+        A named public holiday (e.g. a printed "New Year's Day" label on a calendar template) combined with a dash drawn in the SAME box is not a special or ambiguous case — it is simply two signals agreeing with each other that this date was not worked. Do not let the presence of BOTH a printed holiday name AND a dash confuse you into treating the box as needing extra scrutiny or a different rule; it still gets rest_day = true, times = null, exactly like any other box with a dash. A box with a named holiday label is not automatically exempt from also being read for a dash — check every box the same way regardless of what else is printed in it.
+
         --------------------------------------------------
         11. Dashes AND CHECKMARKS IN CALENDAR GRIDS
         --------------------------------------------------
@@ -489,12 +492,14 @@ export function buildPrompt(
 
         Date 10 must NOT receive 09:00 - 19:00.
 
-        If the dash clearly indicates a non-worked day:
+        A bare dash "-" or short horizontal line drawn in a date's box ALWAYS means that date was not worked — treat it exactly the same as an explicit "OFF"/"rest day" notation from section 10 above, with no exceptions:
         - rest_day = true
         - times = null
         - notes = "-"
 
-        If the mark is merely a presence mark:
+        Do not second-guess this by asking "is this dash CLEARLY non-worked, or just a presence mark?" — a dash by itself, with no time text next to it, is never merely a presence mark. It is common for a page to show the SAME repeated time (e.g. "09:00-19:00") in most boxes for a given weekday, with only one or two boxes on that weekday instead containing a bare dash — that repetition elsewhere does NOT make the dash on this date ambiguous; still set rest_day = true, times = null for it. If you find yourself writing "dash mark" or similar into notes for a date, rest_day for that SAME date must be true — never write a dash into notes and then leave rest_day false, that is a direct contradiction.
+
+        A CHECKMARK or tally mark (a tick, a small check symbol — visually distinct from a dash/line) with no time text is a different case: a bare presence mark, not a claim about whether the day was worked.
         - rest_day = false
         - times = null
         - describe it in notes
@@ -917,7 +922,32 @@ async function runProcessJob(
     // output / side-by-side review UI can show what was extracted, instead of silently vanishing.
     const hoursEntries: { date: Date; hoursWorked: number; otHours: number | null; source: string; guessed: boolean }[] = [];
     const warnings: FillWarning[] = [];
+    // The model every timesheet-scanning call (page-context reads, scan attempts, date
+    // verification) uses — now just PRIMARY_VISION_MODEL directly, same as IPA/bank-statement
+    // extraction, now that all three document types are on the same model (see lib/ocr.ts). Kept as
+    // its own named binding (rather than inlining PRIMARY_VISION_MODEL at each call site) so a
+    // future model split between document types is a one-line change here again, not a hunt through
+    // every call site.
+    const timesheetModel = PRIMARY_VISION_MODEL;
     let totalCostUsd = 0; // sums OpenRouter's own reported usage.cost across every call this request makes
+    // Split out by model id (e.g. PRIMARY_VISION_MODEL vs FALLBACK_VISION_MODEL) so a caseworker can
+    // see how much of a job's cost came from the cheap default pass vs the fallback-model escalation
+    // — the hybrid setup only pays fallback-model rates on the specific pages that needed it.
+    const costByModel: Record<string, number> = {};
+    function addCost(model: string, cost: number) {
+        totalCostUsd += cost;
+        costByModel[model] = (costByModel[model] ?? 0) + cost;
+    }
+    // Every page always uses PRIMARY_VISION_MODEL at least once (page-context read, if nothing
+    // else); FALLBACK_VISION_MODEL is added to a page's set only if that page's escalation step
+    // actually ran. Surfaced per-page in pageReviews so a caseworker can see which pages needed the
+    // more expensive model, not just the job-wide total.
+    const pageModelsUsed = new Map<string, Set<string>>();
+    function markModelUsed(source: string, model: string) {
+        const set = pageModelsUsed.get(source) ?? new Set<string>();
+        set.add(model);
+        pageModelsUsed.set(source, set);
+    }
     // Display-only (downscaled) copy of every page, for the side-by-side review UI — keyed by the
     // same `source` string ("file.pdf p2") already used to tag every entry/warning from that page.
     const pageImages: { source: string; image: string }[] = [];
@@ -989,7 +1019,7 @@ async function runProcessJob(
                 const image = rotations.ipa ? await rotateImage(images[0], rotations.ipa) : images[0];
                 ipaImage = await resizeForDisplay(image, 500);
                 const { fields, cost } = await extractIpaFields(image);
-                totalCostUsd += cost;
+                addCost(PRIMARY_VISION_MODEL, cost);
                 return fields;
             } catch (e: any) {
                 ipaWarning = `could not process IPA document: ${e.message}`;
@@ -1031,10 +1061,11 @@ async function runProcessJob(
             if (pageRotation) imagesByFile[fi][i] = await rotateImage(imagesByFile[fi][i], pageRotation);
             const source = `${file.originalname} p${i + 1}`;
             try {
-                const result = await extractPageContext(imagesByFile[fi][i]);
+                const result = await extractPageContext(imagesByFile[fi][i], timesheetModel);
                 const validYear = result.year !== null && SUPPORTED_YEARS.includes(result.year) ? result.year : null;
                 pageContextCache.set(source, { context: result.context, isTimesheet: result.isTimesheet, dataModel: result.dataModel, year: validYear });
-                totalCostUsd += result.cost;
+                addCost(timesheetModel, result.cost);
+                markModelUsed(source, timesheetModel);
             } catch {
                 // Leave uncached — the main loop below re-attempts extractPageContext itself and
                 // reports the failure there, same as it always has.
@@ -1113,10 +1144,11 @@ async function runProcessJob(
                 let cached = pageContextCache.get(source);
                 if (!cached) {
                     try {
-                        const result = await extractPageContext(images[i]);
+                        const result = await extractPageContext(images[i], timesheetModel);
                         const validYear = result.year !== null && SUPPORTED_YEARS.includes(result.year) ? result.year : null;
                         cached = { context: result.context, isTimesheet: result.isTimesheet, dataModel: result.dataModel, year: validYear };
-                        totalCostUsd += result.cost;
+                        addCost(timesheetModel, result.cost);
+                        markModelUsed(source, timesheetModel);
                         // Same forward/backward-fill this page missed out on during the prescan pass
                         // (its own extractPageContext call failed there) — fall back to whichever
                         // neighboring page in this SAME file already has a resolved year, preferring
@@ -1166,7 +1198,7 @@ async function runProcessJob(
                     SCAN_TEMPERATURES.map(({ temperature, seed }) => ({ bandImage, b, temperature, seed }))
                 );
                 const results = await Promise.allSettled(
-                    scanJobs.map(({ bandImage, temperature, seed }) => scanPageImage(bandImage, prompt, temperature, seed))
+                    scanJobs.map(({ bandImage, temperature, seed }) => scanPageImage(bandImage, prompt, temperature, seed, timesheetModel))
                 );
 
                 const attemptsByBand: ParsedEntry[][][] = bands.map(() => []);
@@ -1184,7 +1216,8 @@ async function runProcessJob(
                         return;
                     }
                     const { content, truncated, cost } = result.value;
-                    totalCostUsd += cost;
+                    addCost(timesheetModel, cost);
+                    markModelUsed(source, timesheetModel);
                     if (truncated) truncatedCount++;
                     try {
                         const parsed = JSON.parse(extractJsonBlock(content));
@@ -1264,8 +1297,9 @@ async function runProcessJob(
                     .map(e => ({ day: e.day, month: e.month }));
                 if (candidates.length > 0) {
                     try {
-                        const { confirmed, cost } = await verifyDatesOnPage(images[i], candidates);
-                        totalCostUsd += cost;
+                        const { confirmed, cost } = await verifyDatesOnPage(images[i], candidates, timesheetModel);
+                        addCost(timesheetModel, cost);
+                        markModelUsed(source, timesheetModel);
                         parsed = reconciled.filter(e => {
                             if (e.day === null || e.month === null) return true; // let existing validation handle it
                             const isConfirmed = confirmed.has(`${e.month}-${e.day}`);
@@ -1281,6 +1315,68 @@ async function runProcessJob(
                         });
                     } catch (e: any) {
                         warnings.push({ source, reason: `date verification pass failed (${e.message}) — entries for this page were NOT independently verified, please review carefully`, category: "scan_quality" });
+                    }
+                }
+
+                // Hybrid escalation: timesheetModel is normally the cheap PRIMARY_VISION_MODEL, which
+                // occasionally can't reach agreement on a date — those show up as "dropped_disagreement"
+                // warnings just above, from either band-level reconciliation or the verification pass.
+                // Rather than re-scanning the whole page with the far more expensive
+                // FALLBACK_VISION_MODEL (real side-by-side testing found it meaningfully more accurate
+                // on hard cases, but ~5x the cost), ONE extra full-page call resolves just the disputed
+                // dates. Most pages never trigger this at all — the added cost only lands on pages that
+                // actually needed it. NOTE: currently redundant while timesheetModel is itself pointed
+                // at FALLBACK_VISION_MODEL (see its declaration above) — escalating to the same model
+                // that already produced the disagreement won't recover anything new.
+                const disputedDates = new Set(
+                    warnings
+                        .filter(w => w.source === source && w.category === "dropped_disagreement" && w.date)
+                        .map(w => {
+                            const [, m, d] = w.date!.split("-").map(Number);
+                            return `${m}-${d}`;
+                        })
+                );
+                if (disputedDates.size > 0) {
+                    try {
+                        const { content: fallbackContent, cost: fallbackCost } = await scanPageImage(images[i], prompt, 0, 42, FALLBACK_VISION_MODEL);
+                        addCost(FALLBACK_VISION_MODEL, fallbackCost);
+                        markModelUsed(source, FALLBACK_VISION_MODEL);
+                        const fallbackParsed = JSON.parse(extractJsonBlock(fallbackContent)) as ParsedEntry[];
+                        for (const fbEntry of fallbackParsed) {
+                            if (fbEntry.day === null || fbEntry.month === null) continue;
+                            const key = `${fbEntry.month}-${fbEntry.day}`;
+                            if (!disputedDates.has(key)) continue;
+                            // Only trust a confident fallback reading — same "genuine reading, not a
+                            // guess" bar as the primary pipeline. A fallback attempt that ALSO
+                            // couldn't read the date (times/rest_day/hoursWorked all empty) leaves the
+                            // original drop in place rather than adding noise.
+                            const hasRealReading =
+                                (fbEntry.times && fbEntry.times.length > 0) ||
+                                fbEntry.rest_day === true ||
+                                (fbEntry.hoursWorked !== null && fbEntry.hoursWorked !== undefined);
+                            if (!hasRealReading) continue;
+                            parsed = [
+                                ...parsed.filter(e => !(e.day === fbEntry.day && e.month === fbEntry.month)),
+                                {
+                                    ...fbEntry,
+                                    guessed: true,
+                                    notes: `resolved via fallback model (${FALLBACK_VISION_MODEL}) after primary model's attempts disagreed — please verify${fbEntry.notes ? `: ${fbEntry.notes}` : ""}`,
+                                },
+                            ];
+                            disputedDates.delete(key);
+                            warnings.push({
+                                source,
+                                reason: `day=${fbEntry.day} month=${fbEntry.month}: primary model's attempts disagreed (see above), but ${FALLBACK_VISION_MODEL} resolved it confidently — used its reading instead of dropping the day, please verify against the source PDF`,
+                                category: "flagged_review",
+                                date: `${pageYear}-${String(fbEntry.month).padStart(2, "0")}-${String(fbEntry.day).padStart(2, "0")}`,
+                            });
+                        }
+                    } catch (e: any) {
+                        warnings.push({
+                            source,
+                            reason: `fallback-model escalation for ${disputedDates.size} disputed date(s) failed (${e.message}) — those dates remain dropped`,
+                            category: "scan_quality",
+                        });
                     }
                 }
 
@@ -1401,6 +1497,7 @@ async function runProcessJob(
                         warnings: warnings.filter(w => w.source.split(", ").includes(source)),
                         dataModel,
                         pageContext,
+                        modelsUsed: [...(pageModelsUsed.get(source) ?? new Set<string>())],
                     });
                 }
             }
@@ -1512,7 +1609,8 @@ async function runProcessJob(
         pageWarnings.forEach(w => assignedWarnings.add(w));
 
         const meta = pageMeta.get(source);
-        return { source, image, entries, warnings: pageWarnings, dataModel: meta?.dataModel ?? "unclear", pageContext: meta?.pageContext ?? "" };
+        const modelsUsed = [...(pageModelsUsed.get(source) ?? new Set<string>())];
+        return { source, image, entries, warnings: pageWarnings, dataModel: meta?.dataModel ?? "unclear", pageContext: meta?.pageContext ?? "", modelsUsed };
     });
 
     // A warning with no specific page source (e.g. the coverage check for a day nothing read at
@@ -1582,6 +1680,7 @@ async function runProcessJob(
         ipaImage,
         ipaWarning,
         costUsd: totalCostUsd,
+        costByModel,
         durationMs: Date.now() - startedAt,
     };
     job.status = "done";

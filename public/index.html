@@ -1244,6 +1244,7 @@
     const generateBtn = document.getElementById('generateBtn');
     const generateStatusEl = document.getElementById('generateStatus');
     let currentYear = null; // captured once the scan finishes (server-detected — see renderFinalResult), reused when generating
+    let currentCostByModel = null; // { [modelId]: costUsd } — captured once the scan finishes, shown in the final status line
     // The /api/process response's pageReviews (pre-edit, reconciled OCR output per page) — kept here
     // so autoFlagChangedPages can still diff against it at Generate time, instead of only living
     // inside the submit handler's closure and vanishing once rendering finishes.
@@ -1568,7 +1569,13 @@
         const yearNote = currentYear && currentYear.length > 0
           ? ` — detected claim year${currentYear.length > 1 ? 's' : ''}: ${currentYear.join(', ')}`
           : '';
-        statusEl.textContent = `Scan done in ${formatDuration(Date.now() - submitStartedAt)}${formatCost(mainCost + bankCost)}${yearNote}`;
+        // Per-model breakdown (primary vs the fallback model an escalated page used) — most jobs
+        // only ever show one model since the fallback only runs on pages the primary model's own
+        // attempts couldn't agree on (see server.ts's hybrid escalation step).
+        const modelBreakdown = currentCostByModel && Object.keys(currentCostByModel).length > 0
+          ? ' (' + Object.entries(currentCostByModel).map(([model, cost]) => `${model}: $${cost.toFixed(4)}`).join(', ') + ')'
+          : '';
+        statusEl.textContent = `Scan done in ${formatDuration(Date.now() - submitStartedAt)}${formatCost(mainCost + bankCost)}${modelBreakdown}${yearNote}`;
       }
       submitBtn.disabled = false;
     });
@@ -1637,8 +1644,15 @@
         const entriesHtml = page.entries.length
           ? `<ul class="inline-review-list">${page.entries.map(e => `<li class="empty">${escapeHtml(formatLiveEntry(e))}</li>`).join('')}</ul>`
           : `<div class="review-hint">No entries found on this page.</div>`;
-        const warningsHtml = page.warnings.length
-          ? `<div class="row-notes">${page.warnings.map(w => escapeHtml(w.reason)).join('<br>')}</div>`
+        // "missing_data" (the coverage check's generic "no entry anywhere for this date" catch-all)
+        // is deliberately excluded from display here — it fires once per uncovered date and got
+        // noisy on a file with several genuinely missing days. Still present in page.warnings itself
+        // (unfiltered), since detectAndInsertMissingDays relies on that full list to skip
+        // auto-inserting a fabricated default-shift row over these exact dates — only the on-screen
+        // text is trimmed, not the underlying protection.
+        const visibleWarnings = page.warnings.filter(w => w.category !== 'missing_data');
+        const warningsHtml = visibleWarnings.length
+          ? `<div class="row-notes">${visibleWarnings.map(w => escapeHtml(w.reason)).join('<br>')}</div>`
           : '';
         return `
       <div class="page-review-row">
@@ -1667,6 +1681,7 @@
       // Purely informational here (the /api/generate call no longer needs a year at all — each
       // row already carries its own full date).
       currentYear = data.years;
+      currentCostByModel = data.costByModel || null;
       notifyIfPermitted('Scan complete', `Done in ${formatDuration(data.durationMs)} — ready to review.`);
 
       // Editable version (thumbnail + inputs) lives in the page-by-page review, same "verify against
@@ -2691,8 +2706,19 @@
       // deliberately skips auto-inserting a default row over any date named in one of these — without
       // showing the warning itself in this, the FINAL view, that date would just look like a silent,
       // unexplained gap instead of the "we saw something here but couldn't agree on it" it actually is.
-      const warningsHtml = (page.warnings || []).length
-        ? `<div class="row-notes">${page.warnings.map(w => escapeHtml(w.reason)).join('<br>')}</div>`
+      // Exception: "missing_data" (the coverage check's generic "no entry anywhere for this date"
+      // catch-all) is filtered out of the on-screen text — it got noisy on files with several
+      // genuinely missing days — but stays in page.warnings unfiltered, so
+      // detectAndInsertMissingDays's auto-insert-skip protection for these dates is unaffected.
+      const visibleWarnings = (page.warnings || []).filter(w => w.category !== 'missing_data');
+      const warningsHtml = visibleWarnings.length
+        ? `<div class="row-notes">${visibleWarnings.map(w => escapeHtml(w.reason)).join('<br>')}</div>`
+        : '';
+
+      // Only shown when a page actually used more than one model — the common case (primary model
+      // alone handled everything cleanly) doesn't need this called out on every single card.
+      const modelsUsedHtml = (page.modelsUsed || []).length > 1
+        ? `<div class="row-notes">Models used: ${page.modelsUsed.map(escapeHtml).join(', ')} (fallback model used because the primary model's attempts disagreed on at least one date — see warnings above)</div>`
         : '';
 
       // The <ul class="inline-review-list"> is left empty here — populated right after this page's
@@ -2707,6 +2733,7 @@
         <div class="page-review-source"><span>${escapeHtml(page.source)}</span></div>
         ${hoursOnlyHtml ? `<ul class="inline-review-list">${hoursOnlyHtml}</ul>` : ''}
         ${warningsHtml}
+        ${modelsUsedHtml}
         <ul class="inline-review-list review-target-list"></ul>
         <div class="page-add-day">
           <div class="review-hint">Add a date this page's scan didn't pick up.</div>
