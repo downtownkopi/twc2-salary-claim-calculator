@@ -1811,7 +1811,10 @@ app.post(
 app.get("/api/bank-statement/:jobId", (req, res) => {
     const job = bankJobs.get(req.params.jobId);
     if (!job) return res.status(404).json({ error: "job not found or expired" });
-    res.json(job);
+    // job.pages is pre-sized to the page count and written by index (upload order) — see
+    // runBankStatementJob — so a page that hasn't finished yet leaves a hole, filtered out here
+    // rather than sent as JSON `null`.
+    res.json({ ...job, pages: job.pages.filter(p => p !== undefined) });
 });
 
 async function runBankStatementJob(
@@ -1825,43 +1828,87 @@ async function runBankStatementJob(
     if (!job) return;
     const startedAt = Date.now();
     let totalCostUsd = 0;
-    const pages: BankStatementPageResult[] = [];
 
+    const imagesByFile: string[][] = [];
     for (let fi = 0; fi < files.length; fi++) {
-        const file = files[fi];
-        let images: string[];
         try {
-            images = await loadPagesForFile(file);
+            imagesByFile[fi] = await loadPagesForFile(files[fi]);
         } catch (e: any) {
-            console.error(`failed to load pages for ${file.originalname}:`, e);
-            continue;
-        }
-        for (let pi = 0; pi < images.length; pi++) {
-            const key = `${fi}-${pi}`;
-            if (excludedPages.has(key)) continue;
-            const rotation = rotations[key] || 0;
-            if (rotation) images[pi] = await rotateImage(images[pi], rotation);
-
-            const source = `${file.originalname} p${pi + 1}`;
-            const page: BankStatementPageResult = { source, image: await resizeForDisplay(images[pi], 500), transactions: [] };
-            try {
-                const { transactions, cost } = await extractMatchingTransactions(images[pi], keywords);
-                page.transactions = transactions;
-                totalCostUsd += cost;
-            } catch (e: any) {
-                console.error(`bank statement scan failed for ${source}:`, e);
-            }
-            pages.push(page);
-            job.pages = [...pages]; // live snapshot for polling clients
+            console.error(`failed to load pages for ${files[fi].originalname}:`, e);
+            imagesByFile[fi] = [];
         }
     }
 
-    const transactions = pages
+    // Same adaptive-concurrency pattern as the timesheet pipeline (runProcessJob) — every page
+    // starts at once by default, pageConcurrencyLimit only ever ratchets down (never back up) if a
+    // page's scan comes back failed, treating that as a signal of provider distress. pages/job.pages
+    // are pre-sized and written by index (upload-order position) rather than pushed, since pages now
+    // finish in whatever order they complete, not the order they were uploaded in.
+    const pageTasks: { fi: number; pi: number }[] = [];
+    for (let fi = 0; fi < files.length; fi++) {
+        for (let pi = 0; pi < imagesByFile[fi].length; pi++) {
+            if (excludedPages.has(`${fi}-${pi}`)) continue;
+            pageTasks.push({ fi, pi });
+        }
+    }
+    let pageConcurrencyLimit = Math.max(1, pageTasks.length);
+    const pages: (BankStatementPageResult | undefined)[] = new Array(pageTasks.length);
+    job.pages.length = pageTasks.length;
+
+    async function processBankPage(fi: number, pi: number, orderIndex: number): Promise<void> {
+        const file = files[fi];
+        const images = imagesByFile[fi];
+        const key = `${fi}-${pi}`;
+        const rotation = rotations[key] || 0;
+        if (rotation) images[pi] = await rotateImage(images[pi], rotation);
+
+        const source = `${file.originalname} p${pi + 1}`;
+        const page: BankStatementPageResult = { source, image: await resizeForDisplay(images[pi], 500), transactions: [] };
+        try {
+            const { transactions, cost } = await extractMatchingTransactions(images[pi], keywords);
+            page.transactions = transactions;
+            totalCostUsd += cost;
+        } catch (e: any) {
+            console.error(`bank statement scan failed for ${source}:`, e);
+            const reduced = Math.max(1, Math.floor(pageConcurrencyLimit / 2));
+            if (reduced < pageConcurrencyLimit) {
+                console.warn(`${source}: scan failed — reducing page concurrency ${pageConcurrencyLimit} -> ${reduced} for the rest of this job`);
+                pageConcurrencyLimit = reduced;
+            }
+        }
+        pages[orderIndex] = page;
+        // Non-null: job was checked right after the bankJobs.get() above (this closure captures
+        // that same guaranteed-non-null reference, which TS's narrowing doesn't see through).
+        if (job!.status === "running") job!.pages[orderIndex] = page; // live snapshot for polling clients
+    }
+
+    if (pageTasks.length > 0) {
+        await new Promise<void>(resolve => {
+            let nextIdx = 0;
+            let active = 0;
+            function pump() {
+                while (active < pageConcurrencyLimit && nextIdx < pageTasks.length) {
+                    const orderIndex = nextIdx;
+                    const { fi, pi } = pageTasks[nextIdx++];
+                    active++;
+                    processBankPage(fi, pi, orderIndex).finally(() => {
+                        active--;
+                        if (nextIdx >= pageTasks.length && active === 0) resolve();
+                        else pump();
+                    });
+                }
+            }
+            pump();
+        });
+    }
+
+    const orderedPages = pages.filter((p): p is BankStatementPageResult => p !== undefined);
+    const transactions = orderedPages
         .flatMap(p => p.transactions.map(t => ({ ...t, source: p.source })))
         .sort((a, b) => a.date.localeCompare(b.date));
     const totalCredits = transactions.filter(t => t.direction !== "debit").reduce((sum, t) => sum + t.amount, 0);
 
-    job.pages = pages;
+    job.pages = orderedPages;
     job.result = { transactions, totalCredits, costUsd: totalCostUsd, durationMs: Date.now() - startedAt };
     job.status = "done";
 }
