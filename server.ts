@@ -897,7 +897,11 @@ app.post(
 app.get("/api/process/:jobId", (req, res) => {
     const job = processJobs.get(req.params.jobId);
     if (!job) return res.status(404).json({ error: "job not found or expired" });
-    res.json(job);
+    // job.pages is pre-sized to the page count and written by index (upload order), so a page
+    // that hasn't finished yet — or never will, e.g. excluded/failed — leaves a hole. Filtered out
+    // here rather than sent as JSON `null`, so the client only ever sees pages that actually
+    // completed, still in upload-order relative to each other.
+    res.json({ ...job, pages: job.pages.filter(p => p !== undefined) });
 });
 
 // The actual scan/reconcile/fill-prep pipeline — everything /api/process's handler used to do
@@ -950,7 +954,12 @@ async function runProcessJob(
     }
     // Display-only (downscaled) copy of every page, for the side-by-side review UI — keyed by the
     // same `source` string ("file.pdf p2") already used to tag every entry/warning from that page.
-    const pageImages: { source: string; image: string }[] = [];
+    // Pre-sized to pageTasks.length and written by INDEX (each page's position in upload order),
+    // not push()'d, because pages now run concurrently and can finish in any order — pushing would
+    // scramble page order in the final review UI to "whichever finished first" instead of the
+    // order the files/pages were actually uploaded in. A page that fails before reaching its first
+    // write leaves a hole, filtered out below once every page has settled.
+    const pageImages: ({ source: string; image: string } | undefined)[] = [];
     // dataModel/pageContext per page, keyed by source — populated once extractPageContext runs
     // below. Carried into pageReviews purely so a later "flag this page" action (public/index.html)
     // can send this classification along with the flag, without the client having to re-derive it.
@@ -1110,23 +1119,46 @@ async function runProcessJob(
     }
 
     for (let fi = 0; fi < files.length; fi++) {
-        const file = files[fi];
         const loadError = fileLoadErrors.get(fi);
-        if (loadError) {
-            warnings.push({ source: file.originalname, reason: loadError, category: "system" });
-            continue;
-        }
-        const images = imagesByFile[fi];
+        if (loadError) warnings.push({ source: files[fi].originalname, reason: loadError, category: "system" });
+    }
 
+    // Adaptive page concurrency: every page in this upload is queued to run at once (uncapped —
+    // the theory being most real uploads are small enough that "try everything simultaneously" is
+    // strictly faster with no downside), and pageConcurrencyLimit only ever ratchets DOWN, never
+    // back up. A page's scan attempts failing (sendVisionRequest already retried 429s internally
+    // before giving up on any single attempt, so a failure surfacing here means the provider was
+    // already pushed hard) halves the limit for every page that hasn't started yet. Never scales
+    // back up mid-job — we can't distinguish "the provider recovered" from "we just got lucky this
+    // batch" from in here, and erring toward the safer, more sequential side for the rest of THIS
+    // job costs little; a fresh job starts optimistic again regardless.
+    const pageTasks: { fi: number; i: number }[] = [];
+    for (let fi = 0; fi < files.length; fi++) {
+        if (fileLoadErrors.has(fi)) continue;
+        const images = imagesByFile[fi];
         for (let i = 0; i < images.length; i++) {
             if (excludedPages.has(`${fi}-${i}`)) continue; // dropped by a human in the staging preview — not a failure, nothing to warn about
+            pageTasks.push({ fi, i });
+        }
+    }
+    let pageConcurrencyLimit = Math.max(1, pageTasks.length);
+    // Index into this array (rather than push) is each task's position here — i.e. upload order.
+    pageImages.length = pageTasks.length;
+    // Same fix applied to the LIVE progress array clients poll mid-job (see the GET handler, which
+    // filters out not-yet-filled holes before sending) — otherwise the in-progress view would also
+    // show pages in "whichever finished first" order instead of upload order while the job runs.
+    const liveJob = processJobs.get(jobId);
+    if (liveJob) liveJob.pages.length = pageTasks.length;
 
+    async function processPage(fi: number, i: number, orderIndex: number): Promise<void> {
+            const file = files[fi];
+            const images = imagesByFile[fi];
             const source = `${file.originalname} p${i + 1}`;
             let displayImage = "";
             let pageContext = "";
             let dataModel: PageDataModel = "unclear";
             // Wrapped in try/finally (rather than checking success at every one of this block's
-            // several early `continue`s) so the live progress push below always fires exactly once
+            // several early `return`s) so the live progress push below always fires exactly once
             // per page — whether it fully scanned, got skipped as a non-timesheet, or every scan
             // attempt failed. A page the user is watching "process" should never just disappear
             // without ever being accounted for in the live view.
@@ -1136,7 +1168,7 @@ async function runProcessJob(
                 // sees the human-confirmed upright orientation from the /api/preview staging step,
                 // not the raw (possibly sideways) render.
                 displayImage = await resizeForDisplay(images[i]);
-                pageImages.push({ source, image: displayImage });
+                pageImages[orderIndex] = { source, image: displayImage };
 
                 // Page-level context (e.g. a month header) + timesheet/data-model classification —
                 // normally already computed by the prescan pass above; only re-run here on a prescan
@@ -1175,7 +1207,7 @@ async function runProcessJob(
                             reason: `page does not appear to be a work time/attendance record${pageContext ? ` (${pageContext})` : ""} — skipped, no scan attempts made`,
                             category: "system",
                         });
-                        continue;
+                        return;
                     }
                 }
                 const pageYear = resolvedYearBySource.get(source);
@@ -1185,7 +1217,7 @@ async function runProcessJob(
                         reason: "could not determine which year this page's dates belong to (no printed/typed year header on this page, and no nearby page in the same file to infer it from) — skipped, no scan attempts made",
                         category: "system",
                     });
-                    continue;
+                    return;
                 }
                 const prompt = buildPrompt(pageYear, pageContext, dataModel);
 
@@ -1248,6 +1280,11 @@ async function runProcessJob(
                         reason: `${failedCount}/${totalAttempts} scan attempts failed or returned unparseable output`,
                         category: "scan_quality",
                     });
+                    const reduced = Math.max(1, Math.floor(pageConcurrencyLimit / 2));
+                    if (reduced < pageConcurrencyLimit) {
+                        console.warn(`${source}: ${failedCount}/${totalAttempts} scan attempts failed — reducing page concurrency ${pageConcurrencyLimit} -> ${reduced} for the rest of this job`);
+                        pageConcurrencyLimit = reduced;
+                    }
                 }
 
                 // Reconcile WITHIN each band first (its own SCAN_TEMPERATURES attempts, all looking
@@ -1274,7 +1311,7 @@ async function runProcessJob(
 
                 if (bandResults.length === 0) {
                     warnings.push({ source, reason: "all scan attempts for this page failed — page was skipped entirely", category: "scan_quality" });
-                    continue;
+                    return;
                 }
 
                 // Reconcile ACROSS bands leniently (requireFullParticipation=false): bands see
@@ -1490,7 +1527,7 @@ async function runProcessJob(
                 // attached warnings) once the whole job finishes below.
                 const job = processJobs.get(jobId);
                 if (job && job.status === "running") {
-                    job.pages.push({
+                    job.pages[orderIndex] = {
                         source,
                         image: displayImage,
                         entries: entriesForSource(source),
@@ -1498,10 +1535,35 @@ async function runProcessJob(
                         dataModel,
                         pageContext,
                         modelsUsed: [...(pageModelsUsed.get(source) ?? new Set<string>())],
+                    };
+                }
+            }
+    }
+
+    // Concurrency-limited pool: starts every page's own task, up to pageConcurrencyLimit at once,
+    // and starts the next queued page the moment any in-flight page finishes — so a fast page
+    // frees its slot for the next one immediately rather than waiting for the whole current batch
+    // to settle. pageConcurrencyLimit can shrink mid-run (see processPage's failedCount check
+    // above), which this checks fresh every time a slot opens, so a mid-job reduction throttles
+    // every page queued after that point without needing to touch pages already in flight.
+    if (pageTasks.length > 0) {
+        await new Promise<void>(resolve => {
+            let nextIdx = 0;
+            let active = 0;
+            function pump() {
+                while (active < pageConcurrencyLimit && nextIdx < pageTasks.length) {
+                    const orderIndex = nextIdx;
+                    const { fi, i } = pageTasks[nextIdx++];
+                    active++;
+                    processPage(fi, i, orderIndex).finally(() => {
+                        active--;
+                        if (nextIdx >= pageTasks.length && active === 0) resolve();
+                        else pump();
                     });
                 }
             }
-        }
+            pump();
+        });
     }
 
     // No cross-page/weekday-pattern inference of missing days — a day with no entry anywhere
@@ -1599,7 +1661,11 @@ async function runProcessJob(
     // in the general list.
     const allWarnings = warnings;
     const assignedWarnings = new Set<FillWarning>();
-    const pageReviews: PageReview[] = pageImages.map(({ source, image }) => {
+    // Holes (pages that threw before ever writing their pageImages slot — see processPage) are
+    // dropped here; every slot that DID get written keeps its original upload-order position
+    // relative to the others, since pageImages was written by index, not push().
+    const orderedPageImages = pageImages.filter((p): p is { source: string; image: string } => p !== undefined);
+    const pageReviews: PageReview[] = orderedPageImages.map(({ source, image }) => {
         const entries = entriesForSource(source);
 
         // Some warnings combine multiple sources into one comma-joined string (e.g. a multi-shift

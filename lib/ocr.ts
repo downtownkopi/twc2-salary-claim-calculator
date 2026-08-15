@@ -265,7 +265,14 @@ export const sendVisionRequest = traceable(
 
             const choice = (response as any).choices[0];
             return {
-                content: choice.message.content,
+                // Some models/providers (seen with xiaomi/mimo-v2.5, not with the earlier
+                // qwen/gemini setup) can return message.content as null — e.g. a moderation/
+                // content-filter response, or an empty completion — despite this function's return
+                // type promising a plain string. Every caller downstream (extractJsonBlock, JSON.parse,
+                // .trim() in extractPageContext's fallback path) assumes a real string; coercing null
+                // to "" here means those calls fail through their EXISTING "couldn't parse" handling
+                // instead of throwing a raw TypeError that skips a page with a confusing crash message.
+                content: choice.message.content ?? "",
                 truncated: choice.finishReason === "length",
                 cost: (response as any).usage?.cost ?? 0,
             };
@@ -349,7 +356,13 @@ Answer four things:
 4. year: the 4-digit calendar year this page's date rows belong to, ONLY if it's stated as part of the DOCUMENT'S OWN content — a title naming the claim/pay period (e.g. "Timesheet - Jan 2026"), a filename like "2026_01_timesheet.pdf", or a printed form field for the period being recorded. Do NOT use a scanner, fax, photocopier, or "received/printed on" transmission timestamp/date-stamp banner (these usually sit right at the very top or bottom edge of the page, often with a time down to the second, e.g. "12/08/2026 17:41:57") — that is when the PAGE WAS SCANNED, not the period the timesheet covers, and using it is a common, serious mistake. Do NOT infer it from handwritten day/month digits in the row data itself either, and do NOT guess — if no genuine document-content year label exists anywhere on the page, reply null.
 
 Output ONLY a JSON object: {"context": string, "isTimesheet": boolean, "dataModel": "clock_times" | "hours_total" | "punch_log" | "unclear", "year": number | null}. No markdown fences, no other text.`;
-    const { content, cost } = await sendVisionRequest(base64Image, prompt, 0, 42, 300, model);
+    // 300 was enough for qwen/gemini (a real answer here is normally one short sentence + a few
+    // fields) but xiaomi/mimo-v2.5 was observed spending its token budget on internal reasoning
+    // before emitting any visible answer for this specific longer, multi-part prompt — even with
+    // reasoning effort set to "none" — truncating with EMPTY content and no error, which cascaded
+    // into every page on a job failing year detection with zero diagnostic trail. Matches the same
+    // failure class verifyDatesOnPage was bumped 2000->4000 for earlier; same fix here.
+    const { content, cost } = await sendVisionRequest(base64Image, prompt, 0, 42, 1200, model);
     try {
         const parsed = JSON.parse(extractJsonBlock(content));
         const dataModel: PageDataModel =
