@@ -8,8 +8,8 @@
   "main": "index.js",
   "scripts": {
     "dev": "tsx --env-file=.env test.ts",
-    "server": "tsx --env-file=.env server.ts",
-    "start": "tsx server.ts",
+    "server": "node --max-old-space-size=4096 --require tsx/cjs --env-file=.env server.ts",
+    "start": "node --max-old-space-size=4096 --require tsx/cjs server.ts",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "dependencies": {
@@ -19,6 +19,7 @@
     "exceljs": "^4.4.0",
     "express": "^5.2.1",
     "jszip": "^3.10.1",
+    "langsmith": "^0.8.11",
     "multer": "^2.2.0",
     "pdf-to-img": "^6.2.0",
     "sharp": "^0.35.3"

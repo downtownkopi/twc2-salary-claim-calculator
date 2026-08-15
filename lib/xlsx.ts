@@ -7,6 +7,11 @@ export type TimeEntry = {
     clockOut: number;
     source: string; // e.g. "timesheet1.pdf p2"
     guessed: boolean; // true if the model inferred this rather than reading it directly
+    // True only when the source page explicitly stated no meal break was taken this date (e.g.
+    // "no lunch"/"no break" written on the row) — see server.ts's buildPrompt. Distinct from simply
+    // not knowing (false), which lets buildReviewRows fall back to the caseworker's declared
+    // standard break as usual.
+    noBreak: boolean;
 };
 
 // Every warning is tagged with a category so the UI can group a long, otherwise-flat list into
@@ -34,7 +39,10 @@ function toLocalDateString(d: Date): string {
 
 // A day explicitly marked as a rest day/off/holiday on the actual page — genuine observed data
 // (the model read and reported it directly), not something inferred or fabricated.
-export type RestDay = { year: number; month: number; day: number; source: string }; // month is 1-12
+// notes carries through the literal leave-type text (e.g. "MC", "-") server.ts's buildPrompt asks
+// the model to transcribe for a non-plain-rest-day mark, so a caseworker sees WHY a day has no
+// hours instead of a bare unlabeled rest day. null for an actual plain rest day.
+export type RestDay = { year: number; month: number; day: number; source: string; notes: string | null }; // month is 1-12
 
 // One row per calendar date, already collapsed to a single start/end/break — the shape the
 // human-review step (public/index.html) edits before generating the final spreadsheet. Multi-shift
@@ -138,7 +146,7 @@ function shiftHours(clockIn: number, clockOut: number): number {
     return minutes / 60;
 }
 
-type Shift = { clockIn: number; clockOut: number; source: string; guessed: boolean; implausible?: boolean };
+type Shift = { clockIn: number; clockOut: number; source: string; guessed: boolean; implausible?: boolean; noBreak: boolean };
 
 // A day with 2+ distinct shifts (e.g. a morning block and an evening block) collapses to one
 // row: full span = first clock-in to last clock-out, and the gap(s) between shifts become the
@@ -192,7 +200,7 @@ export function buildReviewRows(entries: TimeEntry[], restDays: RestDay[], stand
         const cell = byDate.get(key) ?? { date: entry.date, shifts: [], source: entry.source };
         const isDuplicate = cell.shifts.some(s => s.clockIn === entry.clockIn && s.clockOut === entry.clockOut);
         if (!isDuplicate) {
-            cell.shifts.push({ clockIn: entry.clockIn, clockOut: entry.clockOut, source: entry.source, guessed: entry.guessed });
+            cell.shifts.push({ clockIn: entry.clockIn, clockOut: entry.clockOut, source: entry.source, guessed: entry.guessed, noBreak: entry.noBreak });
         }
         byDate.set(key, cell);
     }
@@ -205,14 +213,24 @@ export function buildReviewRows(entries: TimeEntry[], restDays: RestDay[], stand
         if (shifts.length === 1) {
             const hours = shiftHours(shifts[0].clockIn, shifts[0].clockOut);
             const implausible = hours <= 0 || hours >= 24;
+            // An explicit "no break"/"no lunch" reading overrides the assumed standard break — it's
+            // now something actually observed on the page, not an absence of information (see
+            // server.ts's buildPrompt and TimeEntry.noBreak above), so it's exactly as trustworthy as
+            // the multi-shift branch's observed gap below. An implausible shift still wins over it
+            // (that note already asks for a full re-check of the row anyway).
+            const noBreak = shifts[0].noBreak && !implausible;
             rows.push({
                 date: toLocalDateString(date),
                 clockIn: shifts[0].clockIn,
                 clockOut: shifts[0].clockOut,
-                breakHours: standardBreakHours,
+                breakHours: noBreak ? 0 : standardBreakHours,
                 restDay: false,
                 guessed: anyGuessed || implausible,
-                notes: implausible ? `implausible shift duration (${hours}h) as originally scanned — please verify` : null,
+                notes: implausible
+                    ? `implausible shift duration (${hours}h) as originally scanned — please verify`
+                    : noBreak
+                        ? "no break/lunch indicated on source — break set to 0h, please verify"
+                        : null,
                 source: sourceList,
             });
         } else {
@@ -240,7 +258,7 @@ export function buildReviewRows(entries: TimeEntry[], restDays: RestDay[], stand
             breakHours: null,
             restDay: true,
             guessed: false,
-            notes: null,
+            notes: r.notes,
             source: r.source,
         });
     }

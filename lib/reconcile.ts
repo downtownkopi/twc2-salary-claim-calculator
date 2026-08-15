@@ -17,6 +17,12 @@ export type ParsedEntry = {
     // takes priority whenever clock times are genuinely present, per the scan prompt).
     hoursWorked: number | null;
     otHours: number | null;
+    // True only when the page explicitly states no meal break was taken this date (see
+    // server.ts's buildPrompt) — distinct from simply not knowing, which is false/null and lets
+    // the caseworker's declared standard break apply downstream as usual (lib/xlsx.ts's
+    // buildReviewRows). Only meaningful alongside `times`; null/ignored on a rest day or
+    // hours-only row where there's no break to speak of either way.
+    noBreak: boolean | null;
     guessed: boolean | null;
     rest_day: boolean | null;
     notes: string | null;
@@ -109,6 +115,16 @@ export function reconcileAttempts(
         // as disagreeing readings rather than silently averaged/merged.
         const hoursVotes: { hoursWorked: number; otHours: number | null }[] = [];
         let restVotes = 0;
+        // Notes from attempts that voted rest_day — carries e.g. "MC"/"AL"/"-" (the literal
+        // leave-type mark buildPrompt asks the model to transcribe) through to the final merged
+        // entry, which the allAgreeOnRest branch below used to discard entirely.
+        const restNotes: (string | null)[] = [];
+        // Parallel to timesVotes (pushed together below, same index) — whether that specific
+        // attempt's reading of this day said no break was taken. Requiring EVERY attempt that
+        // agreed on the times to also agree noBreak is true (see the unanimous branch below) means
+        // one attempt missing/not noticing the "no lunch" text just falls back to false (the safe
+        // default), rather than a single attempt's noBreak claim overriding the others.
+        const noBreakVotes: boolean[] = [];
         let attemptsThatMentionedDay = 0;
         let implausibleCount = 0;
         const implausibleValues: number[] = [];
@@ -135,6 +151,7 @@ export function reconcileAttempts(
                               : null,
                           hoursWorked: matches.find(m => m.hoursWorked !== null)?.hoursWorked ?? null,
                           otHours: matches.find(m => m.otHours !== null)?.otHours ?? null,
+                          noBreak: matches.every(m => m.noBreak === true),
                           guessed: matches.some(m => m.guessed === true),
                           rest_day: matches.every(m => m.rest_day === true),
                           notes: matches.map(m => m.notes).filter(Boolean).join("; ") || null,
@@ -153,9 +170,11 @@ export function reconcileAttempts(
                 }
                 attemptsThatMentionedDay++;
                 timesVotes.push(rowForDay.times);
+                noBreakVotes.push(rowForDay.noBreak === true);
             } else if (rowForDay.rest_day === true) {
                 attemptsThatMentionedDay++;
                 restVotes++;
+                restNotes.push(rowForDay.notes);
             } else if (rowForDay.hoursWorked !== null && rowForDay.hoursWorked !== undefined) {
                 // hours_total data model (lib/ocr.ts's PageDataModel) — same "unreadable value,
                 // not a real reading" exclusion as an implausible clock time above.
@@ -176,6 +195,39 @@ export function reconcileAttempts(
             timesVotes.map(t => (orderMatters ? t : [...t].sort((a, b) => a - b)).join(","))
         );
         const distinctHoursSignatures = new Set(hoursVotes.map(v => `${v.hoursWorked}|${v.otHours ?? ""}`));
+
+        // 2-of-3 style majority fallback for `times` specifically, used only when strict unanimity
+        // (below) fails. A single dissenting attempt among an otherwise-agreeing group is common
+        // with ambiguous handwriting (e.g. a 6 vs 9, or a 7pm vs 8pm clock-out) — dropping the whole
+        // day in that case throws away 2 independent, agreeing reads over one outlier. Requires a
+        // STRICT majority (more than half of the times votes), not just a plurality, so a 3-way
+        // split (1-1-1) still can't "win" by having merely the largest of three equal groups — and
+        // still requires every attempt that mentioned the day to have voted on times specifically
+        // (no mixing with rest/hours votes), same as the unanimous case. Always ships flagged
+        // (guessed: true) rather than as a clean confirmed read — see buildReviewRows/warnings below.
+        let majorityTimes: { times: number[]; agreeCount: number; totalCount: number; noBreak: boolean } | null = null;
+        if (timesVotes.length > 0 && timesVotes.length === attemptsThatMentionedDay && distinctTimeSignatures.size > 1) {
+            const groups = new Map<string, { times: number[]; count: number; noBreakVotesInGroup: boolean[] }>();
+            timesVotes.forEach((t, idx) => {
+                const sig = (orderMatters ? t : [...t].sort((a, b) => a - b)).join(",");
+                const group = groups.get(sig) ?? { times: t, count: 0, noBreakVotesInGroup: [] };
+                group.count++;
+                group.noBreakVotesInGroup.push(noBreakVotes[idx]);
+                groups.set(sig, group);
+            });
+            let best: { times: number[]; count: number; noBreakVotesInGroup: boolean[] } | null = null;
+            for (const g of groups.values()) {
+                if (!best || g.count > best.count) best = g;
+            }
+            if (best && best.count > timesVotes.length / 2) {
+                majorityTimes = {
+                    times: best.times,
+                    agreeCount: best.count,
+                    totalCount: timesVotes.length,
+                    noBreak: best.noBreakVotesInGroup.every(v => v === true),
+                };
+            }
+        }
         // "every attempt that mentioned this day" must ALL agree on the SAME data model (times-only,
         // rest-only, or hours-only) for any of these to count as agreement — otherwise a mix of
         // "2 said times, 1 said rest day" could slip through just because the 2 times-votes matched
@@ -198,11 +250,31 @@ export function reconcileAttempts(
             // (page-reading) order even though it agrees with the others post-sort — output the
             // canonical ascending order rather than whichever attempt happened to be first.
             const outputTimes = orderMatters ? timesVotes[0] : [...timesVotes[0]].sort((a, b) => a - b);
-            entries.push({ day, month, times: outputTimes, hoursWorked: null, otHours: null, guessed: false, rest_day: false, notes: null });
+            // Only true if EVERY attempt that agreed on the times also independently noticed the
+            // "no break" text — one attempt not mentioning it falls back to false (the caseworker's
+            // declared standard break applies downstream) rather than a single attempt's claim
+            // zeroing out the break for everyone.
+            const outputNoBreak = noBreakVotes.length > 0 && noBreakVotes.every(v => v === true);
+            entries.push({ day, month, times: outputTimes, hoursWorked: null, otHours: null, noBreak: outputNoBreak, guessed: false, rest_day: false, notes: null });
         } else if (unanimous && allAgreeOnRest) {
-            entries.push({ day, month, times: null, hoursWorked: null, otHours: null, guessed: false, rest_day: true, notes: null });
+            // Attempts don't have to agree on the exact wording (one might transcribe "MC", another
+            // "M/C") to still unanimously agree it's a leave-type rest day — take whichever non-null
+            // note the first attempt that had one wrote, rather than requiring textual unanimity.
+            entries.push({ day, month, times: null, hoursWorked: null, otHours: null, noBreak: null, guessed: false, rest_day: true, notes: restNotes.find(Boolean) ?? null });
         } else if (unanimous && allAgreeOnHours) {
-            entries.push({ day, month, times: null, hoursWorked: hoursVotes[0].hoursWorked, otHours: hoursVotes[0].otHours, guessed: false, rest_day: false, notes: null });
+            entries.push({ day, month, times: null, hoursWorked: hoursVotes[0].hoursWorked, otHours: hoursVotes[0].otHours, noBreak: null, guessed: false, rest_day: false, notes: null });
+        } else if (fullyParticipated && sufficientRedundancy && majorityTimes) {
+            entries.push({
+                day,
+                month,
+                times: majorityTimes.times,
+                hoursWorked: null,
+                otHours: null,
+                noBreak: majorityTimes.noBreak,
+                guessed: true,
+                rest_day: false,
+                notes: `majority reading (${majorityTimes.agreeCount}/${majorityTimes.totalCount} attempts agreed on ${majorityTimes.times.join(",")}) — not unanimous, please verify against the source PDF`,
+            });
         } else if (attemptsThatMentionedDay > 0 || implausibleCount > 0) {
             // something was reported, but not unanimously — dropped rather than guessed
             const reasons: string[] = [];

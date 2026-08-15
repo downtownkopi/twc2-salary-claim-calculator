@@ -952,7 +952,7 @@
           <div class="rules-summary-cat">Computed automatically (needs IPA basic salary)</div>
           <ul>
             <li>Hourly / daily basic rate, daily gross rate</li>
-            <li>Payment breakdown — basic + overtime + rest-day + public holiday pay, per month</li>
+            <li>Basic Salary Breakdown — basic + overtime + rest-day + public holiday pay, per month</li>
             <li>Owed vs Paid delta (also needs a bank statement scan)</li>
           </ul>
         </div>
@@ -1061,13 +1061,13 @@
           flagged for review, not auto-corrected.</div>
       </div>
 
-      <div class="field">
+      <div class="field" style="display:none">
         <h4>Default shift timing (used to fill in unaccounted days — see below)</h4>
         <div class="shift-default-row">
           <div class="field-group"><span class="field-label">In</span><input type="text" inputmode="numeric"
-              maxlength="4" placeholder="0800" class="time-input" id="defaultShiftStart"></div>
+              maxlength="4" placeholder="0800" value="0800" class="time-input" id="defaultShiftStart"></div>
           <div class="field-group"><span class="field-label">Out</span><input type="text" inputmode="numeric"
-              maxlength="4" placeholder="1700" class="time-input" id="defaultShiftEnd"></div>
+              maxlength="4" placeholder="1700" value="1700" class="time-input" id="defaultShiftEnd"></div>
         </div>
         <div class="file-list">A day with no timesheet entry at all, in a week that otherwise falls short of the
           declared work week, gets filled in using this pattern — clearly marked so you know the app inserted it, not
@@ -1124,17 +1124,6 @@
 
       <hr />
 
-      <h2>Claim details</h2>
-      <div class="field">
-        <h4 for="year">Claim year</h4>
-        <select id="year" name="year" required>
-          <option value="2026">2026</option>
-          <option value="2025">2025</option>
-        </select>
-        <div class="file-list">Handwritten years are often misread — the model only reads day/month off the page, this
-          dropdown decides the year (and which sheet tab is used).</div>
-      </div>
-
       <button type="submit" id="submitBtn">Process & Generate Claim</button>
 
       <div class="status" id="status"></div>
@@ -1160,6 +1149,8 @@
           <h2 class="form-section-header">Summary</h2>
           <div class="ipa-review" id="ipaReview" style="display:none"></div>
           <div class="ipa-review" id="monthlyPayTotals" style="display:none; margin-top: 20px;"></div>
+          <div class="ipa-review" id="overtimeBreakdown" style="display:none; margin-top: 20px;"></div>
+          <div class="ipa-review" id="restBreakdown" style="display:none; margin-top: 20px;"></div>
           <div class="ipa-review" id="bankResults" style="display:none; margin-top: 20px;"></div>
         </div>
       </div>
@@ -1220,7 +1211,7 @@
     // three toggles its own display, from wherever that happens (renderFinalResult,
     // recomputeMonthlyPayTotals, runBankStatementScan).
     function updateSummarySectionVisibility() {
-      const anyVisible = ['ipaReview', 'monthlyPayTotals', 'bankResults']
+      const anyVisible = ['ipaReview', 'monthlyPayTotals', 'overtimeBreakdown', 'restBreakdown', 'bankResults']
         .some(id => document.getElementById(id).style.display !== 'none');
       summarySectionEl.style.display = anyVisible ? 'block' : 'none';
     }
@@ -1252,7 +1243,7 @@
     }
     const generateBtn = document.getElementById('generateBtn');
     const generateStatusEl = document.getElementById('generateStatus');
-    let currentYear = null; // captured at scan time, reused when generating so the two stay in sync
+    let currentYear = null; // captured once the scan finishes (server-detected — see renderFinalResult), reused when generating
     // The /api/process response's pageReviews (pre-edit, reconciled OCR output per page) — kept here
     // so autoFlagChangedPages can still diff against it at Generate time, instead of only living
     // inside the submit handler's closure and vanishing once rendering finishes.
@@ -1526,8 +1517,6 @@
       // actually observed to contradict it there) instead of a hardcoded assumption, so it agrees by
       // construction with checkBreakMismatch's later comparison for those rows.
       formData.append('standardBreakHours', getStandardBreakHours());
-      currentYear = document.getElementById('year').value;
-      formData.append('year', currentYear);
       ipaReviewEl.style.display = 'none';
       ipaReviewEl.innerHTML = '';
       ipaPageReviewEl.style.display = 'none';
@@ -1572,7 +1561,14 @@
         const mainCost = mainResult.status === 'fulfilled' && typeof mainResult.value === 'number' ? mainResult.value : 0;
         const bankCost = bankResult.status === 'fulfilled' && typeof bankResult.value === 'number' ? bankResult.value : 0;
         statusEl.className = 'status success';
-        statusEl.textContent = `Scan done in ${formatDuration(Date.now() - submitStartedAt)}${formatCost(mainCost + bankCost)}`;
+        // currentYear is server-detected now (no manual picker — see renderFinalResult) — surfaced
+        // here so a caseworker has some visible confirmation of what got auto-detected, since
+        // there's no dropdown left to double-check it against. Plural label when a multi-month
+        // upload genuinely spanned more than one year (e.g. "2025, 2026").
+        const yearNote = currentYear && currentYear.length > 0
+          ? ` — detected claim year${currentYear.length > 1 ? 's' : ''}: ${currentYear.join(', ')}`
+          : '';
+        statusEl.textContent = `Scan done in ${formatDuration(Date.now() - submitStartedAt)}${formatCost(mainCost + bankCost)}${yearNote}`;
       }
       submitBtn.disabled = false;
     });
@@ -1666,6 +1662,11 @@
     // line, written only once every concurrent scan has settled, so there's a single total instead
     // of two separate "Scan done" messages.
     function renderFinalResult(data) {
+      // server-detected (runProcessJob's prescan) — an array, not a single value, since an upload
+      // can genuinely span a year boundary (each page keeps its own resolved year server-side).
+      // Purely informational here (the /api/generate call no longer needs a year at all — each
+      // row already carries its own full date).
+      currentYear = data.years;
       notifyIfPermitted('Scan complete', `Done in ${formatDuration(data.durationMs)} — ready to review.`);
 
       // Editable version (thumbnail + inputs) lives in the page-by-page review, same "verify against
@@ -1767,7 +1768,7 @@
         const res = await fetch('/api/generate', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ year: Number(currentYear), rows }),
+          body: JSON.stringify({ rows }),
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || `Server returned ${res.status}`);
@@ -2155,15 +2156,20 @@
       const hourly = getHourlyBasicRate();
       const restDayOfWeek = getDeclaredRestDayOfWeek();
       const totals = new Map(); // monthKey -> { netHours, otHours, restDayPay, phPay }
+      const claimedDatesByMonth = new Map(); // monthKey -> Set of dateVal, every row regardless of rest-day/netHours
+      const restDayWorkedDatesByMonth = new Map(); // monthKey -> array of dateVal actually paid rest-day-worked pay
 
       document.querySelectorAll('.review-row').forEach(li => {
         const dateVal = li.querySelector('.f-date').value;
         if (!dateVal) return;
+        const monthKey = dateVal.slice(0, 7);
+        if (!claimedDatesByMonth.has(monthKey)) claimedDatesByMonth.set(monthKey, new Set());
+        claimedDatesByMonth.get(monthKey).add(dateVal);
+
         const isRestDayChecked = li.dataset.restDay === '1';
         const netHours = rowNetHours(li);
         if (netHours === null) return;
 
-        const monthKey = dateVal.slice(0, 7);
         if (!totals.has(monthKey)) totals.set(monthKey, { netHours: 0, otHours: 0, restDayPay: 0, phPay: 0 });
         const t = totals.get(monthKey);
         t.netHours += netHours;
@@ -2174,7 +2180,11 @@
           const initiatorInput = li.querySelector('.rest-init-group input[type="radio"]:checked');
           const initiator = initiatorInput ? initiatorInput.value : 'employer';
           const { pay } = computeRestDayPay(netHours, initiator);
-          if (pay !== null) t.restDayPay += pay;
+          if (pay !== null) {
+            t.restDayPay += pay;
+            if (!restDayWorkedDatesByMonth.has(monthKey)) restDayWorkedDatesByMonth.set(monthKey, []);
+            restDayWorkedDatesByMonth.get(monthKey).push(dateVal);
+          }
         } else if (isPublicHoliday(dateVal) && !isRestDayChecked) {
           const dailyGross = getDailyGrossRate();
           const dailyBasic = getDailyBasicRate();
@@ -2183,44 +2193,154 @@
       });
 
       const el = document.getElementById('monthlyPayTotals');
-      const entries = [...totals.entries()].sort(([a], [b]) => a.localeCompare(b));
+      // Union of both maps — a month made up entirely of rest days (no valid netHours row at all)
+      // still needs to show up here with $0 OT/rest-day/PH pay, not silently vanish from the table.
+      const monthKeys = [...new Set([...totals.keys(), ...claimedDatesByMonth.keys()])].sort();
       const basicSalary = getBasicMonthlySalary();
-      if (entries.length === 0 || hourly === null || basicSalary === null) {
+      if (monthKeys.length === 0 || hourly === null || basicSalary === null) {
         el.style.display = 'none';
         el.innerHTML = '';
+        document.getElementById('overtimeBreakdown').style.display = 'none';
+        document.getElementById('overtimeBreakdown').innerHTML = '';
+        document.getElementById('restBreakdown').style.display = 'none';
+        document.getElementById('restBreakdown').innerHTML = '';
         totalOwedCache = null;
         updateSummarySectionVisibility();
         updateOwedVsPaidBox();
         return;
       }
       el.style.display = 'block';
+
+      // Bank statement credits/debits, netted per month — same sign convention as
+      // formatBankTransactionsTable's own Total row. Undated manual rows (a caseworker added an
+      // amount without a date) have no month to attribute to, so they're left out of this
+      // per-month split; they're still counted in the overall totalPaidCache/owed-vs-paid box.
+      const paidByMonth = new Map();
+      collectAllBankTransactions().forEach(t => {
+        if (!t.date) return;
+        const monthKey = t.date.slice(0, 7);
+        const signed = t.direction === 'debit' ? -t.amount : t.amount;
+        paidByMonth.set(monthKey, (paidByMonth.get(monthKey) || 0) + signed);
+      });
+
       // Grand total across every month, added as a bottom Total row — each month's own row is a
       // sub-amount, this is the figure the caseworker actually wants to hand to the worker.
       let sumTotal = 0;
-      const rows = entries.map(([month, t]) => {
+      let sumComputedClaim = 0;
+      const rows = monthKeys.map(month => {
+        const t = totals.get(month) || { netHours: 0, otHours: 0, restDayPay: 0, phPay: 0 };
         const otPay = 1.5 * hourly * t.otHours;
-        const total = basicSalary + otPay + t.restDayPay + t.phPay;
-        sumTotal += total;
+        const fullAmount = basicSalary + otPay + t.restDayPay + t.phPay;
+        sumTotal += fullAmount;
+
+        const [yearStr, monthNumStr] = month.split('-');
+        const daysInMonth = new Date(Number(yearStr), Number(monthNumStr), 0).getDate();
+        const daysClaimed = claimedDatesByMonth.get(month)?.size || 0;
+        const isFullMonth = daysClaimed === daysInMonth;
+
+        const paymentReceived = paidByMonth.get(month) || 0;
+        const computedClaim = fullAmount - paymentReceived;
+        sumComputedClaim += computedClaim;
+
         return `<tr>
-      <td>${formatMonthLabel(month)}</td>
-      <td>${formatMoney(basicSalary)}</td>
-      <td>${formatMoney(otPay)}${t.otHours > 0 ? `<div class="pay-total-sub">${t.otHours.toFixed(1)}h × 1.5 × ${formatMoney(hourly)}/hr</div>` : ''}</td>
-      <td>${t.restDayPay > 0 ? formatMoney(t.restDayPay) : '—'}</td>
-      <td>${t.phPay > 0 ? formatMoney(t.phPay) : '—'}</td>
-      <td><strong>${formatMoney(total)}</strong></td>
+      <td>${yearStr}</td>
+      <td>${MONTH_ABBR[Number(monthNumStr) - 1]}</td>
+      <td>${isFullMonth ? 'Yes' : 'No'}</td>
+      <td>${daysClaimed}</td>
+      <td>${formatMoney(fullAmount)}${t.otHours > 0 ? `<div class="pay-total-sub">incl. OT ${t.otHours.toFixed(1)}h × 1.5 × ${formatMoney(hourly)}/hr</div>` : ''}${t.restDayPay > 0 ? `<div class="pay-total-sub">incl. rest-day worked ${formatMoney(t.restDayPay)}</div>` : ''}${t.phPay > 0 ? `<div class="pay-total-sub">incl. PH worked ${formatMoney(t.phPay)}</div>` : ''}</td>
+      <td>${formatMoney(paymentReceived)}</td>
+      <td>${formatMoney(computedClaim)}</td>
+    </tr>`;
+      }).join('');
+      const totalRow = `<tr class="pay-total-row">
+      <td colspan="6">Total</td>
+      <td><strong>${formatMoney(sumComputedClaim)}</strong></td>
+    </tr>`;
+      el.innerHTML = `<h3>Basic Salary Breakdown</h3><table class="pay-total-table">
+    <thead><tr><th>Year</th><th>Month</th><th>Full month</th><th>Days claimed</th><th>Full amount</th><th>Payment received</th><th>Computed claim</th></tr></thead>
+    <tbody>${rows}${totalRow}</tbody>
+  </table>`;
+      totalOwedCache = sumTotal;
+      renderOvertimeBreakdown(monthKeys, totals, hourly);
+      renderRestBreakdown(monthKeys, totals, restDayWorkedDatesByMonth);
+      updateSummarySectionVisibility();
+      updateOwedVsPaidBox();
+    }
+
+    // OT-only view of the same per-month totals recomputeMonthlyPayTotals already built — separate
+    // table since a caseworker may want to claim/track overtime independently of the basic-salary
+    // figure. Payment received is left at $0 for now (no bank-statement split for OT specifically
+    // yet — TODO once that gets collated), so computed claim is just full amount until then.
+    function renderOvertimeBreakdown(monthKeys, totals, hourly) {
+      const el = document.getElementById('overtimeBreakdown');
+      el.style.display = 'block';
+      let sumTotal = 0;
+      const rows = monthKeys.map(month => {
+        const t = totals.get(month) || { otHours: 0 };
+        const fullAmount = 1.5 * hourly * t.otHours;
+        const paymentReceived = 0;
+        const computedClaim = fullAmount - paymentReceived;
+        sumTotal += computedClaim;
+        const [yearStr, monthNumStr] = month.split('-');
+        return `<tr>
+      <td>${yearStr}</td>
+      <td>${MONTH_ABBR[Number(monthNumStr) - 1]}</td>
+      <td>${t.otHours.toFixed(1)}</td>
+      <td>${formatMoney(fullAmount)}</td>
+      <td>${formatMoney(paymentReceived)}</td>
+      <td>${formatMoney(computedClaim)}</td>
     </tr>`;
       }).join('');
       const totalRow = `<tr class="pay-total-row">
       <td colspan="5">Total</td>
       <td><strong>${formatMoney(sumTotal)}</strong></td>
     </tr>`;
-      el.innerHTML = `<h3>Payment breakdown</h3><table class="pay-total-table">
-    <thead><tr><th>Month</th><th>Basic pay</th><th>Overtime</th><th>Rest-day worked</th><th>Public holiday worked</th><th>Total</th></tr></thead>
+      el.innerHTML = `<h3>Overtime Breakdown</h3><table class="pay-total-table">
+    <thead><tr><th>Year</th><th>Month</th><th>Overtime hours</th><th>Full amount</th><th>Payment received</th><th>Computed claim</th></tr></thead>
     <tbody>${rows}${totalRow}</tbody>
   </table>`;
-      totalOwedCache = sumTotal;
-      updateSummarySectionVisibility();
-      updateOwedVsPaidBox();
+    }
+
+    // Same idea as renderOvertimeBreakdown — a dedicated view of the rest-day-worked pay already
+    // computed into totals[month].restDayPay by the main loop above, this time also listing which
+    // specific dates it came from. Payment received is left at $0 for now, same as Overtime
+    // Breakdown — no bank-statement split across Basic/OT/Rest categories yet, that's still TODO.
+    function renderRestBreakdown(monthKeys, totals, restDayWorkedDatesByMonth) {
+      const el = document.getElementById('restBreakdown');
+      const monthsWithRestWork = monthKeys.filter(m => (restDayWorkedDatesByMonth.get(m) || []).length > 0);
+      if (monthsWithRestWork.length === 0) {
+        el.style.display = 'none';
+        el.innerHTML = '';
+        return;
+      }
+      el.style.display = 'block';
+      let sumComputedClaim = 0;
+      const rows = monthsWithRestWork.map(month => {
+        const t = totals.get(month) || { restDayPay: 0 };
+        const dates = restDayWorkedDatesByMonth.get(month) || [];
+        const fullAmount = t.restDayPay;
+        const paymentReceived = 0;
+        const computedClaim = fullAmount - paymentReceived;
+        sumComputedClaim += computedClaim;
+        const [yearStr, monthNumStr] = month.split('-');
+        return `<tr>
+      <td>${yearStr}</td>
+      <td>${MONTH_ABBR[Number(monthNumStr) - 1]}</td>
+      <td>${dates.length}</td>
+      <td>${dates.map(d => Number(d.split('-')[2])).join(', ')}</td>
+      <td>${formatMoney(fullAmount)}</td>
+      <td>${formatMoney(paymentReceived)}</td>
+      <td>${formatMoney(computedClaim)}</td>
+    </tr>`;
+      }).join('');
+      const totalRow = `<tr class="pay-total-row">
+      <td colspan="6">Total</td>
+      <td><strong>${formatMoney(sumComputedClaim)}</strong></td>
+    </tr>`;
+      el.innerHTML = `<h3>Rest Breakdown</h3><table class="pay-total-table">
+    <thead><tr><th>Year</th><th>Month</th><th>Rest days worked</th><th>Date(s)</th><th>Full amount</th><th>Payment received</th><th>Computed claim</th></tr></thead>
+    <tbody>${rows}${totalRow}</tbody>
+  </table>`;
     }
 
     // Top-level orchestrator — called whenever something ALL rows' guardrails depend on changes
@@ -2283,6 +2403,21 @@
       return null;
     }
 
+    // Fallback for findPageListForWeek above — used when a missing date's own week has no real-row
+    // match anywhere (e.g. the very first/last week of a page's month). Same-MONTH is still a
+    // meaningful signal a page card is the right home for this date; "just pick the last page card"
+    // is not — that was blindly dumping dates from a completely different (often phantom, see
+    // detectAndInsertMissingDays) month into whatever page happened to be last in the list.
+    function findPageListForMonth(dateStr, pageCards) {
+      const monthKey = dateStr.slice(0, 7);
+      for (const card of pageCards) {
+        const list = card.querySelector('.review-target-list');
+        const rowDates = [...list.querySelectorAll('.review-row .f-date')].map(inp => inp.value).filter(Boolean);
+        if (rowDates.some(rd => rd.slice(0, 7) === monthKey)) return list;
+      }
+      return null;
+    }
+
     // Inserts a row into `container` in date order alongside whatever's already there (extracted
     // rows + any auto-inserted ones from an earlier date in this same pass), instead of appending at
     // the bottom — so the reviewer reads the whole page top-to-bottom as one chronological list.
@@ -2311,39 +2446,40 @@
       const accountedDates = new Set(rows.map(r => r.date));
       const dates = [...accountedDates].sort();
 
-      // Bounded by the full calendar month(s) actually touched by extracted rows, not just the
-      // earliest/latest INDIVIDUAL row — a monthly timecard page still covers every day of that
+      // Fills the full calendar month for each DISTINCT month rows actually touch, not just the
+      // earliest/latest individual row — a monthly timecard page still covers every day of that
       // month even if the model only reported rows for the ones with handwriting on them. Trimming
-      // to the last non-blank row (the earlier approach) meant a genuinely blank trailing week (e.g.
+      // to the last non-blank row (an earlier approach) meant a genuinely blank trailing week (e.g.
       // the worker not paid for the last week of the month) silently never got flagged at all, which
-      // is exactly the case this feature exists to catch. Assumes touched months are contiguous — a
-      // gap month with zero rows getting bridged in is a rare edge case the caseworker can just
-      // delete any wrongly-inserted rows for, versus a real missing week going undetected.
-      const [ey, em] = dates[0].split('-').map(Number);
-      const [ly, lm] = dates[dates.length - 1].split('-').map(Number);
-      let earliestDate = new Date(ey, em - 1, 1);
-      let latestDate = new Date(ly, lm, 0); // day 0 of next month = last day of this month
+      // is exactly the case this feature exists to catch.
+      //
+      // Deliberately does NOT bridge between touched months — an earlier version spanned from the
+      // single earliest date to the single latest date across every row, so one stray date landing
+      // in a different month (an OCR misread digit, or a genuinely separate document) dragged the
+      // ENTIRE gap in between into the fill range, fabricating a whole phantom month of default-shift
+      // rows for a month that was never actually touched at all. Each touched month is now expanded
+      // independently instead.
+      // A month needs at least a couple of REAL rows before it's trusted enough to get the full
+      // calendar-month treatment below — a single lone row is exactly the profile of an OCR
+      // misread (one date's month digit read wrong) rather than a genuinely worked month, and
+      // fully expanding on that evidence alone is what fabricated a whole phantom month before.
+      const MIN_REAL_ROWS_TO_TRUST_MONTH = 2;
+      const rowCountByMonth = new Map();
+      for (const d of dates) rowCountByMonth.set(d.slice(0, 7), (rowCountByMonth.get(d.slice(0, 7)) || 0) + 1);
+      const touchedMonths = [...rowCountByMonth.keys()]
+        .filter(monthKey => rowCountByMonth.get(monthKey) >= MIN_REAL_ROWS_TO_TRUST_MONTH)
+        .sort();
 
       // Clamp against the caseworker-declared contract dates, if given — the calendar-month
       // expansion above assumes the worker was employed the whole month, which breaks the moment
       // employment actually starts or ends mid-month (e.g. hired on a Wednesday — filling in that
       // week's Monday/Tuesday would invent days they were never employed at all, not just catch a
-      // blank timesheet row). Only narrows the range, never widens it past the touched months.
+      // blank timesheet row). Only narrows a touched month's range, never widens it, and can drop a
+      // touched month entirely if it falls wholly outside the contract dates.
       const contractStartVal = document.getElementById('contractStartDate').value;
-      const hasContractStart = !!contractStartVal;
-      if (hasContractStart) {
-        const [csy, csm, csd] = contractStartVal.split('-').map(Number);
-        const contractStart = new Date(csy, csm - 1, csd);
-        if (contractStart > earliestDate) earliestDate = contractStart;
-      }
+      const contractStart = contractStartVal ? (() => { const [y, m, d] = contractStartVal.split('-').map(Number); return new Date(y, m - 1, d); })() : null;
       const contractEndVal = document.getElementById('contractEndDate').value;
-      const hasContractEnd = !!contractEndVal;
-      if (hasContractEnd) {
-        const [cey, cem, ced] = contractEndVal.split('-').map(Number);
-        const contractEnd = new Date(cey, cem - 1, ced);
-        if (contractEnd < latestDate) latestDate = contractEnd;
-      }
-      if (earliestDate > latestDate) return; // contract dates leave no valid range at all
+      const contractEnd = contractEndVal ? (() => { const [y, m, d] = contractEndVal.split('-').map(Number); return new Date(y, m - 1, d); })() : null;
 
       // Calendar-month edges (no contract date given for that side) still fill straight through with
       // no week-completeness check — a month boundary isn't a real employment signal, just where the
@@ -2353,37 +2489,70 @@
       // normal work pattern applied to (last day could've been a half day, exit formalities, etc), so
       // the whole partial week at that edge is left for the caseworker to fill in by hand instead of
       // guessed at.
-      let fillStart = new Date(earliestDate);
-      if (hasContractStart) {
-        const weekStart = new Date(earliestDate);
-        weekStart.setDate(weekStart.getDate() - weekStart.getDay());
-        if (weekStart < earliestDate) weekStart.setDate(weekStart.getDate() + 7);
-        fillStart = weekStart;
+      function fillRangeForMonth(monthStart, monthEnd) {
+        let rangeStart = monthStart;
+        let rangeEnd = monthEnd;
+        let startIsContractBoundary = false;
+        let endIsContractBoundary = false;
+        if (contractStart) {
+          if (contractStart > rangeEnd) return null; // this whole month is before employment started
+          if (contractStart > rangeStart) { rangeStart = contractStart; startIsContractBoundary = true; }
+        }
+        if (contractEnd) {
+          if (contractEnd < rangeStart) return null; // this whole month is after employment ended
+          if (contractEnd < rangeEnd) { rangeEnd = contractEnd; endIsContractBoundary = true; }
+        }
+        let fillStart = rangeStart;
+        if (startIsContractBoundary) {
+          const weekStart = new Date(rangeStart);
+          weekStart.setDate(weekStart.getDate() - weekStart.getDay());
+          if (weekStart < rangeStart) weekStart.setDate(weekStart.getDate() + 7);
+          fillStart = weekStart;
+        }
+        let fillEnd = rangeEnd;
+        if (endIsContractBoundary) {
+          const weekEnd = new Date(rangeEnd);
+          weekEnd.setDate(weekEnd.getDate() + (6 - weekEnd.getDay()));
+          if (weekEnd > rangeEnd) weekEnd.setDate(weekEnd.getDate() - 7);
+          fillEnd = weekEnd;
+        }
+        if (fillStart > fillEnd) return null;
+        return { fillStart, fillEnd };
       }
-      let fillEnd = new Date(latestDate);
-      if (hasContractEnd) {
-        const weekEnd = new Date(latestDate);
-        weekEnd.setDate(weekEnd.getDate() + (6 - weekEnd.getDay()));
-        if (weekEnd > latestDate) weekEnd.setDate(weekEnd.getDate() - 7);
-        fillEnd = weekEnd;
-      }
-      if (fillStart > fillEnd) return; // the contract boundary week(s) ate the entire range
 
       const restDayOfWeek = getDeclaredRestDayOfWeek();
       const workWeek = getWorkDaysPerWeek();
       const halfDayOfWeek = workWeek === 5.5 ? getHalfDayOfWeek() : null;
       const standardBreak = getStandardBreakHours();
 
+      // A date the scan pipeline already flagged (e.g. reconcile.ts's "dropped_disagreement" —
+      // scan attempts saw an entry but couldn't agree on its exact reading) is NOT a genuine gap —
+      // there IS a real entry on the source page, the model just isn't confident what it says. Auto-
+      // inserting a fabricated default-shift row over that would silently replace "we're unsure,
+      // please check the source PDF" with what looks like a verified, confident row — worse than the
+      // honest gap this feature exists to flag in the first place. Any warning naming this exact date
+      // (regardless of category — the common thread is "the pipeline already has something to say
+      // about this date") disqualifies it from auto-insert.
+      const datesWithWarnings = new Set(
+        (currentPageReviews || []).flatMap(page => (page.warnings || []).map(w => w.date).filter(Boolean))
+      );
+
       const missingDates = [];
-      for (let d = new Date(fillStart); d <= fillEnd; d.setDate(d.getDate() + 1)) {
-        if (d.getDay() === restDayOfWeek) continue; // declared rest day - expected to have no entry
-        const dateStr = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-        // A public holiday with no extracted entry is genuinely ambiguous (worker may have taken it
-        // off, same as a rest day) — fabricating a full default-shift workday here would be a guess
-        // this feature isn't meant to make, so leave it for the caseworker to check by hand instead.
-        if (isPublicHoliday(dateStr)) continue;
-        if (accountedDates.has(dateStr)) continue;
-        missingDates.push(dateStr);
+      for (const monthKey of touchedMonths) {
+        const [my, mm] = monthKey.split('-').map(Number);
+        const range = fillRangeForMonth(new Date(my, mm - 1, 1), new Date(my, mm, 0));
+        if (!range) continue;
+        for (let d = new Date(range.fillStart); d <= range.fillEnd; d.setDate(d.getDate() + 1)) {
+          if (d.getDay() === restDayOfWeek) continue; // declared rest day - expected to have no entry
+          const dateStr = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+          // A public holiday with no extracted entry is genuinely ambiguous (worker may have taken
+          // it off, same as a rest day) — fabricating a full default-shift workday here would be a
+          // guess this feature isn't meant to make, so leave it for the caseworker to check by hand.
+          if (isPublicHoliday(dateStr)) continue;
+          if (accountedDates.has(dateStr)) continue;
+          if (datesWithWarnings.has(dateStr)) continue;
+          missingDates.push(dateStr);
+        }
       }
 
       if (missingDates.length === 0) return;
@@ -2394,8 +2563,12 @@
       // row got inserted.
       const pageCards = [...pageReviewList.querySelectorAll('.page-review-row')];
       for (const dateStr of missingDates) {
-        const targetList = findPageListForWeek(dateStr, pageCards)
-          || pageCards[pageCards.length - 1]?.querySelector('.review-target-list');
+        // Same-week match first (keeps the row visually next to its real neighbours), then same-
+        // MONTH as a fallback — never "whichever page happens to be last", which is what used to
+        // dump a different month's auto-inserted rows into an unrelated page's section. If no page
+        // has so much as a same-month row either, there's nothing to sensibly attach this to, so it's
+        // left uninserted for the caseworker to add by hand rather than guessed into the wrong place.
+        const targetList = findPageListForWeek(dateStr, pageCards) || findPageListForMonth(dateStr, pageCards);
         if (!targetList) continue;
         const isHalfDay = halfDayOfWeek !== null && weekdayIndex(dateStr) === halfDayOfWeek;
         insertReviewRowSorted(targetList, {
@@ -2514,6 +2687,14 @@
         })
         .join('');
 
+      // Surfaced here too (not just the transient in-progress view) since detectAndInsertMissingDays
+      // deliberately skips auto-inserting a default row over any date named in one of these — without
+      // showing the warning itself in this, the FINAL view, that date would just look like a silent,
+      // unexplained gap instead of the "we saw something here but couldn't agree on it" it actually is.
+      const warningsHtml = (page.warnings || []).length
+        ? `<div class="row-notes">${page.warnings.map(w => escapeHtml(w.reason)).join('<br>')}</div>`
+        : '';
+
       // The <ul class="inline-review-list"> is left empty here — populated right after this page's
       // card lands in the DOM (see the /api/process success handler) with the reviewRows that trace
       // back to this exact page, so the editable Start/End/Break inputs sit right beside the image.
@@ -2525,6 +2706,7 @@
       <div class="page-review-details">
         <div class="page-review-source"><span>${escapeHtml(page.source)}</span></div>
         ${hoursOnlyHtml ? `<ul class="inline-review-list">${hoursOnlyHtml}</ul>` : ''}
+        ${warningsHtml}
         <ul class="inline-review-list review-target-list"></ul>
         <div class="page-add-day">
           <div class="review-hint">Add a date this page's scan didn't pick up.</div>
@@ -2851,6 +3033,7 @@
       // updateOwedVsPaidBox tell "nothing paid" apart from "we don't know".
       totalPaidCache = transactions.reduce((sum, t) => sum + (t.direction === 'debit' ? -t.amount : t.amount), 0);
       paidIsAssumedZero = false; // a real scan ran — whatever it found (even $0) is confirmed, not assumed
+      recomputeMonthlyPayTotals(); // payment breakdown's per-month "payment received"/"computed claim" columns read bank data too
       updateSummarySectionVisibility();
       updateOwedVsPaidBox();
     }

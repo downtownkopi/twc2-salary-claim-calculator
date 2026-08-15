@@ -35,9 +35,14 @@ const SCAN_TEMPERATURES: { temperature: number; seed: number }[] = [
 // which is a no-op pass-through, so no separate code path was needed to disable it cleanly.
 const BANDS_PER_PAGE = 1;
 
+// memoryStorage() means every uploaded byte sits in process RAM (times ~10-20x again once
+// pdf-to-img/sharp rasterize each page) until the job finishes — a file large enough to blow past
+// the container's memory limit gets the whole process OOM-killed by the OS, silently taking down
+// every other in-flight scan's job too (see JOB_TTL_MS above). Rejecting oversized uploads up
+// front with a clear 400 is far better than that.
 const upload = multer({
     storage: multer.memoryStorage(),
-    limits: { fileSize: 20 * 1024 * 1024, files: 10 },
+    limits: { fileSize: 40 * 1024 * 1024, files: 10 },
 });
 
 // Shared by /api/preview (staging thumbnails) and /api/process (the real scan) — real-world
@@ -61,7 +66,7 @@ type RotationMap = { pdfs?: Record<string, number>; ipa?: number };
 type PageReview = {
     source: string;
     image: string;
-    entries: { date: string; type: string; [k: string]: unknown }[];
+    entries: { date: string; type: string;[k: string]: unknown }[];
     warnings: FillWarning[];
     dataModel: PageDataModel;
     pageContext: string;
@@ -120,9 +125,12 @@ process.on("uncaughtException", (err) => {
     console.error("Uncaught exception (server staying up):", err);
 });
 
-// Handwritten years are frequently misread by OCR (e.g. "2023" instead of "2026"), and since
-// this template only has sheets for SUPPORTED_YEARS, we don't trust the model's year at all —
-// the caller picks it explicitly, and we only ask the model for day/month/clock times.
+// Handwritten years are frequently misread by OCR (e.g. "2023" instead of "2026") — this per-row
+// scan still never asks the model for a year, only day/month/clock times, same as before. The
+// year used below is resolved ONCE per job (runProcessJob's prescan, before this function is ever
+// called) from page-level PRINTED/TYPED headers via extractPageContext (lib/ocr.ts) — a much safer
+// read than trusting handwritten digits in the row data itself — validated against SUPPORTED_YEARS
+// before any scanning starts, since this template only has sheets for SUPPORTED_YEARS.
 //
 // A real-world upload batch turned out to span far more variety than "one row per day, clock
 // in/out times, handwritten" — see the format survey behind this revision: two-half-month
@@ -133,79 +141,614 @@ process.on("uncaughtException", (err) => {
 // alternative to `times` for that last case. dataModelHint comes from extractPageContext's cheap
 // full-page classification pass — a hint to lean on, not a hard rule, since a single page can
 // occasionally mix both models.
-function buildPrompt(year: number, pageContext: string, dataModelHint: PageDataModel): string {
+export function buildPrompt(
+    year: number,
+    pageContext: string,
+    dataModelHint: PageDataModel,
+): string {
     const hintLine =
         dataModelHint === "hours_total"
-            ? "An earlier pass guessed this page records only total hours worked (and maybe separate overtime hours) per day, with no clock in/out times — but verify against what you actually see; if clock times ARE visible on this image, report those instead (see below)."
+            ? "An earlier pass guessed that this page records total hours worked (and possibly overtime) rather than clock in/out times. Treat this only as a hint and verify the actual image. If clock times are visibly present, extract those instead."
             : dataModelHint === "clock_times"
-                ? "An earlier pass guessed this page records actual clock in/out times per day — but verify against what you actually see."
+                ? "An earlier pass guessed that this page records actual clock in/out times. Treat this only as a hint and verify the actual image."
                 : dataModelHint === "punch_log"
-                    ? "An earlier pass guessed this page is a phone app's punch-log screen (a chronological list of individual timestamped events, not a table) — see the specific guidance for that layout below, and verify against what you actually see."
-                    : "An earlier pass could not tell what this page records per day — judge purely from what you see on this image.";
+                    ? "An earlier pass guessed that this page is a phone application's punch-log screen containing individual timestamped events. Treat this only as a hint and verify the actual image."
+                    : "An earlier pass could not confidently determine the page's data model. Determine it from the actual image.";
 
-    return `This is one page of a worker's daily time/attendance record, used to fill a wage-claim spreadsheet for the year ${year}. It may be handwritten OR typed/computer-generated, in English, Chinese, Bengali, or a mix, and may use any layout — a simple row-per-day table, two half-months side by side on one page, a weekly calendar grid (day-of-week columns), a free-form list, a punch card, a phone app's punch-log screenshot, etc. Read whatever is actually in front of you rather than assuming one fixed shape.
+    return `You are extracting attendance and work-time information from a single page of a worker's time or attendance record.
 
-Some pages are a punch-log screenshot from a phone clock-in app instead of a table — a chronological LIST of individual timestamped events (e.g. a "History" screen with rows like "12-06-2026 06:29:54"), most-recent-first, with each clock in and each clock out as its own separate list entry rather than grouped by day. For this layout specifically:
-- The timestamp includes seconds (HH:MM:SS) — DROP the seconds entirely, do not fold them into the reported time. "19:50:07" is 1950 (7:50pm), NOT 195007. "06:29:54" is 629 (6:29am), NOT 62954.
-- Multiple separate list entries can share the same calendar date (e.g. one entry at 06:50 and another at 19:50 both dated 11-06-2026 — a clock-in and a clock-out on the same day, shown as two unrelated-looking rows because the app lists individual events, not days). Merge every entry for the same date into ONE output object for that date, with a single times array containing all of that date's events together — do not output multiple separate objects for the same day.
-- Order the merged times array in TRUE chronological order (earliest time of day first), not the order the entries happen to appear on the page (which is newest-date-first, and within a date, not guaranteed to be in a fixed order either) — you can see which of a date's timestamps is actually earlier, use that.
+        The page is used to fill a wage-claim spreadsheet for the year ${year}.
 
-Worked example of a common mistake with merged punch-log entries: two events dated 04-06-2026 are shown on the page as "20:07:32" then "06:26:15" (in that page order, newest-first). The correct times array is [626, 2007] — 626 (6:26am) is chronologically earlier than 2007 (8:07pm), so it goes first, even though it appeared SECOND on the page. If you find yourself reasoning through which value is chronologically earlier and concluding e.g. "[626, 2007]", your times array MUST be exactly that — [626, 2007], not [2007, 626]. Do not reason your way to the correct order in your notes and then write the values in the original page order anyway; that is the exact mistake this example exists to prevent.
+        The page may be:
+        - handwritten or typed/computer-generated
+        - in English, Chinese, Bengali, or a mixture of languages
+        - a traditional row-per-day table
+        - two half-month tables side by side
+        - a weekly/monthly calendar grid
+        - a free-form handwritten list
+        - a punch card
+        - a phone application's punch-log screen
+        - another unfamiliar attendance/time layout
 
-The printed column labels on a page's template may NOT match what's actually written in that column — the same printed template is often reused inconsistently by different workers (e.g. a column printed "Amount"/support-in-currency might actually contain a clock-out time, not money; a column printed "Site" might contain a month name instead). Always interpret each cell by what is ACTUALLY WRITTEN there, never by trusting the printed label alone.
+        Your primary responsibility is ACCURATE VISUAL TRANSCRIPTION.
 
-Page-level context (extracted separately from the full page before this image was cropped, since this image you're looking at now may be only part of the page and might not show a header/title that exists elsewhere on the page): ${pageContext || "none found"}. If this names a specific month, treat it as authoritative for every date row you report below — use that month even if this particular cropped image doesn't show the header itself, UNLESS a row on THIS image explicitly and clearly indicates a different month.
+        Read what is actually visible in the image.
 
-${hintLine}
+        Do NOT invent, reconstruct, or "repair" information that is not clearly supported by the image.
 
-For each calendar date row on this page, if actual clock in/out times are shown, your job is simply to list EVERY clock time value written on that row, left to right, in the order they appear — do NOT try to decide how many shifts they represent or group them into clock-in/clock-out pairs yourself. That grouping happens automatically downstream from the count and order of values you report, so your only job is accurate, complete enumeration.
+        Do NOT use patterns from other dates to fill in missing information.
 
-- A normal day with one shift has 2 values: [clock_in, clock_out].
-- A split day with a morning shift and an evening shift has 4 values: [in1, out1, in2, out2].
-- A day with three shifts has 6 values, and so on.
-Report the values as bare 24-hour numbers, no colon, e.g. 800 means 8:00am, 1330 means 1:30pm, 2200 means 10:00pm.
+        Do NOT change a visually read value merely because another value would make more logical sense.
 
-CRITICAL — always scan the FULL WIDTH of a row before deciding it only has 2 values. It is a common and serious error to read only the first clock-in/clock-out pair and stop, when the row actually has 4 (or more) values further right representing a second shift. If you see more than 2 time values anywhere on a row, report ALL of them — never silently drop the later ones.
+        Downstream code will perform business-rule validation and calculations.
 
-Watch out for the 12am/12pm ambiguity — it's a common mistake. 12pm = noon = 1200. 12am = midnight = 0 (or 2400 if it's the last value of the day, ending a shift that started earlier). These are NOT the same time, even though both are written as "12". Do not convert 12am the same way you'd convert 12pm.
+        PAGE-LEVEL CONTEXT:
+        ${pageContext || "none found"}
 
-Worked example of this exact mistake: a row reading "6am to 12pm, 6pm to 12am" (two shifts, a morning block and an evening block) must be reported as [600, 1200, 1800, 2400] — NOT [600, 1200, 1800, 1200]. The second "12" is 12am (midnight), ending the evening shift, and is a completely different time from the first "12" (12pm/noon) even though both look like "12" at a glance. If your final value for a row matches an earlier value in that same row only because you converted both "12"s the same way, you have made this exact mistake — re-examine whether the later one is actually 12am.
+        FORMAT HINT:
+        ${hintLine}
 
-Watch out for a bare "NN/NN" or "NN-NN" shorthand (e.g. "08/20") written in a non-Date column (e.g. one printed "Amount" or "Qty") on a work-hours page — this is a common way workers write clock-in/clock-out as just the HOUR, no minutes, no am/pm marker. It is NOT a calendar date, even though it superficially looks like MM/DD — a real date belongs in the Date column, which this page already has separately, so a second date-like value elsewhere on the same row would be redundant and wrong.
+        IMPORTANT: The page-level context and format hint are supporting information only. Always verify them against the actual image.
 
-Worked example of this exact case: a row shows "08/20" in a column printed "Amount", and this page is a time/wage record (not a payment ledger). The correct output for that row is times: [800, 2000] — 8:00am to 8:00pm — filled into the times array exactly like any other clock time, per the schema below. Do NOT second-guess this into times: null because the column's printed label says "Amount" rather than "time" — you already know from the instruction above that printed labels on this page's template can be wrong, and this is that exact situation. If you find yourself reasoning through this shorthand and concluding it represents clock hours, your times array for that row MUST reflect that conclusion — do not talk yourself back into null afterward.
+        --------------------------------------------------
+        1. IDENTIFY EVERY POPULATED DATE ENTRY
+        --------------------------------------------------
 
-Note: an overnight-spanning value (a time that's numerically smaller than the one before it, e.g. a shift running from 2200 to 0600) is expected and handled correctly downstream — do not try to "fix" it or reorder the values, just report them in the order they appear on the page.
+        Identify every actual date entry visible on this page.
 
-Hard constraint — no human can work 24 hours or more in a single calendar day. The span from the first time to the last time you report for a row must always be strictly less than 24 hours. If your reading would imply 24 hours or more, you have misread the image — look again. If you still cannot resolve it, output null for times on that row and explain the conflict in notes.
+        A date entry may be represented by:
+        - a table row
+        - a calendar-grid cell
+        - a free-form dated entry
+        - one or more punch-log records belonging to the same date
 
-Total hours worked must tally strictly. If the page shows both raw clock times AND a separately written total/duration for the same day, what you report must be consistent with that written total (accounting for any marked meal break). If they don't agree, do not silently pick one — explain the discrepancy in notes so a human can review it.
+        Do NOT assume that every day of the month appears.
 
-This page may contain many rows (up to 31, one per day of the month) — but do NOT assume every day of the month must appear. Only report a date if that date's row genuinely exists on the page with some kind of mark, entry, or handwriting in it. Transcribe EVERY row that is actually present, top to bottom — do not skip, merge, or summarize any row, even if the page is dense or some rows look repetitive.
+        Do NOT output completely blank rows or cells.
 
-CRITICAL — pay special attention to the LAST row that has any handwritten content on it, especially when it's followed by several blank/empty rows before the page ends. It is a common mistake to see a run of blank rows coming up and treat that as a signal that the data has "ended" a row early, causing the last real row to get skipped even though it clearly has content. The last populated row is exactly as real as every row before it — verify you have included it.
+        However, ANY visible mark means the date entry is populated and must be output, including:
+        - clock times
+        - total hours
+        - overtime
+        - checkmarks
+        - tally marks
+        - dashes
+        - X marks
+        - leave codes
+        - handwritten notes
+        - other visible notation
 
-CRITICAL — many rows on a timesheet look nearly identical at a glance (e.g. the same clock-in time and same mid-day break time repeated every day), but that does NOT mean every row is identical. Do not let an earlier row you already read confidently influence how you read a later row that merely looks similar. You must independently re-examine and read the actual handwritten digits on EVERY row, especially any values later in the row — it is extremely common for only a later time value to differ between otherwise similar-looking rows, and copying a previous row's values here instead of reading this row's own digits is a serious, easy-to-make error. Treat each row as a completely separate read, as if you had never seen any other row on the page.
+        The only reason to omit a date entirely is that its corresponding region is genuinely completely blank.
 
-CRITICAL — this same rule applies just as strictly to a weekly CALENDAR GRID layout (day-of-week columns, each date in its own box), where the "neighbors" that can wrongly bleed into each other are the boxes next to, above, or below the one you're reading, not rows in a table. A date's own box is read purely on its own — never copy, infer, or "complete the pattern" from a neighboring date's box, even when several neighboring dates in a row all show the identical time (e.g. a run of workdays all reading "8:00 to 19:00"). Worked example of this exact mistake: dates 9 and 11 both show "8:00 to 19:00" in their boxes, and date 10 (directly between them) shows only a bare checkmark or tally mark in its box with NO time text written inside it at all. The correct output for date 10 is times: null (per the bare-presence-mark rule above) — NOT "8:00 to 19:00" borrowed from either neighbor. A checkmark is not a time value, no matter how consistent the surrounding dates look; only report a time for a date when that date's OWN box actually contains written time text.
+        --------------------------------------------------
+        2. READ EACH DATE INDEPENDENTLY
+        --------------------------------------------------
 
-NEVER guess or invent time values, for any reason. If a row's clock times are smudged, blurry, or otherwise too unclear to read with confidence, output times as null for that row and briefly explain why in notes — do not use a pattern from other rows on the page to fill it in, even if the pattern looks obvious or consistent. And if a date simply has no row on the page at all (no marks, nothing written for it), do not output an entry for it at all. Every value you report must be something you actually read directly off the page, never inferred, pattern-matched, or guessed.
+        Every date must be read independently from its own visual region.
 
-If a date is explicitly marked as a rest day, day off, public holiday, or similar, still output a row for it — set rest_day to true and times to null. Do NOT guess times for a confirmed rest day.
+        Never copy or infer information from:
+        - previous rows
+        - following rows
+        - neighboring calendar cells
+        - neighboring columns
+        - other dates
+        - repeated weekdays
+        - repeated weekly patterns
+        - visually similar handwriting
+        - dominant values appearing elsewhere on the page
 
-Some pages record only a TOTAL number of hours worked per day (and sometimes a separate overtime figure), with NO clock in/out time anywhere on that row — e.g. a row just saying "8" or "8 + 2 OT" instead of "8:00-17:00". When this is genuinely what's on the page for a date (no clock times present at all for it), do NOT invent clock times to fill the times field — instead leave times null and report hoursWorked (a number, e.g. 8 or 10.5) and otHours (a number, or null if no overtime shown/not applicable) for that date. Only use hoursWorked/otHours when clock times are genuinely absent for that date — if actual clock times ARE present on the row, always report them via times as instructed above instead, even if a total-hours figure also happens to sit alongside them (times take priority whenever both exist). If a date's row shows only a bare presence mark (e.g. a checkmark or tally mark) with nothing that tells you a duration or a clock time, leave times, hoursWorked, and otHours all null and say so briefly in notes — do not invent a duration from a presence mark alone.
+        A repeated pattern is NOT evidence that another date contains the same value.
 
-For every date row visible on this page, output:
-- day: day of month, integer 1-31
-- month: month, integer 1-12. Use the page-level context above if it names a month, unless this specific row clearly indicates otherwise (this page is for the year ${year} — ignore any year written on the page, it is not needed)
-- times: array of every clock time value on this row as described above, in left-to-right order, or null if illegible/not determinable/rest day/hours-only. Length should normally be even (2, 4, 6...) since shifts come in in/out pairs.
-- hoursWorked: total hours worked that day as a number (e.g. 8, 10.5), ONLY when times is null because no clock times exist for this date and a total-hours figure is genuinely shown instead. null otherwise (including whenever times is populated).
-- otHours: overtime hours as a number, alongside hoursWorked when shown. null if not applicable/not shown, or whenever hoursWorked itself is null.
-- guessed: always false. You must never guess or invent values (see above) — this field exists only for schema consistency.
-- rest_day: true if this date is explicitly marked as a rest day/off/holiday on the page, false otherwise
-- notes: null normally. If times/hoursWorked are null, OR anything about this row doesn't make sense (e.g. an odd number of values, unclear handwriting, unusual format, implied 24h+ span), explain briefly here so a human can review.
+        For example, if dates 9 and 11 both contain "09:00 - 19:00", but date 10 contains only a checkmark, do NOT give date 10 the times from dates 9 or 11.
 
-Output ONLY a valid JSON array of {day, month, times, hoursWorked, otHours, guessed, rest_day, notes} objects for this page. No other text, no markdown fences.`;
+        Only report clock times that are actually visible inside that date's own region.
+
+        --------------------------------------------------
+        3. EXTRACT CLOCK TIMES
+        --------------------------------------------------
+
+        When actual clock times are visible for a date, extract EVERY clock-time value belonging to that date.
+
+        Do not decide how many shifts the worker worked.
+
+        Do not pair or group the times into shifts.
+
+        Simply transcribe every visible clock-time value belonging to that date.
+
+        For a normal table row:
+        - read times from left to right
+
+        For a calendar cell:
+        - read times in the natural top-to-bottom/reading order inside that cell
+
+        For a free-form entry:
+        - use the natural reading order of that entry
+
+        Return clock times as bare 24-hour integers with no colon.
+
+        Examples:
+        - 8:00am -> 800
+        - 8:30am -> 830
+        - 1:30pm -> 1330
+        - 10:00pm -> 2200
+
+        Do not include seconds.
+
+        A normal day with one shift might therefore produce:
+
+        [800, 1700]
+
+        A split day might produce:
+
+        [800, 1200, 1300, 1700]
+
+        A day with three shifts might produce six values.
+
+        Report every visible time. Do not stop after finding the first pair.
+
+        --------------------------------------------------
+        4. SCAN THE ENTIRE LOGICAL DATE REGION
+        --------------------------------------------------
+
+        Before finalizing a date, inspect the entire region belonging to that date.
+
+        For a table:
+        - inspect the full width of the row
+
+        For a calendar:
+        - inspect the entire cell
+
+        For a free-form entry:
+        - inspect the complete logical entry
+
+        Do not stop after finding the first clock-in/clock-out pair.
+
+        A row may contain 2, 4, 6, or more clock-time values.
+
+        If more than two time values are visible, report ALL of them.
+
+        --------------------------------------------------
+        5. 12AM AND 12PM
+        --------------------------------------------------
+
+        Distinguish noon and midnight carefully.
+
+        - 12pm = 1200
+        - 12am = midnight
+
+        When midnight is the endpoint of a shift that began earlier on that calendar date, represent it as 2400 where appropriate.
+
+        For example:
+
+        6am - 12pm, 6pm - 12am
+
+        becomes:
+
+        [600, 1200, 1800, 2400]
+
+        Do not convert both occurrences of "12" to the same value when the visual context distinguishes noon from midnight.
+
+        If the distinction genuinely cannot be determined from the image, do not guess. Return null for the times and explain the ambiguity in notes.
+
+        --------------------------------------------------
+        6. OVERNIGHT SHIFTS
+        --------------------------------------------------
+
+        An overnight shift may contain a time that is numerically smaller than the preceding time.
+
+        For example:
+
+        2200 - 0600
+
+        is valid visual information.
+
+        Do NOT reorder the times.
+
+        Do NOT change 0600 to another value.
+
+        Report the values in the order they are visually written.
+
+        If the sequence appears unusual, preserve the visual transcription. Do not alter it merely to make the numbers increase.
+
+        --------------------------------------------------
+        7. HOUR-ONLY CLOCK-TIME SHORTHAND
+        --------------------------------------------------
+
+        Some workers write clock-in/out times using shorthand such as:
+
+        08/20
+
+        or:
+
+        08-20
+
+        even when the printed column label does not indicate that the field is for time.
+
+        When the actual row/context clearly shows that such a value represents clock hours, interpret it as:
+
+        [800, 2000]
+
+        Do NOT automatically interpret every NN/NN or NN-NN value as a date.
+
+        A real calendar date normally belongs to the date/day portion of the record. A second date-like value elsewhere may instead be a clock-time shorthand.
+
+        Use the actual contents and visual structure of the row.
+
+        If the meaning genuinely remains ambiguous, do not guess. Return the affected time information as null and explain the ambiguity in notes.
+
+        --------------------------------------------------
+        8. HOURS-ONLY RECORDS
+        --------------------------------------------------
+
+        Some pages record only total hours worked per day, without clock in/out times.
+
+        Examples:
+
+        8
+
+        8 + 2 OT
+
+        8.5 hours
+
+        If a date genuinely has NO clock times and instead provides only a total-hours figure:
+
+        - times = null
+        - hoursWorked = the visible total
+        - otHours = the visible overtime, if any
+
+        For example:
+
+        8 + 2 OT
+
+        means:
+
+        hoursWorked = 8
+        otHours = 2
+
+        Do NOT invent clock times from total hours.
+
+        If actual clock times ARE visible for that date, report those in times.
+
+        When times is populated:
+        - hoursWorked should be null
+        - otHours should be null
+
+        Do not calculate missing clock times from a total-hours value.
+
+        --------------------------------------------------
+        9. BARE PRESENCE MARKS
+        --------------------------------------------------
+
+        A checkmark, tally mark, X, or similar presence mark does not itself provide a clock time or duration.
+
+        If a date contains only a presence mark:
+
+        - times = null
+        - hoursWorked = null
+        - otHours = null
+        - rest_day = false
+
+        Describe the mark briefly in notes.
+
+        Do NOT infer a duration from the mark.
+
+        Do NOT copy times from surrounding dates.
+
+        --------------------------------------------------
+        10. REST DAYS, LEAVE, AND NON-WORKED MARKINGS
+        --------------------------------------------------
+
+        If a date is explicitly marked as not worked, still output that date.
+
+        Examples include:
+        - OFF
+        - REST
+        - rest day
+        - holiday
+        - public holiday
+        - MC
+        - medical leave
+        - AL
+        - annual leave
+        - EL
+        - emergency leave
+        - unpaid leave
+        - X
+        - a deliberate dash indicating a non-worked day
+        - another explicit leave/non-work notation
+
+        For an explicitly non-worked date:
+
+        - rest_day = true
+        - times = null
+
+        Put the literal visible notation in notes when useful.
+
+        Do NOT infer clock times for a leave/rest entry.
+
+        If an unfamiliar notation is visible but its meaning cannot be determined, transcribe it in notes rather than inventing an interpretation.
+
+        --------------------------------------------------
+        11. Dashes AND CHECKMARKS IN CALENDAR GRIDS
+        --------------------------------------------------
+
+        A dash or checkmark inside a calendar date cell belongs only to that date.
+
+        Never use neighboring dates to determine what it means.
+
+        For example:
+
+        Date 9:
+        09:00 - 19:00
+
+        Date 10:
+        -
+
+        Date 11:
+        09:00 - 19:00
+
+        Date 10 must NOT receive 09:00 - 19:00.
+
+        If the dash clearly indicates a non-worked day:
+        - rest_day = true
+        - times = null
+        - notes = "-"
+
+        If the mark is merely a presence mark:
+        - rest_day = false
+        - times = null
+        - describe it in notes
+
+        --------------------------------------------------
+        12. NO-BREAK INFORMATION
+        --------------------------------------------------
+
+        Set:
+
+        noBreak = true
+
+        ONLY when the current date explicitly indicates that no meal break was taken.
+
+        Examples include:
+        - no lunch
+        - no break
+        - no meal break
+        - straight shift
+        - continuous
+        - an explicit zero/no-break notation in a clearly identifiable break/lunch field
+
+        The absence of a break entry does NOT mean no break.
+
+        Do NOT infer noBreak from:
+        - shift duration
+        - number of time values
+        - missing lunch information
+        - the page template
+
+        If there is no explicit evidence that no break was taken:
+
+        noBreak = false
+
+        --------------------------------------------------
+        13. PRINTED COLUMN LABELS MAY BE WRONG
+        --------------------------------------------------
+
+        Do not blindly trust printed column labels.
+
+        A worker may write information in a different column from what the printed template intended.
+
+        Interpret the actual content and surrounding visual structure.
+
+        For example, a column printed "Amount" may contain a handwritten clock-time shorthand.
+
+        The actual written content is more important than blindly trusting the printed label.
+
+        However, do not reinterpret genuinely ambiguous information merely because another interpretation is convenient.
+
+        --------------------------------------------------
+        14. PUNCH-LOG SCREENSHOTS
+        --------------------------------------------------
+
+        Some pages are screenshots of phone clock-in applications.
+
+        These may contain a chronological list of individual timestamped events rather than one row per day.
+
+        Example:
+
+        12-06-2026 06:29:54
+        12-06-2026 19:50:07
+
+        For punch-log layouts:
+
+        1. Read every visible timestamp.
+        2. Remove seconds completely.
+        3. Group all timestamps belonging to the same calendar date into ONE output object.
+        4. Sort that date's times chronologically from earliest to latest.
+        5. Do not preserve newest-first display order.
+        6. Do not output multiple objects for the same date.
+
+        For example:
+
+        20:07:32
+        06:26:15
+
+        on the same date becomes:
+
+        [626, 2007]
+
+        Seconds must NOT be included.
+
+        If the date or time cannot be read reliably, do not guess.
+
+        --------------------------------------------------
+        15. HANDWRITING AND VISUAL AMBIGUITY
+        --------------------------------------------------
+
+        Handwritten digits may be difficult to distinguish.
+
+        If a value could visually be either one digit or another, do not resolve the ambiguity using surrounding patterns.
+
+        For example, if a handwritten value could be 3 or 8:
+
+        Do NOT choose 8 merely because other rows contain 8.
+
+        Do NOT choose the value that makes the work duration look more reasonable.
+
+        If the value cannot be determined reliably from the image:
+        - do not guess
+        - set times = null for the affected date if the ambiguity prevents reliable extraction
+        - explain the ambiguity briefly in notes
+
+        Visual accuracy is more important than producing a complete-looking answer.
+
+        --------------------------------------------------
+        16. CLOCK TIMES AND WRITTEN TOTALS
+        --------------------------------------------------
+
+        A row may contain both raw clock times and a written total/duration.
+
+        Transcribe both independently.
+
+        Do NOT change the clock times to make them agree with the total.
+
+        Do NOT change the total to make it agree with the clock times.
+
+        If they conflict, preserve the visible information and explain the discrepancy in notes.
+
+        Downstream code will perform arithmetic and business-rule validation.
+
+        --------------------------------------------------
+        17. DO NOT APPLY BUSINESS RULES DURING TRANSCRIPTION
+        --------------------------------------------------
+
+        Do not modify visually extracted values merely because they violate an expected business rule.
+
+        For example, if the extracted times appear to imply:
+        - an unusually long shift
+        - an overnight shift
+        - a mismatch with total hours
+        - an unusual number of clock times
+
+        preserve the actual visual transcription if it can be read.
+
+        If necessary, mention the unusual condition in notes.
+
+        Do NOT "fix" the visual reading to make it conform to a business rule.
+
+        --------------------------------------------------
+        18. FINAL VISUAL VERIFICATION
+        --------------------------------------------------
+
+        Before returning the result, perform a final independent visual check.
+
+        Verify:
+
+        1. Every populated date visible on the page is represented.
+        2. Completely blank dates were not added.
+        3. Each date was read from its own visual region.
+        4. No value was copied from another date.
+        5. No missing clock time was invented.
+        6. Every visible clock time belonging to each date was included.
+        7. Times are in the correct reading order for that layout.
+        8. Punch-log events for the same date were merged.
+        9. Punch-log times were sorted chronologically.
+        10. Seconds were removed.
+        11. 12am and 12pm were distinguished where visually determinable.
+        12. Hours-only records did not receive invented clock times.
+        13. Leave/rest markings have times = null.
+        14. noBreak is true only when explicitly supported by that date's own content.
+        15. Printed column labels were not blindly trusted.
+        16. Ambiguous handwriting was not silently guessed.
+        17. Conflicts between clock times and written totals are described in notes rather than "fixed".
+
+        This verification is a visual verification only.
+
+        Do not change a visually supported value merely to satisfy arithmetic or business rules.
+
+        --------------------------------------------------
+        19. OUTPUT SCHEMA
+        --------------------------------------------------
+
+        For every populated date entry, output an object containing EXACTLY these fields:
+
+        - day: integer 1-31
+        - month: integer 1-12
+        - times: array of clock-time integers, or null
+        - hoursWorked: number, or null
+        - otHours: number, or null
+        - noBreak: boolean
+        - rest_day: boolean
+        - notes: string or null
+
+        Rules:
+
+        times should be null when:
+        - no clock times exist
+        - the date is explicitly not worked
+        - only total hours are present
+        - the clock times cannot be read reliably
+        - the visible notation does not provide a determinable clock time
+
+        hoursWorked should be populated ONLY when:
+        - times is null
+        - and a genuine total-hours value is visibly shown
+
+        otHours should be populated ONLY when:
+        - an overtime value is explicitly shown
+        - alongside an hours-only record
+
+        noBreak:
+        - true only when explicitly stated for that date
+        - false otherwise
+
+        rest_day:
+        - true only when the date is explicitly marked as not worked
+        - false otherwise
+
+        notes:
+        - normally null
+        - use a short explanation when information is ambiguous, missing, unusual, contradictory, or otherwise requires human review
+        - for leave/rest markings, include the literal visible notation when useful
+
+        --------------------------------------------------
+        20. OUTPUT FORMAT
+        --------------------------------------------------
+
+        Return ONLY a valid JSON array.
+
+        Do NOT return:
+        - markdown
+        - code fences
+        - explanations
+        - commentary
+        - headings
+        - text before or after the JSON
+
+        Each object must contain exactly:
+
+        day
+        month
+        times
+        hoursWorked
+        otHours
+        noBreak
+        rest_day
+        notes
+
+        Example structure:
+
+        [
+        {
+            "day": 1,
+            "month": 6,
+            "times": [800, 1200, 1300, 1700],
+            "hoursWorked": null,
+            "otHours": null,
+            "noBreak": false,
+            "rest_day": false,
+            "notes": null
+        }
+        ]`;
 }
 
 const app = express();
@@ -283,69 +826,64 @@ app.post(
         { name: "ipa", maxCount: 1 }, // optional — the IPA letter, a single separate document from the timesheets
     ]),
     (req, res) => {
-    const uploadedFields = req.files as { [field: string]: Express.Multer.File[] } | undefined;
-    const files = uploadedFields?.pdfs;
-    const ipaFile = uploadedFields?.ipa?.[0];
-    if (!files || files.length === 0) {
-        return res.status(400).json({ error: "No PDF files uploaded." });
-    }
-
-    const year = Number(req.body.year);
-    if (!SUPPORTED_YEARS.includes(year)) {
-        return res.status(400).json({ error: `year must be one of: ${SUPPORTED_YEARS.join(", ")}` });
-    }
-
-    // Rotation degrees a human confirmed against the /api/preview thumbnails (public/index.html's
-    // staging step) — applied below via rotateImage before anything else ever looks at a page's
-    // image, so every downstream step (context extraction, scanning, IPA extraction) sees the
-    // corrected orientation. Absent/malformed is treated as "no rotations chosen" rather than an
-    // error — the staging step is a UX improvement, not a required step, so a request without it
-    // (e.g. an older client) should still scan normally, just without the correction.
-    let rotations: RotationMap = {};
-    try {
-        if (typeof req.body.rotations === "string") rotations = JSON.parse(req.body.rotations);
-    } catch {
-        // ignore — fall through with no rotations applied
-    }
-
-    // Pages a human dropped in the staging preview ("<fileIndex>-<pageIndex>" keys, same as
-    // rotations.pdfs) — the underlying file is still uploaded whole (a PDF's pages can't be
-    // stripped client-side), so exclusion is enforced here: skip these pages entirely, before any
-    // context extraction or scan attempt, as if that page were never on the page count at all.
-    let excludedPages = new Set<string>();
-    try {
-        if (typeof req.body.excludedPages === "string") {
-            const parsed = JSON.parse(req.body.excludedPages);
-            if (Array.isArray(parsed)) excludedPages = new Set(parsed);
+        const uploadedFields = req.files as { [field: string]: Express.Multer.File[] } | undefined;
+        const files = uploadedFields?.pdfs;
+        const ipaFile = uploadedFields?.ipa?.[0];
+        if (!files || files.length === 0) {
+            return res.status(400).json({ error: "No PDF files uploaded." });
         }
-    } catch {
-        // ignore — fall through with no exclusions applied
-    }
 
-    // The caseworker's declared standard break (public/index.html's radio group) — used as
-    // the assumed break for single-shift days (nothing is actually observed to contradict it
-    // there) and as the value a multi-shift day's genuinely observed gap gets compared against
-    // client-side (checkBreakMismatch). Falls back to 1h on anything unparseable/out of range,
-    // matching the form's own default.
-    const parsedBreakHours = Number(req.body.standardBreakHours);
-    const standardBreakHours = Number.isFinite(parsedBreakHours) && parsedBreakHours >= 0 ? parsedBreakHours : 1;
+        // Rotation degrees a human confirmed against the /api/preview thumbnails (public/index.html's
+        // staging step) — applied below via rotateImage before anything else ever looks at a page's
+        // image, so every downstream step (context extraction, scanning, IPA extraction) sees the
+        // corrected orientation. Absent/malformed is treated as "no rotations chosen" rather than an
+        // error — the staging step is a UX improvement, not a required step, so a request without it
+        // (e.g. an older client) should still scan normally, just without the correction.
+        let rotations: RotationMap = {};
+        try {
+            if (typeof req.body.rotations === "string") rotations = JSON.parse(req.body.rotations);
+        } catch {
+            // ignore — fall through with no rotations applied
+        }
 
-    // A real scan (many pages, sequential) can run 15-20+ minutes — long enough that holding this
-    // HTTP request open the whole time is fragile (proxies/networks can drop a connection that
-    // long) and gives the browser zero visibility into progress until the very end. Instead: kick
-    // the scan off as a background job and return its id immediately; public/index.html polls
-    // GET /api/process/:jobId, which renders each page's card as soon as that page finishes rather
-    // than waiting for the entire batch.
-    const jobId = randomUUID();
-    processJobs.set(jobId, { status: "running", pages: [], result: null, error: null });
-    runProcessJob(jobId, files, ipaFile, year, rotations, excludedPages, standardBreakHours)
-        .catch(e => {
-            const job = processJobs.get(jobId);
-            if (job) { job.status = "error"; job.error = e.message; }
-        })
-        .finally(() => scheduleJobCleanup(jobId));
+        // Pages a human dropped in the staging preview ("<fileIndex>-<pageIndex>" keys, same as
+        // rotations.pdfs) — the underlying file is still uploaded whole (a PDF's pages can't be
+        // stripped client-side), so exclusion is enforced here: skip these pages entirely, before any
+        // context extraction or scan attempt, as if that page were never on the page count at all.
+        let excludedPages = new Set<string>();
+        try {
+            if (typeof req.body.excludedPages === "string") {
+                const parsed = JSON.parse(req.body.excludedPages);
+                if (Array.isArray(parsed)) excludedPages = new Set(parsed);
+            }
+        } catch {
+            // ignore — fall through with no exclusions applied
+        }
 
-    res.json({ jobId });
+        // The caseworker's declared standard break (public/index.html's radio group) — used as
+        // the assumed break for single-shift days (nothing is actually observed to contradict it
+        // there) and as the value a multi-shift day's genuinely observed gap gets compared against
+        // client-side (checkBreakMismatch). Falls back to 1h on anything unparseable/out of range,
+        // matching the form's own default.
+        const parsedBreakHours = Number(req.body.standardBreakHours);
+        const standardBreakHours = Number.isFinite(parsedBreakHours) && parsedBreakHours >= 0 ? parsedBreakHours : 1;
+
+        // A real scan (many pages, sequential) can run 15-20+ minutes — long enough that holding this
+        // HTTP request open the whole time is fragile (proxies/networks can drop a connection that
+        // long) and gives the browser zero visibility into progress until the very end. Instead: kick
+        // the scan off as a background job and return its id immediately; public/index.html polls
+        // GET /api/process/:jobId, which renders each page's card as soon as that page finishes rather
+        // than waiting for the entire batch.
+        const jobId = randomUUID();
+        processJobs.set(jobId, { status: "running", pages: [], result: null, error: null });
+        runProcessJob(jobId, files, ipaFile, rotations, excludedPages, standardBreakHours)
+            .catch(e => {
+                const job = processJobs.get(jobId);
+                if (job) { job.status = "error"; job.error = e.message; }
+            })
+            .finally(() => scheduleJobCleanup(jobId));
+
+        res.json({ jobId });
     }
 );
 
@@ -365,7 +903,6 @@ async function runProcessJob(
     jobId: string,
     files: Express.Multer.File[],
     ipaFile: Express.Multer.File | undefined,
-    year: number,
     rotations: RotationMap,
     excludedPages: Set<string>,
     standardBreakHours: number
@@ -461,16 +998,94 @@ async function runProcessJob(
         })()
         : Promise.resolve(null);
 
+    // ---- Resolve each page's own claim year before any per-row scanning starts ---------------
+    // buildPrompt (below) bakes a resolved year into a page's prompt text, so it has to be known
+    // before the main loop's first buildPrompt call, not discovered partway through it. Loads
+    // every file's pages once here (rotated to their confirmed orientation) and the main loop
+    // below reuses this same in-memory array — this isn't a second, wasted image-load pass. Only
+    // extractPageContext (a cheap page-level read, the same one month-header detection already
+    // relies on) runs an extra time here, once per non-excluded page, looking for a printed/typed
+    // year label. See lib/ocr.ts's extractPageContext and the updated comment above buildPrompt.
+    //
+    // Deliberately PER-PAGE, not one job-wide majority vote — a real multi-month upload can
+    // genuinely span a year boundary (e.g. Sep 2025 - Jul 2026, one sheet per month, each with its
+    // own correct "Month Year" header), and a single job-wide vote would let the more numerous
+    // year silently overwrite the genuinely different year on the minority pages, mislabeling
+    // real, correctly-scanned data. Each page keeps its own resolved year instead.
+    const imagesByFile: string[][] = [];
+    const fileLoadErrors = new Map<number, string>();
+    const pageContextCache = new Map<string, { context: string; isTimesheet: boolean; dataModel: PageDataModel; year: number | null }>();
     for (let fi = 0; fi < files.length; fi++) {
         const file = files[fi];
-        let images: string[];
         try {
-            images = await loadPagesForFile(file);
+            imagesByFile[fi] = await loadPagesForFile(file);
         } catch (e: any) {
             const isImage = file.mimetype.startsWith("image/");
-            warnings.push({ source: file.originalname, reason: `could not read ${isImage ? "image" : "PDF"}: ${e.message}`, category: "system" });
+            fileLoadErrors.set(fi, `could not read ${isImage ? "image" : "PDF"}: ${e.message}`);
+            imagesByFile[fi] = [];
             continue;
         }
+        for (let i = 0; i < imagesByFile[fi].length; i++) {
+            if (excludedPages.has(`${fi}-${i}`)) continue;
+            const pageRotation = rotations.pdfs?.[`${fi}-${i}`];
+            if (pageRotation) imagesByFile[fi][i] = await rotateImage(imagesByFile[fi][i], pageRotation);
+            const source = `${file.originalname} p${i + 1}`;
+            try {
+                const result = await extractPageContext(imagesByFile[fi][i]);
+                const validYear = result.year !== null && SUPPORTED_YEARS.includes(result.year) ? result.year : null;
+                pageContextCache.set(source, { context: result.context, isTimesheet: result.isTimesheet, dataModel: result.dataModel, year: validYear });
+                totalCostUsd += result.cost;
+            } catch {
+                // Leave uncached — the main loop below re-attempts extractPageContext itself and
+                // reports the failure there, same as it always has.
+            }
+        }
+    }
+
+    // Fill in pages that had no year label of their own (common — a header is often only printed
+    // once per month/section, not on every page) from the NEAREST page in the SAME FILE that did
+    // have one — forward first (a header usually precedes the pages it covers), then backward for
+    // any still-unresolved leading pages. Scoped to one file at a time: two separately uploaded
+    // files have no guaranteed relationship to each other, so a year detected in file A must never
+    // leak into file B's undated pages.
+    const resolvedYearBySource = new Map<string, number>();
+    for (let fi = 0; fi < files.length; fi++) {
+        const images = imagesByFile[fi];
+        if (!images) continue;
+        const sources = images.map((_, i) => `${files[fi].originalname} p${i + 1}`).filter(s => pageContextCache.has(s));
+        let lastKnown: number | null = null;
+        for (const source of sources) {
+            const y = pageContextCache.get(source)!.year;
+            if (y !== null) lastKnown = y;
+            else if (lastKnown !== null) resolvedYearBySource.set(source, lastKnown);
+            if (y !== null) resolvedYearBySource.set(source, y);
+        }
+        lastKnown = null;
+        for (let idx = sources.length - 1; idx >= 0; idx--) {
+            const source = sources[idx];
+            const y = pageContextCache.get(source)!.year;
+            if (y !== null) lastKnown = y;
+            else if (!resolvedYearBySource.has(source) && lastKnown !== null) resolvedYearBySource.set(source, lastKnown);
+        }
+    }
+
+    if (resolvedYearBySource.size === 0) {
+        const job = processJobs.get(jobId);
+        if (job) {
+            job.status = "error";
+            job.error = "Could not detect a claim year from any uploaded page — none had a printed/typed date header (a title, filename, or form field naming the month/year), and none fell in the supported range (" + SUPPORTED_YEARS.join(", ") + ").";
+        }
+        return;
+    }
+
+    for (let fi = 0; fi < files.length; fi++) {
+        const file = files[fi];
+        const loadError = fileLoadErrors.get(fi);
+        if (loadError) {
+            warnings.push({ source: file.originalname, reason: loadError, category: "system" });
+            continue;
+        }
+        const images = imagesByFile[fi];
 
         for (let i = 0; i < images.length; i++) {
             if (excludedPages.has(`${fi}-${i}`)) continue; // dropped by a human in the staging preview — not a failure, nothing to warn about
@@ -485,27 +1100,44 @@ async function runProcessJob(
             // attempt failed. A page the user is watching "process" should never just disappear
             // without ever being accounted for in the live view.
             try {
-                // Applied before anything else looks at this page (context extraction, band-cropping,
-                // scanning) — everything downstream sees the human-confirmed upright orientation from
-                // the /api/preview staging step, not the raw (possibly sideways) render.
-                const pageRotation = rotations.pdfs?.[`${fi}-${i}`];
-                if (pageRotation) images[i] = await rotateImage(images[i], pageRotation);
+                // Rotation was already applied in the prescan pass above (images[i] here is the same
+                // mutated array), so this is just building the display copy — everything downstream
+                // sees the human-confirmed upright orientation from the /api/preview staging step,
+                // not the raw (possibly sideways) render.
                 displayImage = await resizeForDisplay(images[i]);
                 pageImages.push({ source, image: displayImage });
 
-                // Read the full, uncropped page once for page-level context (e.g. a month header)
-                // before cropping into bands — a header can sit anywhere on the page depending on
-                // the source layout, and once cropped into bands, whichever band doesn't happen to
-                // include it would otherwise have no way to know what month its rows belong to. Also
-                // does two cheap classifications on the same call (lib/ocr.ts): whether this page is
-                // a timesheet at all, and which data model it seems to use.
-                try {
-                    const result = await extractPageContext(images[i]);
-                    pageContext = result.context;
-                    dataModel = result.dataModel;
+                // Page-level context (e.g. a month header) + timesheet/data-model classification —
+                // normally already computed by the prescan pass above; only re-run here on a prescan
+                // cache miss (that page's extractPageContext call itself failed up there).
+                let cached = pageContextCache.get(source);
+                if (!cached) {
+                    try {
+                        const result = await extractPageContext(images[i]);
+                        const validYear = result.year !== null && SUPPORTED_YEARS.includes(result.year) ? result.year : null;
+                        cached = { context: result.context, isTimesheet: result.isTimesheet, dataModel: result.dataModel, year: validYear };
+                        totalCostUsd += result.cost;
+                        // Same forward/backward-fill this page missed out on during the prescan pass
+                        // (its own extractPageContext call failed there) — fall back to whichever
+                        // neighboring page in this SAME file already has a resolved year, preferring
+                        // the previous page (a header usually precedes the pages it covers).
+                        if (validYear !== null) {
+                            resolvedYearBySource.set(source, validYear);
+                        } else if (!resolvedYearBySource.has(source)) {
+                            const prevYear = i > 0 ? resolvedYearBySource.get(`${file.originalname} p${i}`) : undefined;
+                            const nextYear = resolvedYearBySource.get(`${file.originalname} p${i + 2}`);
+                            const fallbackYear = prevYear ?? nextYear;
+                            if (fallbackYear !== undefined) resolvedYearBySource.set(source, fallbackYear);
+                        }
+                    } catch (e: any) {
+                        warnings.push({ source, reason: `could not extract page-level context (e.g. month header): ${e.message} — bands will rely on per-row reading only`, category: "scan_quality" });
+                    }
+                }
+                if (cached) {
+                    pageContext = cached.context;
+                    dataModel = cached.dataModel;
                     pageMeta.set(source, { dataModel, pageContext });
-                    totalCostUsd += result.cost;
-                    if (!result.isTimesheet) {
+                    if (!cached.isTimesheet) {
                         warnings.push({
                             source,
                             reason: `page does not appear to be a work time/attendance record${pageContext ? ` (${pageContext})` : ""} — skipped, no scan attempts made`,
@@ -513,10 +1145,17 @@ async function runProcessJob(
                         });
                         continue;
                     }
-                } catch (e: any) {
-                    warnings.push({ source, reason: `could not extract page-level context (e.g. month header): ${e.message} — bands will rely on per-row reading only`, category: "scan_quality" });
                 }
-                const prompt = buildPrompt(year, pageContext, dataModel);
+                const pageYear = resolvedYearBySource.get(source);
+                if (pageYear === undefined) {
+                    warnings.push({
+                        source,
+                        reason: "could not determine which year this page's dates belong to (no printed/typed year header on this page, and no nearby page in the same file to infer it from) — skipped, no scan attempts made",
+                        category: "system",
+                    });
+                    continue;
+                }
+                const prompt = buildPrompt(pageYear, pageContext, dataModel);
 
                 const bands = await cropIntoBands(images[i], BANDS_PER_PAGE);
 
@@ -595,7 +1234,7 @@ async function runProcessJob(
                 for (let b = 0; b < bands.length; b++) {
                     if (attemptsByBand[b].length === 0) continue;
                     const bandSource = bands.length > 1 ? `${source} (band ${b + 1}/${bands.length})` : source;
-                    const { entries: bandEntries, warnings: bandWarnings } = reconcileAttempts(attemptsByBand[b], bandSource, true, year, orderMatters);
+                    const { entries: bandEntries, warnings: bandWarnings } = reconcileAttempts(attemptsByBand[b], bandSource, true, pageYear, orderMatters);
                     bandResults.push(bandEntries);
                     warnings.push(...bandWarnings);
                 }
@@ -610,7 +1249,7 @@ async function runProcessJob(
                 // in one band's region and outside another's isn't disagreement, it's expected
                 // non-coverage. Only reject when multiple bands DO report the same day with
                 // conflicting values — that's a real disagreement, not a coverage gap.
-                const { entries: reconciled, warnings: crossBandWarnings } = reconcileAttempts(bandResults, source, false, year, orderMatters);
+                const { entries: reconciled, warnings: crossBandWarnings } = reconcileAttempts(bandResults, source, false, pageYear, orderMatters);
                 warnings.push(...crossBandWarnings);
 
                 // Strict cross-attempt unanimity (lib/reconcile.ts) only catches disagreement — it
@@ -635,7 +1274,7 @@ async function runProcessJob(
                                     source,
                                     reason: `day=${e.day} month=${e.month}: failed page-level verification (no genuine row found for this date on a full-page recheck) — dropped, please check the source PDF for this date directly`,
                                     category: "dropped_disagreement",
-                                    date: `${year}-${String(e.month).padStart(2, "0")}-${String(e.day).padStart(2, "0")}`,
+                                    date: `${pageYear}-${String(e.month).padStart(2, "0")}-${String(e.day).padStart(2, "0")}`,
                                 });
                             }
                             return isConfirmed;
@@ -663,20 +1302,20 @@ async function runProcessJob(
                     // rollover — but restDays are stored as raw numbers with no Date construction at
                     // all, so an invalid day here would silently inflate that month's day count with
                     // no bounds check downstream. Catch it here for every entry type uniformly.
-                    const daysInThisMonth = new Date(year, entry.month, 0).getDate();
+                    const daysInThisMonth = new Date(pageYear, entry.month, 0).getDate();
                     if (entry.day > daysInThisMonth) {
                         warnings.push({
                             source,
-                            reason: `day=${entry.day} does not exist in month=${entry.month}/${year} (only has ${daysInThisMonth} days), skipped`,
+                            reason: `day=${entry.day} does not exist in month=${entry.month}/${pageYear} (only has ${daysInThisMonth} days), skipped`,
                             category: "skipped_invalid",
                         });
                         continue;
                     }
                     if (entry.rest_day === true) {
-                        restDays.push({ year, month: entry.month, day: entry.day, source });
+                        restDays.push({ year: pageYear, month: entry.month, day: entry.day, source, notes: entry.notes });
                         continue;
                     }
-                    const entryDate = `${year}-${String(entry.month).padStart(2, "0")}-${String(entry.day).padStart(2, "0")}`;
+                    const entryDate = `${pageYear}-${String(entry.month).padStart(2, "0")}-${String(entry.day).padStart(2, "0")}`;
                     if ((!entry.times || entry.times.length === 0) && entry.hoursWorked !== null) {
                         // hours_total data model: no clock times exist for this date, only a total
                         // hours(+OT) figure — can't feed fillTimesheet's clock-time columns, so this
@@ -684,7 +1323,7 @@ async function runProcessJob(
                         // the spreadsheet, rather than either fabricating clock times or silently
                         // dropping genuinely-read data.
                         hoursEntries.push({
-                            date: new Date(year, entry.month - 1, entry.day),
+                            date: new Date(pageYear, entry.month - 1, entry.day),
                             hoursWorked: entry.hoursWorked,
                             otHours: entry.otHours,
                             source,
@@ -699,10 +1338,19 @@ async function runProcessJob(
                         continue;
                     }
                     if (!entry.times || entry.times.length === 0) {
+                        // The model DID report a row for this date (buildPrompt above only omits a
+                        // date entirely when its row is genuinely blank) — it just couldn't map it to
+                        // clock times, an hours figure, or a recognized rest_day/leave mark (e.g. a
+                        // bare presence tick, or something illegible). Still counts as "this date was
+                        // purposefully accounted for on the source document", same as an explicit
+                        // rest_day — recorded here (not dropped) so the review UI shows a row for it
+                        // instead of the missing-day auto-insert fabricating a default-shift workday
+                        // over a day that plainly has SOMETHING written on it.
+                        restDays.push({ year: pageYear, month: entry.month, day: entry.day, source, notes: entry.notes ? `unclear mark: ${entry.notes} — please verify` : "unclear mark — please verify" });
                         warnings.push({
                             source,
-                            reason: `skipped day=${entry.day} month=${entry.month} (no times detected)${entry.notes ? `: ${entry.notes}` : " — please check the source PDF for this date directly"}`,
-                            category: "skipped_invalid",
+                            reason: `day=${entry.day} month=${entry.month}: has a mark but no clock times/hours/leave-code could be determined${entry.notes ? ` (${entry.notes})` : ""} — recorded as unworked so it isn't auto-filled as a missing day, please verify against the source PDF`,
+                            category: "flagged_review",
                             date: entryDate,
                         });
                         continue;
@@ -729,11 +1377,12 @@ async function runProcessJob(
                     // already recognizes and handles a multi-shift day (see byCell grouping there).
                     for (let ti = 0; ti < entry.times.length; ti += 2) {
                         timeEntries.push({
-                            date: new Date(year, entry.month - 1, entry.day),
+                            date: new Date(pageYear, entry.month - 1, entry.day),
                             clockIn: entry.times[ti],
                             clockOut: entry.times[ti + 1],
                             source,
                             guessed: entry.guessed === true,
+                            noBreak: entry.noBreak === true,
                         });
                     }
                 }
@@ -917,9 +1566,13 @@ async function runProcessJob(
     const job = processJobs.get(jobId);
     if (!job) return; // expired/evicted before the scan finished — nothing left to report to
     job.pages = pageReviews;
+    // Every distinct year actually resolved across the upload's pages, not a single job-wide
+    // value — a real upload can genuinely span a year boundary (see the prescan comment above).
+    // public/index.html surfaces this as-is so a caseworker can sanity-check what got detected.
+    const years = [...new Set(resolvedYearBySource.values())].sort((a, b) => a - b);
     job.result = {
         success: true,
-        year,
+        years,
         warnings: generalWarnings,
         monthSummary,
         scanOutput,
@@ -1052,10 +1705,11 @@ async function runBankStatementJob(
 // them straight to the spreadsheet — no OCR here, this is pure "given these final numbers, fill
 // the template" work, so it's fast and synchronous compared to /api/process.
 app.post("/api/generate", express.json({ limit: "5mb" }), async (req, res) => {
-    const year = Number(req.body?.year);
-    if (!SUPPORTED_YEARS.includes(year)) {
-        return res.status(400).json({ error: `year must be one of: ${SUPPORTED_YEARS.join(", ")}` });
-    }
+    // No year gate here — fillTimesheetFromRows below picks each row's sheet straight off its own
+    // r.date (already a full YYYY-MM-DD), and silently skips (with a warning) any date outside the
+    // template's supported range. The claim-wide year itself was already resolved and validated
+    // against SUPPORTED_YEARS back at /api/process (runProcessJob's prescan) before these rows ever
+    // reached the browser for review.
     const rows = req.body?.rows;
     if (!Array.isArray(rows)) {
         return res.status(400).json({ error: "rows must be an array" });
@@ -1152,10 +1806,16 @@ app.use((err: any, req: express.Request, res: express.Response, next: express.Ne
         const message =
             err.code === "LIMIT_UNEXPECTED_FILE" && err.field === "ipa"
                 ? "only 1 IPA file is accepted"
-                : err.message;
+                : err.code === "LIMIT_FILE_SIZE"
+                    ? "file too large — each attachment must be under 40MB"
+                    : err.message;
         return res.status(400).json({ error: message });
     }
-    next(err);
+    // Any other upload-time error (e.g. a malformed multipart body) still needs to come back as
+    // JSON — Express's default HTML error page makes the frontend's res.json() throw a useless
+    // "did not match the expected pattern" error instead of showing what actually broke.
+    console.error("upload error:", err);
+    res.status(500).json({ error: err?.message || "upload failed" });
 });
 
 app.listen(PORT, () => {

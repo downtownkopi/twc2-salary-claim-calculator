@@ -1,6 +1,7 @@
 import { OpenRouter } from "@openrouter/sdk";
 import { pdf } from "pdf-to-img";
 import sharp from "sharp";
+import { traceable } from "langsmith/traceable";
 
 let client: OpenRouter | null = null;
 
@@ -191,13 +192,20 @@ function requestTimeout(ms: number): Promise<never> {
 // every attempt, giving reconciliation's disagreement-detection nothing to catch. Varying
 // temperature/seed across attempts (server.ts) gives each pass a real chance to diverge when
 // the model's reading is actually uncertain.
-export async function sendVisionRequest(
-    base64Image: string,
-    prompt: string,
-    temperature: number,
-    seed: number,
-    maxTokens: number
-): Promise<{ content: string; truncated: boolean; cost: number }> {
+// Wrapped in LangSmith's traceable() so every vision-model call in the app — page context reads,
+// per-attempt scans, date verification, IPA extraction, bank statement extraction — shows up as a
+// traced run (prompt/response/latency/cost) without each call site needing its own tracing code,
+// since they all funnel through this one function. No-ops with zero behavior change if
+// LANGSMITH_API_KEY/LANGSMITH_TRACING aren't set (see LangSmith SDK docs) — safe to leave wrapped
+// even when tracing isn't configured, e.g. in this repo's default local dev setup.
+export const sendVisionRequest = traceable(
+    async function sendVisionRequest(
+        base64Image: string,
+        prompt: string,
+        temperature: number,
+        seed: number,
+        maxTokens: number
+    ): Promise<{ content: string; truncated: boolean; cost: number }> {
     const MAX_ATTEMPTS = 3;
     for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
         try {
@@ -269,7 +277,23 @@ export async function sendVisionRequest(
         }
     }
     throw new Error("unreachable"); // satisfies TS control-flow analysis
-}
+    },
+    {
+        name: "sendVisionRequest",
+        run_type: "llm",
+        // The raw base64 PNG is often 1-3MB of text — logging it in full would bloat every trace
+        // and isn't readable in the LangSmith UI anyway. Swap it for its length so a trace still
+        // shows "an image was sent" and roughly how large, without the actual payload. Multiple
+        // positional args (not a single object) means the traced shape is { args: [...] }, per
+        // langsmith's ProcessInputs typing — index 0 is base64Image.
+        processInputs: ({ args }) => {
+            const [base64Image, prompt, temperature, seed, maxTokens] = args;
+            return {
+                args: [`<image, ${base64Image?.length ?? 0} base64 chars>`, prompt, temperature, seed, maxTokens],
+            };
+        },
+    }
+);
 
 export async function scanPageImage(
     base64Image: string,
@@ -292,23 +316,33 @@ export type PageDataModel = "clock_times" | "hours_total" | "punch_log" | "uncle
 // per-row transcription, so it doesn't need the multi-attempt reconciliation the row-by-row
 // scan gets — one confident read is enough for a single label.
 //
-// Also does two cheap classification jobs on the same call (avoids a separate model round-trip
+// Also does three cheap classification jobs on the same call (avoids a separate model round-trip
 // per page): whether this page is a work time/attendance record at all (a real-world upload batch
-// mixes in ID-card cover pages with no date rows, and even entirely unrelated documents), and
-// which of the observed data models it uses — plain clock in/out times, or only a total-hours(+OT)
-// figure per day with no clock times anywhere. The per-row scan prompt (server.ts) uses this as a
-// hint, not a hard rule, since a single page can occasionally mix both.
+// mixes in ID-card cover pages with no date rows, and even entirely unrelated documents), which of
+// the observed data models it uses — plain clock in/out times, or only a total-hours(+OT) figure
+// per day with no clock times anywhere — and, separately, which calendar YEAR the page's rows
+// belong to. The per-row scan prompt (server.ts) uses dataModel as a hint, not a hard rule, since a
+// single page can occasionally mix both.
+//
+// Year detection here is a deliberately different, much safer read than trusting the model's
+// per-ROW handwritten year (which server.ts's buildPrompt explicitly tells the model to ignore —
+// see the comment there): this asks for a single clean PRINTED/TYPED page header/title/filename
+// once per page, the same kind of one-shot page-level read month detection above already relies
+// on, not dozens of ambiguous handwritten digits repeated down a column. server.ts resolves one
+// claim-wide year from the page headers it can find (majority vote across pages) instead of asking
+// the caller to pick it.
 export async function extractPageContext(
     base64Image: string
-): Promise<{ context: string; isTimesheet: boolean; dataModel: PageDataModel; cost: number }> {
+): Promise<{ context: string; isTimesheet: boolean; dataModel: PageDataModel; year: number | null; cost: number }> {
     const prompt = `Look at this ENTIRE page of a worker's daily time/attendance record. It may be handwritten or typed, in any language, and in any layout — a row-per-day table, a calendar grid, a free-form list, a punch card, etc.
 
-Answer three things:
+Answer four things:
 1. context: Somewhere on the page — top, bottom, a corner, a margin, anywhere — there may be a title, header, label, or filename-like text indicating which calendar month (and possibly year) the date rows on this page belong to. There may also be other useful page-level context, like a worker's name. Reply with ONE short plain-text sentence stating what you found, e.g. "Header indicates December" or "No month header found, but page appears to be for a worker named Ahmad" or "No page-level context found."
 2. isTimesheet: true if this page genuinely contains a work time/attendance record for one or more calendar dates, in any format. false if this page is something else entirely — e.g. a blank ID-card cover with no date rows, a driving-school log, a signature-only page, or an unrelated document.
 3. dataModel: what's actually recorded per date on THIS page — "clock_times" if actual clock in/out times are shown in a day-per-row table/list (e.g. "8:00", "8am-5pm"), "hours_total" if only a total number of hours worked (and/or separate overtime hours) is shown per day with NO clock in/out times anywhere, "punch_log" if this is a phone app's chronological event-log screen instead of a table — individual timestamped clock in/out entries (often with seconds, e.g. "12-06-2026 06:29:54"), most-recent-first, one entry per punch rather than one row per day — or "unclear" if you can't tell, it's mixed, or no rows are populated yet.
+4. year: the 4-digit calendar year this page's date rows belong to, ONLY if it's stated as part of the DOCUMENT'S OWN content — a title naming the claim/pay period (e.g. "Timesheet - Jan 2026"), a filename like "2026_01_timesheet.pdf", or a printed form field for the period being recorded. Do NOT use a scanner, fax, photocopier, or "received/printed on" transmission timestamp/date-stamp banner (these usually sit right at the very top or bottom edge of the page, often with a time down to the second, e.g. "12/08/2026 17:41:57") — that is when the PAGE WAS SCANNED, not the period the timesheet covers, and using it is a common, serious mistake. Do NOT infer it from handwritten day/month digits in the row data itself either, and do NOT guess — if no genuine document-content year label exists anywhere on the page, reply null.
 
-Output ONLY a JSON object: {"context": string, "isTimesheet": boolean, "dataModel": "clock_times" | "hours_total" | "punch_log" | "unclear"}. No markdown fences, no other text.`;
+Output ONLY a JSON object: {"context": string, "isTimesheet": boolean, "dataModel": "clock_times" | "hours_total" | "punch_log" | "unclear", "year": number | null}. No markdown fences, no other text.`;
     const { content, cost } = await sendVisionRequest(base64Image, prompt, 0, 42, 300);
     try {
         const parsed = JSON.parse(extractJsonBlock(content));
@@ -316,17 +350,19 @@ Output ONLY a JSON object: {"context": string, "isTimesheet": boolean, "dataMode
             parsed.dataModel === "clock_times" || parsed.dataModel === "hours_total" || parsed.dataModel === "punch_log"
                 ? parsed.dataModel
                 : "unclear";
+        const year = Number.isInteger(parsed.year) && parsed.year >= 2000 && parsed.year <= 2100 ? parsed.year : null;
         return {
             context: typeof parsed.context === "string" ? parsed.context : "",
             isTimesheet: parsed.isTimesheet !== false,
             dataModel,
+            year,
             cost,
         };
     } catch {
         // A malformed classification response shouldn't block the page from being scanned at all
-        // — fall back permissively (assume it IS a timesheet, data model unclear) rather than
-        // silently dropping a page over a JSON parsing hiccup in this secondary classification.
-        return { context: content.trim(), isTimesheet: true, dataModel: "unclear", cost };
+        // — fall back permissively (assume it IS a timesheet, data model unclear, year unknown)
+        // rather than silently dropping a page over a JSON parsing hiccup in this classification.
+        return { context: content.trim(), isTimesheet: true, dataModel: "unclear", year: null, cost };
     }
 }
 
@@ -345,13 +381,22 @@ export async function verifyDatesOnPage(
     if (candidates.length === 0) return { confirmed: new Set(), cost: 0 };
 
     const dateList = candidates.map(c => `${c.day}/${c.month}`).join(", ");
+    // Forcing bare JSON with zero reasoning space (an earlier version of this prompt) turned out to
+    // make the model rush a long date list and misjudge boundary items specifically — reproduced
+    // directly: asked about a single date in isolation, it read a clearly-filled box correctly, but
+    // asked to verify the SAME date as item 1 of a 7-date batch with JSON-only output required, it
+    // confidently said not confirmed. Explicitly allowing brief per-date notes before the JSON verdict
+    // (still parsed via extractJsonBlock, which already handles trailing prose after fenced JSON)
+    // fixed it in that same reproduction. Don't remove this reasoning step to "simplify" the prompt.
     const prompt = `This is the full page of a handwritten timesheet. A previous pass claimed to find a row with actual handwritten content (times, marks, something written) for each of these dates on this page: ${dateList} (format is day/month).
 
-Your ONLY job is to verify, for EACH date in that list, whether that date's row genuinely exists on the page with real handwritten content in it — not to re-transcribe any times. Look carefully: is there an actual row for this date, with something written in it? If a date's row is blank, or that date doesn't appear on the page at all, that date should be marked NOT confirmed.
+Your job is to verify, for EACH date in that list, whether that date's row genuinely exists on the page with real handwritten content in it — not to re-transcribe any times. Go through the dates ONE AT A TIME, in the order given: for each one, first locate that exact date's box on the calendar/table, look carefully at what is actually inside it, and briefly note what you see, before moving to the next date. Do not rush through the list or judge several boxes at a glance.
 
-Output ONLY a JSON array with exactly one object per date in the list, in the same order, as {day, month, confirmed}, where confirmed is true only if you can see genuine handwritten content for that date's row. No other text, no markdown fences.`;
+Genuine content includes not just clock times, but ANY deliberate mark — a dash/line, a leave code (MC/AL/EL/off), a checkmark, an hours figure, or anything else a human clearly drew or wrote on purpose. Only mark a date NOT confirmed if its box is truly empty (no ink at all) or that date genuinely doesn't appear on the page anywhere.
 
-    const { content, cost } = await sendVisionRequest(base64Image, prompt, 0, 42, 2000);
+After going through every date individually, end your reply with a JSON array with exactly one object per date in the list, in the same order, as {day, month, confirmed}, where confirmed is true only if you found genuine handwritten content for that date's row. You may write your brief per-date notes first; put the JSON array last, in a \`\`\`json code fence.`;
+
+    const { content, cost } = await sendVisionRequest(base64Image, prompt, 0, 42, 4000);
     const parsed = JSON.parse(extractJsonBlock(content)) as { day: number; month: number; confirmed: boolean }[];
 
     const confirmed = new Set<string>();
