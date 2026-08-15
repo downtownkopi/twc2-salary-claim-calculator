@@ -72,7 +72,13 @@ function str(v: unknown): string | null {
 // well-labeled set of fields, so the row-repetition/pattern-completion failure mode that
 // motivates timecard's 3x-temperature reconciliation (server.ts) doesn't apply here.
 export async function extractIpaFields(base64Image: string): Promise<{ fields: IpaFields; cost: number }> {
-    const { content, cost } = await sendVisionRequest(base64Image, PROMPT, 0, 42, 2000);
+    // 2000 was enough for qwen/gemini but produced "Unexpected end of JSON input" (mid-object
+    // truncation, not empty output) once the default model moved to xiaomi/mimo-v2.5 — same
+    // reasoning-overhead-eats-the-budget failure mode extractPageContext and verifyDatesOnPage were
+    // already bumped for, just landing here too now that this 15-field object (including two
+    // variable-length allowance/deduction arrays) gives it more to genuinely say. Bumped with real
+    // headroom rather than the smallest number that happened to pass one test.
+    const { content, cost } = await sendVisionRequest(base64Image, PROMPT, 0, 42, 4000);
     let parsed: any;
     try {
         parsed = JSON.parse(extractJsonBlock(content));

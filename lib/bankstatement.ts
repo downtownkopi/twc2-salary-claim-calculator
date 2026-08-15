@@ -7,10 +7,12 @@ export type BankTransaction = {
     direction: "credit" | "debit" | null;
     // Cross-check against the caseworker's own keywords, independent of the model's judgement —
     // false means the description doesn't literally contain any of them (the model matched it on
-    // meaning alone: an abbreviated name, a GIRO/PayNow reference, etc). Advisory only, same as
-    // every other guardrail in this app — it flags for a closer look, it never filters the
-    // transaction out, since the whole point of asking the model (rather than just grepping) was
-    // to catch exactly these non-literal matches.
+    // meaning alone: an abbreviated name, a GIRO/PayNow reference, etc). For a SCANNED transaction
+    // this is now a hard filter, not just advisory — extractMatchingTransactions below drops any
+    // non-literal match rather than surfacing it with a warning, per caseworker request. The field
+    // stays on the type because it's still used live for manually-added/edited rows in
+    // public/index.html, which get their own warning as the caseworker types (those aren't
+    // filtered — a human explicitly typed it in, unlike a model's fuzzy judgement call).
     keywordVerified: boolean;
 };
 
@@ -98,7 +100,13 @@ export async function extractMatchingTransactions(base64Image: string, keywords:
                 keywordVerified: keywordRegex.test(description),
             };
         })
-        .filter(t => t.date); // a match with no date at all isn't usable downstream
+        .filter(t => t.date) // a match with no date at all isn't usable downstream
+        // Strictly literal keyword matches only — per caseworker request, a transaction the model
+        // matched on meaning alone (no keyword actually appearing in the description) is dropped
+        // rather than surfaced with a warning. keywordVerified stays on the type (still used for
+        // manually-added/edited rows in public/index.html, which get their own live warning as the
+        // caseworker types), but a scanned transaction that fails this check never reaches the list.
+        .filter(t => t.keywordVerified);
 
     return { transactions, cost };
 }
