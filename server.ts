@@ -896,7 +896,19 @@ app.post(
 // page finishes scanning; `result`/`error` land once `status` moves away from "running".
 app.get("/api/process/:jobId", (req, res) => {
     const job = processJobs.get(req.params.jobId);
-    if (!job) return res.status(404).json({ error: "job not found or expired" });
+    if (!job) {
+        // Logged server-side with the exact jobId/timestamp so a real occurrence can be grepped
+        // out of Cloud Run logs directly, instead of having to cross-reference "user says it
+        // happened around X" against deploy/restart history after the fact.
+        console.error(`GET /api/process/${req.params.jobId}: job not found (jobs map has ${processJobs.size} entr${processJobs.size === 1 ? "y" : "ies"})`);
+        return res.status(404).json({
+            error:
+                "This scan's progress can't be found anymore. This almost always means the server process restarted while the scan was still running — its in-progress state only lives in memory, not a database, so a restart (a new deploy, or the server recycling itself) wipes it. " +
+                "It is NOT something you did wrong, and nothing about your uploaded files caused it. " +
+                "Nothing can be recovered from this specific scan — please re-upload and start it again. " +
+                `(job id: ${req.params.jobId}, if this keeps happening please share this id and the approximate time)`,
+        });
+    }
     // job.pages is pre-sized to the page count and written by index (upload order), so a page
     // that hasn't finished yet — or never will, e.g. excluded/failed — leaves a hole. Filtered out
     // here rather than sent as JSON `null`, so the client only ever sees pages that actually
@@ -1810,7 +1822,16 @@ app.post(
 
 app.get("/api/bank-statement/:jobId", (req, res) => {
     const job = bankJobs.get(req.params.jobId);
-    if (!job) return res.status(404).json({ error: "job not found or expired" });
+    if (!job) {
+        console.error(`GET /api/bank-statement/${req.params.jobId}: job not found (jobs map has ${bankJobs.size} entr${bankJobs.size === 1 ? "y" : "ies"})`);
+        return res.status(404).json({
+            error:
+                "This bank statement scan's progress can't be found anymore. This almost always means the server process restarted while the scan was still running — its in-progress state only lives in memory, not a database, so a restart (a new deploy, or the server recycling itself) wipes it. " +
+                "It is NOT something you did wrong, and nothing about your uploaded files caused it. " +
+                "Nothing can be recovered from this specific scan — please re-upload and start it again. " +
+                `(job id: ${req.params.jobId}, if this keeps happening please share this id and the approximate time)`,
+        });
+    }
     // job.pages is pre-sized to the page count and written by index (upload order) — see
     // runBankStatementJob — so a page that hasn't finished yet leaves a hole, filtered out here
     // rather than sent as JSON `null`.
