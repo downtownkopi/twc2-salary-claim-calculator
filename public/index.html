@@ -952,7 +952,7 @@
           <div class="rules-summary-cat">Computed automatically (needs IPA basic salary)</div>
           <ul>
             <li>Hourly / daily basic rate, daily gross rate</li>
-            <li>Basic Salary Breakdown — basic + overtime + rest-day + public holiday pay, per month</li>
+            <li>Basic Salary / Overtime / Rest / Public Holiday Breakdown — each pay category shown separately, per month</li>
             <li>Owed vs Paid delta (also needs a bank statement scan)</li>
           </ul>
         </div>
@@ -1151,6 +1151,7 @@
           <div class="ipa-review" id="monthlyPayTotals" style="display:none; margin-top: 20px;"></div>
           <div class="ipa-review" id="overtimeBreakdown" style="display:none; margin-top: 20px;"></div>
           <div class="ipa-review" id="restBreakdown" style="display:none; margin-top: 20px;"></div>
+          <div class="ipa-review" id="publicHolidayBreakdown" style="display:none; margin-top: 20px;"></div>
           <div class="ipa-review" id="bankResults" style="display:none; margin-top: 20px;"></div>
         </div>
       </div>
@@ -2173,6 +2174,7 @@
       const totals = new Map(); // monthKey -> { netHours, otHours, restDayPay, phPay }
       const claimedDatesByMonth = new Map(); // monthKey -> Set of dateVal, every row regardless of rest-day/netHours
       const restDayWorkedDatesByMonth = new Map(); // monthKey -> array of dateVal actually paid rest-day-worked pay
+      const phWorkedDatesByMonth = new Map(); // monthKey -> array of dateVal actually paid public-holiday-worked pay
 
       document.querySelectorAll('.review-row').forEach(li => {
         const dateVal = li.querySelector('.f-date').value;
@@ -2203,7 +2205,11 @@
         } else if (isPublicHoliday(dateVal) && !isRestDayChecked) {
           const dailyGross = getDailyGrossRate();
           const dailyBasic = getDailyBasicRate();
-          if (dailyGross !== null && dailyBasic !== null) t.phPay += dailyGross + dailyBasic;
+          if (dailyGross !== null && dailyBasic !== null) {
+            t.phPay += dailyGross + dailyBasic;
+            if (!phWorkedDatesByMonth.has(monthKey)) phWorkedDatesByMonth.set(monthKey, []);
+            phWorkedDatesByMonth.get(monthKey).push(dateVal);
+          }
         }
       });
 
@@ -2219,6 +2225,8 @@
         document.getElementById('overtimeBreakdown').innerHTML = '';
         document.getElementById('restBreakdown').style.display = 'none';
         document.getElementById('restBreakdown').innerHTML = '';
+        document.getElementById('publicHolidayBreakdown').style.display = 'none';
+        document.getElementById('publicHolidayBreakdown').innerHTML = '';
         totalOwedCache = null;
         updateSummarySectionVisibility();
         updateOwedVsPaidBox();
@@ -2244,8 +2252,11 @@
       let sumComputedClaim = 0;
       const rows = monthKeys.map(month => {
         const t = totals.get(month) || { netHours: 0, otHours: 0, restDayPay: 0, phPay: 0 };
-        const otPay = 1.5 * hourly * t.otHours;
-        const fullAmount = basicSalary + otPay + t.restDayPay + t.phPay;
+        // Basic salary only — OT, rest-day-worked, and public-holiday-worked pay each already have
+        // their own dedicated breakdown table (renderOvertimeBreakdown/renderRestBreakdown/PH),
+        // so folding them in here double-counted them across tables and made this column not
+        // actually mean "basic salary" despite the section's name.
+        const fullAmount = basicSalary;
         sumTotal += fullAmount;
 
         const [yearStr, monthNumStr] = month.split('-');
@@ -2262,7 +2273,7 @@
       <td>${MONTH_ABBR[Number(monthNumStr) - 1]}</td>
       <td>${isFullMonth ? 'Yes' : 'No'}</td>
       <td>${daysClaimed}</td>
-      <td>${formatMoney(fullAmount)}${t.otHours > 0 ? `<div class="pay-total-sub">incl. OT ${t.otHours.toFixed(1)}h × 1.5 × ${formatMoney(hourly)}/hr</div>` : ''}${t.restDayPay > 0 ? `<div class="pay-total-sub">incl. rest-day worked ${formatMoney(t.restDayPay)}</div>` : ''}${t.phPay > 0 ? `<div class="pay-total-sub">incl. PH worked ${formatMoney(t.phPay)}</div>` : ''}</td>
+      <td>${formatMoney(fullAmount)}</td>
       <td>${formatMoney(paymentReceived)}</td>
       <td>${formatMoney(computedClaim)}</td>
     </tr>`;
@@ -2278,6 +2289,7 @@
       totalOwedCache = sumTotal;
       renderOvertimeBreakdown(monthKeys, totals, hourly);
       renderRestBreakdown(monthKeys, totals, restDayWorkedDatesByMonth);
+      renderPublicHolidayBreakdown(monthKeys, totals, phWorkedDatesByMonth);
       updateSummarySectionVisibility();
       updateOwedVsPaidBox();
     }
@@ -2354,6 +2366,47 @@
     </tr>`;
       el.innerHTML = `<h3>Rest Breakdown</h3><table class="pay-total-table">
     <thead><tr><th>Year</th><th>Month</th><th>Rest days worked</th><th>Date(s)</th><th>Full amount</th><th>Payment received</th><th>Computed claim</th></tr></thead>
+    <tbody>${rows}${totalRow}</tbody>
+  </table>`;
+    }
+
+    // Same idea as renderRestBreakdown, for the other s.88(4) pay category — public-holiday-worked
+    // pay already computed into totals[month].phPay by the main loop above (dailyGross + dailyBasic
+    // per date, per s.88 — see docs/employment-act-1968-rules.md section 5).
+    function renderPublicHolidayBreakdown(monthKeys, totals, phWorkedDatesByMonth) {
+      const el = document.getElementById('publicHolidayBreakdown');
+      const monthsWithPhWork = monthKeys.filter(m => (phWorkedDatesByMonth.get(m) || []).length > 0);
+      if (monthsWithPhWork.length === 0) {
+        el.style.display = 'none';
+        el.innerHTML = '';
+        return;
+      }
+      el.style.display = 'block';
+      let sumComputedClaim = 0;
+      const rows = monthsWithPhWork.map(month => {
+        const t = totals.get(month) || { phPay: 0 };
+        const dates = phWorkedDatesByMonth.get(month) || [];
+        const fullAmount = t.phPay;
+        const paymentReceived = 0;
+        const computedClaim = fullAmount - paymentReceived;
+        sumComputedClaim += computedClaim;
+        const [yearStr, monthNumStr] = month.split('-');
+        return `<tr>
+      <td>${yearStr}</td>
+      <td>${MONTH_ABBR[Number(monthNumStr) - 1]}</td>
+      <td>${dates.length}</td>
+      <td>${dates.map(d => Number(d.split('-')[2])).join(', ')}</td>
+      <td>${formatMoney(fullAmount)}</td>
+      <td>${formatMoney(paymentReceived)}</td>
+      <td>${formatMoney(computedClaim)}</td>
+    </tr>`;
+      }).join('');
+      const totalRow = `<tr class="pay-total-row">
+      <td colspan="6">Total</td>
+      <td><strong>${formatMoney(sumComputedClaim)}</strong></td>
+    </tr>`;
+      el.innerHTML = `<h3>Public Holiday Breakdown</h3><table class="pay-total-table">
+    <thead><tr><th>Year</th><th>Month</th><th>PH days worked</th><th>Date(s)</th><th>Full amount</th><th>Payment received</th><th>Computed claim</th></tr></thead>
     <tbody>${rows}${totalRow}</tbody>
   </table>`;
     }
