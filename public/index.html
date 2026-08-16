@@ -944,7 +944,7 @@
             <li>Work week (5.5/6-day) and half-day, for 5.5-day weeks</li>
             <li>Standard break</li>
             <li>Default shift timing — used to fill in days with no timesheet entry</li>
-            <li>Contract start/end dates (optional) — keeps auto-filled days inside the actual employment period</li>
+            <li>Claim period start/end dates (optional) — keeps auto-filled days inside the actual employment period</li>
             <li>Bank statement line item(s) to look for (optional)</li>
           </ul>
         </div>
@@ -1075,7 +1075,7 @@
       </div>
 
       <div class="field">
-        <h4>Contract dates (optional)</h4>
+        <h4>Claim period (optional)</h4>
         <div class="shift-default-row">
           <div class="field-group"><span class="field-label">Start</span><input type="date" id="contractStartDate">
           </div>
@@ -2164,6 +2164,40 @@
         .join('');
     }
 
+    // Splits each month's actual bank-matched payment across the four pay categories in a fixed
+    // priority order — basic salary first, then OT, then rest-day-worked, then public-holiday-worked
+    // — filling each category's full amount before spilling into the next, per caseworker request
+    // (an employer paying, say, $1800 against a $1700 basic salary is read as "basic salary paid in
+    // full, $100 of it went toward OT" rather than splitting proportionally or ambiguously).
+    // Any amount left over after all four categories are filled for a month (the worker was paid
+    // MORE than everything owed that month) carries forward as extra available payment for the
+    // NEXT month, applied through the same basic->OT->rest->PH order again — months are walked in
+    // chronological order (monthKeys is already sorted "YYYY-MM" ascending) specifically so this
+    // carry-forward flows the right direction. Returns a Map monthKey -> {basic, ot, rest, ph}.
+    function allocatePaymentsWaterfall(monthKeys, basicSalary, hourly, totals, paidByMonth) {
+      const allocated = new Map();
+      let carryover = 0;
+      for (const month of monthKeys) {
+        const t = totals.get(month) || { otHours: 0, restDayPay: 0, phPay: 0 };
+        const fullAmounts = {
+          basic: basicSalary,
+          ot: 1.5 * hourly * t.otHours,
+          rest: t.restDayPay,
+          ph: t.phPay,
+        };
+        let available = (paidByMonth.get(month) || 0) + carryover;
+        const buckets = { basic: 0, ot: 0, rest: 0, ph: 0 };
+        for (const key of ['basic', 'ot', 'rest', 'ph']) {
+          const take = Math.max(0, Math.min(available, fullAmounts[key]));
+          buckets[key] = take;
+          available -= take;
+        }
+        allocated.set(month, buckets);
+        carryover = available; // whatever's left (overpaid this month) rolls into next month's pool
+      }
+      return allocated;
+    }
+
     // Per-month total of the EXTRA pay owed on top of the worker's monthly basic salary — OT pay,
     // rest-day-worked pay, and public-holiday-worked pay, summed from every row currently on screen.
     // Basic salary already covers ordinary working days, so only these three components are added
@@ -2245,6 +2279,7 @@
         const signed = t.direction === 'debit' ? -t.amount : t.amount;
         paidByMonth.set(monthKey, (paidByMonth.get(monthKey) || 0) + signed);
       });
+      const allocated = allocatePaymentsWaterfall(monthKeys, basicSalary, hourly, totals, paidByMonth);
 
       // Grand total across every month, added as a bottom Total row — each month's own row is a
       // sub-amount, this is the figure the caseworker actually wants to hand to the worker.
@@ -2264,7 +2299,7 @@
         const daysClaimed = claimedDatesByMonth.get(month)?.size || 0;
         const isFullMonth = daysClaimed === daysInMonth;
 
-        const paymentReceived = paidByMonth.get(month) || 0;
+        const paymentReceived = allocated.get(month).basic;
         const computedClaim = fullAmount - paymentReceived;
         sumComputedClaim += computedClaim;
 
@@ -2286,26 +2321,38 @@
     <thead><tr><th>Year</th><th>Month</th><th>Full month</th><th>Days claimed</th><th>Full amount</th><th>Payment received</th><th>Computed claim</th></tr></thead>
     <tbody>${rows}${totalRow}</tbody>
   </table>`;
-      totalOwedCache = sumTotal;
-      renderOvertimeBreakdown(monthKeys, totals, hourly);
-      renderRestBreakdown(monthKeys, totals, restDayWorkedDatesByMonth);
-      renderPublicHolidayBreakdown(monthKeys, totals, phWorkedDatesByMonth);
+      // The headline "amount owed" figure is the GROSS entitlement across every category — basic
+      // salary (sumTotal, just computed above) plus OT/rest-day-worked/public-holiday-worked pay,
+      // summed straight from `totals` rather than from each render function's own return value, so
+      // this total isn't limited to only the months a given breakdown table happens to be showing.
+      // Deliberately NOT each table's own "Computed claim" (which already subtracts a payment
+      // figure) — updateOwedVsPaidBox does that subtraction exactly once, against totalPaidCache,
+      // so feeding it an already-discounted number here would double-subtract.
+      let grossOwed = sumTotal;
+      for (const month of monthKeys) {
+        const t = totals.get(month) || { otHours: 0, restDayPay: 0, phPay: 0 };
+        grossOwed += 1.5 * hourly * t.otHours + t.restDayPay + t.phPay;
+      }
+      totalOwedCache = grossOwed;
+      renderOvertimeBreakdown(monthKeys, totals, hourly, allocated);
+      renderRestBreakdown(monthKeys, totals, restDayWorkedDatesByMonth, allocated);
+      renderPublicHolidayBreakdown(monthKeys, totals, phWorkedDatesByMonth, allocated);
       updateSummarySectionVisibility();
       updateOwedVsPaidBox();
     }
 
     // OT-only view of the same per-month totals recomputeMonthlyPayTotals already built — separate
     // table since a caseworker may want to claim/track overtime independently of the basic-salary
-    // figure. Payment received is left at $0 for now (no bank-statement split for OT specifically
-    // yet — TODO once that gets collated), so computed claim is just full amount until then.
-    function renderOvertimeBreakdown(monthKeys, totals, hourly) {
+    // figure. Payment received comes from allocatePaymentsWaterfall — the portion of that month's
+    // actual bank-matched payment allocated to OT after basic salary was filled first.
+    function renderOvertimeBreakdown(monthKeys, totals, hourly, allocated) {
       const el = document.getElementById('overtimeBreakdown');
       el.style.display = 'block';
       let sumTotal = 0;
       const rows = monthKeys.map(month => {
         const t = totals.get(month) || { otHours: 0 };
         const fullAmount = 1.5 * hourly * t.otHours;
-        const paymentReceived = 0;
+        const paymentReceived = allocated.get(month).ot;
         const computedClaim = fullAmount - paymentReceived;
         sumTotal += computedClaim;
         const [yearStr, monthNumStr] = month.split('-');
@@ -2330,23 +2377,26 @@
 
     // Same idea as renderOvertimeBreakdown — a dedicated view of the rest-day-worked pay already
     // computed into totals[month].restDayPay by the main loop above, this time also listing which
-    // specific dates it came from. Payment received is left at $0 for now, same as Overtime
-    // Breakdown — no bank-statement split across Basic/OT/Rest categories yet, that's still TODO.
-    function renderRestBreakdown(monthKeys, totals, restDayWorkedDatesByMonth) {
+    // specific dates it came from. Payment received comes from allocatePaymentsWaterfall — the
+    // portion of that month's payment allocated to rest-day pay after basic salary and OT were
+    // filled first.
+    // Always shows every claimed month, even ones with zero rest days worked (same as
+    // renderOvertimeBreakdown/renderPublicHolidayBreakdown) — a caseworker wants to see "$0,
+    // nothing worked" as confirmation the app looked, not have the section silently vanish.
+    function renderRestBreakdown(monthKeys, totals, restDayWorkedDatesByMonth, allocated) {
       const el = document.getElementById('restBreakdown');
-      const monthsWithRestWork = monthKeys.filter(m => (restDayWorkedDatesByMonth.get(m) || []).length > 0);
-      if (monthsWithRestWork.length === 0) {
+      if (monthKeys.length === 0) {
         el.style.display = 'none';
         el.innerHTML = '';
         return;
       }
       el.style.display = 'block';
       let sumComputedClaim = 0;
-      const rows = monthsWithRestWork.map(month => {
+      const rows = monthKeys.map(month => {
         const t = totals.get(month) || { restDayPay: 0 };
         const dates = restDayWorkedDatesByMonth.get(month) || [];
         const fullAmount = t.restDayPay;
-        const paymentReceived = 0;
+        const paymentReceived = allocated.get(month).rest;
         const computedClaim = fullAmount - paymentReceived;
         sumComputedClaim += computedClaim;
         const [yearStr, monthNumStr] = month.split('-');
@@ -2373,21 +2423,25 @@
     // Same idea as renderRestBreakdown, for the other s.88(4) pay category — public-holiday-worked
     // pay already computed into totals[month].phPay by the main loop above (dailyGross + dailyBasic
     // per date, per s.88 — see docs/employment-act-1968-rules.md section 5).
-    function renderPublicHolidayBreakdown(monthKeys, totals, phWorkedDatesByMonth) {
+    //
+    // Unlike renderRestBreakdown, this always shows every claimed month (same as
+    // renderOvertimeBreakdown), even ones with zero PH days worked — per caseworker request, a
+    // caseworker checking a claim wants to SEE "$0, nothing worked" as confirmation the app looked,
+    // not have the section silently vanish and leave them unsure whether it was checked at all.
+    function renderPublicHolidayBreakdown(monthKeys, totals, phWorkedDatesByMonth, allocated) {
       const el = document.getElementById('publicHolidayBreakdown');
-      const monthsWithPhWork = monthKeys.filter(m => (phWorkedDatesByMonth.get(m) || []).length > 0);
-      if (monthsWithPhWork.length === 0) {
+      if (monthKeys.length === 0) {
         el.style.display = 'none';
         el.innerHTML = '';
         return;
       }
       el.style.display = 'block';
       let sumComputedClaim = 0;
-      const rows = monthsWithPhWork.map(month => {
+      const rows = monthKeys.map(month => {
         const t = totals.get(month) || { phPay: 0 };
         const dates = phWorkedDatesByMonth.get(month) || [];
         const fullAmount = t.phPay;
-        const paymentReceived = 0;
+        const paymentReceived = allocated.get(month).ph;
         const computedClaim = fullAmount - paymentReceived;
         sumComputedClaim += computedClaim;
         const [yearStr, monthNumStr] = month.split('-');
