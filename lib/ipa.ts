@@ -84,8 +84,10 @@ function str(v: unknown): string | null {
 // letters in a row at either end. Checked here rather than trusted from the prompt alone, since a
 // model misread (e.g. "GB495419K", a genuine "G" plus an extra letter) is exactly the kind of
 // error a re-read instruction alone doesn't reliably catch.
-const FIN_FORMAT = /^[A-Za-z]\d+[A-Za-z]$/;
-const PARTIAL_FIN_FORMAT = /^\d+[A-Za-z]$/; // masked front letter, e.g. "419K"
+// Exported so lib/workerMatch.ts can recognize the same masked-FIN shape when corroborating a
+// worker-roster row's IC number against this IPA's workerFin, without duplicating the pattern.
+export const FIN_FORMAT = /^[A-Za-z]\d+[A-Za-z]$/;
+export const PARTIAL_FIN_FORMAT = /^\d+[A-Za-z]$/; // masked front letter, e.g. "419K"
 
 /**
  * Flags (via the notes string, without discarding the value) a FIN that doesn't match the

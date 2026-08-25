@@ -1,4 +1,5 @@
 import type { FillWarning } from "./xlsx";
+import { matchWorker, type RosterCandidate, type WorkerMatchConfidence } from "./workerMatch";
 
 export type ParsedEntry = {
     day: number | null;
@@ -346,4 +347,215 @@ export function reconcileAttempts(
     }
 
     return { entries, warnings };
+}
+
+// A worker-roster page (lib/ocr/pageScan.ts's PageDataModel "worker_roster") is the inverse shape
+// of a normal timesheet page: ONE shared date, MANY named workers as rows. reconcileAttempts above
+// is keyed by day/month across a single worker's own rows — that key doesn't apply here, since
+// every row on a roster page shares the same date and differs by WHICH WORKER it belongs to. This
+// is a separate, smaller reconciliation: per attempt, find the target worker's row (lib/workerMatch.ts),
+// then reconcile just that row's own fields across the attempts that found it confidently.
+export type RosterRow = {
+    workerName: string | null;
+    workerIc: string | null;
+    actualTimeIn: number | null; // bare HHMM, same convention as ParsedEntry.times
+    actualTimeOut: number | null;
+    mealBreakHours: number | null;
+    struckThrough: boolean; // a row crossed out on the source document — excluded from matching entirely
+    notes: string | null;
+};
+
+export type RosterPageAttempt = {
+    day: number | null;
+    month: number | null;
+    workers: RosterRow[];
+};
+
+export type RosterReconciledEntry = {
+    day: number;
+    month: number;
+    actualTimeIn: number | null;
+    actualTimeOut: number | null;
+    mealBreakHours: number | null;
+    guessed: boolean;
+    matchConfidence: WorkerMatchConfidence;
+    matchedRowIndex: number; // index into the returned allRows — which table row was auto-selected
+    notes: string | null;
+};
+
+/**
+ * Reconciles multiple independent scan attempts of the same worker-roster page into one entry for
+ * the target worker — first resolving the page's shared date by majority vote, then finding the
+ * target worker's row within each attempt (via {@link matchWorker}), then reconciling that row's
+ * actual time in/out and meal break across the attempts that found it with high confidence.
+ *
+ * @param attempts - One parsed roster-page reading per independent scan attempt.
+ * @param source - Page identifier, used to tag any warnings produced.
+ * @param targetName - The IPA's extracted worker name to match against.
+ * @param targetFin - The IPA's extracted (possibly masked) FIN, or `null`.
+ * @param year - Used only to build a `date` field on warnings, once the page's day/month are known.
+ * @returns The page's resolved shared date (`null` only if no attempt could determine it at all —
+ * kept separate from `entry` so a caller can still build a full date for a manually-picked row even
+ * when no worker was confidently auto-matched), the reconciled entry for the target worker (`null`
+ * if the date couldn't be resolved, or no attempt confidently matched the worker), every
+ * non-struck-through row seen across attempts (deduped by worker name, for a manual "pick a
+ * different row" fallback), and any warnings produced.
+ */
+export function reconcileRosterAttempts(
+    attempts: RosterPageAttempt[],
+    source: string,
+    targetName: string | null,
+    targetFin: string | null,
+    year?: number
+): { date: { day: number; month: number } | null; entry: RosterReconciledEntry | null; allRows: RosterRow[]; warnings: FillWarning[] } {
+    const warnings: FillWarning[] = [];
+
+    // ---- resolve the page's shared date via majority vote across attempts ----
+    const dateVotes = new Map<string, number>();
+    for (const a of attempts) {
+        if (a.day === null || a.month === null) continue;
+        const key = `${a.month}-${a.day}`;
+        dateVotes.set(key, (dateVotes.get(key) ?? 0) + 1);
+    }
+    let bestDateKey: string | null = null;
+    let bestDateCount = 0;
+    for (const [key, count] of dateVotes) {
+        if (count > bestDateCount) {
+            bestDateKey = key;
+            bestDateCount = count;
+        }
+    }
+    if (bestDateKey === null) {
+        warnings.push({
+            source,
+            reason: "worker-roster page: no scan attempt could determine this page's shared date (no legible date header) — page skipped, please check the source PDF directly",
+            category: "system",
+        });
+        return { date: null, entry: null, allRows: [], warnings };
+    }
+    const [month, day] = bestDateKey.split("-").map(Number);
+    const dateStr = year ? `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}` : undefined;
+
+    // ---- per attempt: find that attempt's best candidate row for the target worker ----
+    const votes: { row: RosterRow; confidence: WorkerMatchConfidence }[] = [];
+    const seenNames = new Set<string>();
+    const allRows: RosterRow[] = [];
+    for (const a of attempts) {
+        const usableRows = a.workers.filter(w => !w.struckThrough);
+        for (const row of usableRows) {
+            const key = (row.workerName ?? "").trim().toLowerCase();
+            if (key && !seenNames.has(key)) {
+                seenNames.add(key);
+                allRows.push(row);
+            }
+        }
+        const candidates: RosterCandidate[] = usableRows.map(w => ({ workerName: w.workerName, workerIc: w.workerIc }));
+        const match = matchWorker(candidates, targetName, targetFin);
+        if (match && match.confidence === "high") {
+            votes.push({ row: usableRows[match.index], confidence: match.confidence });
+        }
+    }
+    // allRows is deduped by normalized name (built above) — this finds a matched vote's row by that
+    // same key, so the caller (public/index.html) can highlight which table row was auto-selected.
+    function indexInAllRows(row: RosterRow): number {
+        const key = (row.workerName ?? "").trim().toLowerCase();
+        return allRows.findIndex(r => (r.workerName ?? "").trim().toLowerCase() === key);
+    }
+
+    if (votes.length === 0) {
+        warnings.push({
+            source,
+            reason: "worker-roster page: no scan attempt confidently matched the target worker by name/IC — please pick the correct row manually from this page",
+            category: "flagged_review",
+            date: dateStr,
+        });
+        return { date: { day, month }, entry: null, allRows, warnings };
+    }
+
+    // ---- reconcile the voting attempts' actual time in/out (unanimity, then majority fallback) ----
+    const timeSignatures = new Map<string, number>();
+    for (const v of votes) {
+        timeSignatures.set(`${v.row.actualTimeIn}|${v.row.actualTimeOut}`, (timeSignatures.get(`${v.row.actualTimeIn}|${v.row.actualTimeOut}`) ?? 0) + 1);
+    }
+    let bestTimeSig: string | null = null;
+    let bestTimeCount = 0;
+    for (const [sig, count] of timeSignatures) {
+        if (count > bestTimeCount) {
+            bestTimeSig = sig;
+            bestTimeCount = count;
+        }
+    }
+    const unanimous = bestTimeSig !== null && bestTimeCount === votes.length;
+    const majority = bestTimeSig !== null && bestTimeCount > votes.length / 2;
+
+    if (!unanimous && !majority) {
+        warnings.push({
+            source,
+            reason: "worker-roster page: target worker was identified, but scan attempts disagreed on actual time in/out with no majority — dropped rather than guessed, please check the source page directly",
+            category: "dropped_disagreement",
+            date: dateStr,
+        });
+        return {
+            date: { day, month },
+            entry: {
+                day,
+                month,
+                actualTimeIn: null,
+                actualTimeOut: null,
+                mealBreakHours: null,
+                guessed: true,
+                matchConfidence: votes[0].confidence,
+                matchedRowIndex: indexInAllRows(votes[0].row),
+                notes: "target worker identified, but actual time in/out could not be reconciled across scan attempts — please verify against the source page",
+            },
+            allRows,
+            warnings,
+        };
+    }
+
+    const winningVotes = votes.filter(v => `${v.row.actualTimeIn}|${v.row.actualTimeOut}` === bestTimeSig);
+    const [timeInStr, timeOutStr] = bestTimeSig!.split("|");
+    const actualTimeIn = timeInStr === "null" ? null : Number(timeInStr);
+    const actualTimeOut = timeOutStr === "null" ? null : Number(timeOutStr);
+
+    // Meal break: majority among the winning (time-agreeing) votes only — no separate redundancy
+    // requirement, since it's a much lower-stakes field than the actual clock times themselves.
+    const breakVotes = new Map<string, number>();
+    for (const v of winningVotes) {
+        breakVotes.set(String(v.row.mealBreakHours), (breakVotes.get(String(v.row.mealBreakHours)) ?? 0) + 1);
+    }
+    let bestBreakKey: string | null = null;
+    let bestBreakCount = 0;
+    for (const [key, count] of breakVotes) {
+        if (count > bestBreakCount) {
+            bestBreakKey = key;
+            bestBreakCount = count;
+        }
+    }
+    const mealBreakHours = bestBreakKey && bestBreakKey !== "null" ? Number(bestBreakKey) : null;
+
+    // Same "at least 2 agreeing attempts" trust bar as reconcileAttempts's sufficientRedundancy —
+    // a single confident-match attempt (however unanimous with itself) still needs a human glance.
+    const guessed = !unanimous || winningVotes.length < 2;
+    const notesParts: string[] = [];
+    if (!unanimous) notesParts.push(`majority reading (${bestTimeCount}/${votes.length} confident attempts agreed)`);
+    if (winningVotes.length < 2) notesParts.push("only one scan attempt confidently matched this worker — please verify");
+    for (const v of winningVotes) if (v.row.notes && !notesParts.includes(v.row.notes)) notesParts.push(v.row.notes);
+
+    return {
+        date: { day, month },
+        entry: {
+            day,
+            month,
+            actualTimeIn,
+            actualTimeOut,
+            mealBreakHours,
+            guessed,
+            matchConfidence: winningVotes[0].confidence,
+            matchedRowIndex: indexInAllRows(winningVotes[0].row),
+            notes: notesParts.length > 0 ? notesParts.join("; ") : null,
+        },
+        allRows,
+        warnings,
+    };
 }

@@ -11,9 +11,11 @@ import {
     type PageDataModel,
 } from "../ocr";
 import { buildReviewRows, MONTH_ABBR, type TimeEntry, type FillWarning, type RestDay } from "../xlsx";
-import { reconcileAttempts, type ParsedEntry } from "../reconcile";
+import { reconcileAttempts, reconcileRosterAttempts, type ParsedEntry, type RosterPageAttempt, type RosterRow } from "../reconcile";
 import { extractIpaFields, type IpaFields } from "../ipa";
 import { buildPrompt } from "../timesheetPrompt";
+import { buildRosterPrompt } from "../rosterPrompt";
+import type { WorkerMatchConfidence } from "../workerMatch";
 import { loadPagesForFile, SUPPORTED_YEARS, SCAN_TEMPERATURES, BANDS_PER_PAGE, JOB_TTL_MS } from "./shared";
 
 // Rotation degrees a human confirmed in the pre-scan staging step (public/index.html), keyed so
@@ -34,6 +36,12 @@ export type PageReview = {
     dataModel: PageDataModel;
     pageContext: string;
     modelsUsed: string[]; // every model that touched this page — always PRIMARY_VISION_MODEL, plus FALLBACK_VISION_MODEL if that page's escalation step ran
+    // Only set when dataModel is "worker_roster" — every non-struck-through worker row seen across
+    // scan attempts (deduped by name), how confidently the target worker was auto-matched, and the
+    // page's own resolved date (kept even when no worker was confidently matched, so a manually
+    // picked row can still be built into a full YYYY-MM-DD entry) — lets public/index.html render a
+    // picker to override the match if it's wrong or missing.
+    rosterMatch?: { confidence: WorkerMatchConfidence; allRows: RosterRow[]; date: string | null; matchedRowIndex: number | null };
 };
 
 // /api/process kicks off a scan as a background job (12 real-world pages can take 15-20+ minutes
@@ -138,6 +146,9 @@ export async function runProcessJob(
     // below. Carried into pageReviews purely so a later "flag this page" action (public/index.html)
     // can send this classification along with the flag, without the client having to re-derive it.
     const pageMeta = new Map<string, { dataModel: PageDataModel; pageContext: string }>();
+    // Roster-match info per page, keyed by source — populated only for dataModel "worker_roster"
+    // pages, carried into pageReviews so the client can render the worker-picker fallback UI.
+    const pageRosterMeta = new Map<string, { confidence: WorkerMatchConfidence; allRows: RosterRow[]; date: string | null; matchedRowIndex: number | null }>();
 
     // toLocalDateString, not toISOString: .toISOString() converts to UTC, which silently shifts
     // the calendar date by a day in timezones ahead of UTC (e.g. a local-midnight Sept 11 becomes
@@ -393,6 +404,126 @@ export async function runProcessJob(
                     });
                     return;
                 }
+
+                // A worker-roster page (one shared date, many named workers as rows) is the inverse
+                // shape of every other dataModel — extracted and reconciled via a completely
+                // different path (lib/rosterPrompt.ts + lib/reconcile.ts's reconcileRosterAttempts,
+                // keyed by worker identity rather than day/month) that ends by producing a normal
+                // TimeEntry/RestDay for the target worker, so nothing downstream of this branch
+                // (buildReviewRows, fillTimesheetFromRows) needs to know this page was a roster at
+                // all. No band-cropping (irrelevant for a short worker list) and no fallback-model
+                // escalation in this first version — matches the simpler shape of
+                // bankStatementJob.ts/medicalBillsJob.ts, neither of which have escalation either.
+                if (dataModel === "worker_roster") {
+                    const ipa = await ipaPromise;
+                    const targetName = ipa?.workerName ?? null;
+                    const targetFin = ipa?.workerFin ?? null;
+
+                    const rosterPrompt = buildRosterPrompt();
+                    const rosterResults = await Promise.allSettled(
+                        SCAN_TEMPERATURES.map(({ temperature, seed }) => scanPageImage(images[i], rosterPrompt, temperature, seed, timesheetModel))
+                    );
+
+                    const rosterAttempts: RosterPageAttempt[] = [];
+                    let rosterTruncatedCount = 0;
+                    let rosterFailedCount = 0;
+                    rosterResults.forEach((result, idx) => {
+                        const { temperature, seed } = SCAN_TEMPERATURES[idx];
+                        if (result.status === "rejected") {
+                            rosterFailedCount++;
+                            console.error(`${source} temp=${temperature} seed=${seed}: roster scan attempt rejected —`, result.reason);
+                            return;
+                        }
+                        const { content, truncated, cost } = result.value;
+                        addCost(timesheetModel, cost);
+                        markModelUsed(source, timesheetModel);
+                        if (truncated) rosterTruncatedCount++;
+                        try {
+                            const parsed = JSON.parse(extractJsonBlock(content));
+                            if (!Array.isArray(parsed.workers)) throw new Error("workers is not an array");
+                            rosterAttempts.push({
+                                day: typeof parsed.day === "number" ? parsed.day : null,
+                                month: typeof parsed.month === "number" ? parsed.month : null,
+                                workers: parsed.workers.map((w: any) => ({
+                                    workerName: typeof w.workerName === "string" ? w.workerName : null,
+                                    workerIc: typeof w.workerIc === "string" ? w.workerIc : null,
+                                    actualTimeIn: typeof w.actualTimeIn === "number" ? w.actualTimeIn : null,
+                                    actualTimeOut: typeof w.actualTimeOut === "number" ? w.actualTimeOut : null,
+                                    mealBreakHours: typeof w.mealBreakHours === "number" ? w.mealBreakHours : null,
+                                    struckThrough: w.struckThrough === true,
+                                    notes: typeof w.notes === "string" ? w.notes : null,
+                                })),
+                            });
+                        } catch (e: any) {
+                            rosterFailedCount++;
+                            console.error(`${source} temp=${temperature} seed=${seed} truncated=${truncated}: failed to parse roster scan output (${e.message}). Raw content:\n`, content);
+                        }
+                    });
+
+                    const rosterTotalAttempts = SCAN_TEMPERATURES.length;
+                    if (rosterTruncatedCount > 0) {
+                        warnings.push({ source, reason: `${rosterTruncatedCount}/${rosterTotalAttempts} roster scan attempts were truncated (hit token limit) — this page may be missing worker rows`, category: "scan_quality" });
+                    }
+                    if (rosterFailedCount > 0) {
+                        warnings.push({ source, reason: `${rosterFailedCount}/${rosterTotalAttempts} roster scan attempts failed or returned unparseable output`, category: "scan_quality" });
+                    }
+                    if (rosterAttempts.length === 0) {
+                        warnings.push({ source, reason: "all scan attempts for this worker-roster page failed — page was skipped entirely", category: "scan_quality" });
+                        return;
+                    }
+
+                    const { date: rosterDate, entry, allRows, warnings: rosterWarnings } = reconcileRosterAttempts(rosterAttempts, source, targetName, targetFin, pageYear);
+                    warnings.push(...rosterWarnings);
+                    const rosterDateStr = rosterDate ? `${pageYear}-${String(rosterDate.month).padStart(2, "0")}-${String(rosterDate.day).padStart(2, "0")}` : null;
+                    pageRosterMeta.set(source, {
+                        confidence: entry?.matchConfidence ?? "none",
+                        allRows,
+                        date: rosterDateStr,
+                        matchedRowIndex: entry?.matchedRowIndex ?? null,
+                    });
+
+                    if (entry) {
+                        const entryDate = `${pageYear}-${String(entry.month).padStart(2, "0")}-${String(entry.day).padStart(2, "0")}`;
+                        if (entry.actualTimeIn !== null && entry.actualTimeOut !== null) {
+                            timeEntries.push({
+                                date: new Date(pageYear, entry.month - 1, entry.day),
+                                clockIn: entry.actualTimeIn,
+                                clockOut: entry.actualTimeOut,
+                                source,
+                                guessed: entry.guessed,
+                                noBreak: entry.mealBreakHours === 0,
+                            });
+                            if (entry.guessed) {
+                                warnings.push({
+                                    source,
+                                    reason: `day=${entry.day} month=${entry.month}: roster match for the target worker is a model-derived guess${entry.notes ? `: ${entry.notes}` : ""} — please double check`,
+                                    category: "flagged_review",
+                                    date: entryDate,
+                                });
+                            }
+                        } else {
+                            // Matched the worker, but couldn't resolve a usable actual time in/out —
+                            // recorded as unworked (same convention as an "unclear mark" in the normal
+                            // path, lib/jobs/timesheetJob.ts's restDays.push below) so the date isn't
+                            // silently missing, rather than vanishing with no trace.
+                            restDays.push({
+                                year: pageYear,
+                                month: entry.month,
+                                day: entry.day,
+                                source,
+                                notes: entry.notes ? `roster match, unclear time: ${entry.notes}` : "roster match, unclear actual time in/out — please verify",
+                            });
+                            warnings.push({
+                                source,
+                                reason: `day=${entry.day} month=${entry.month}: target worker matched on the roster, but actual time in/out could not be determined — recorded as unworked so it isn't auto-filled as a missing day, please verify against the source PDF`,
+                                category: "flagged_review",
+                                date: entryDate,
+                            });
+                        }
+                    }
+                    return;
+                }
+
                 const prompt = buildPrompt(pageYear, pageContext, dataModel);
 
                 const bands = await cropIntoBands(images[i], BANDS_PER_PAGE);
@@ -714,6 +845,7 @@ export async function runProcessJob(
                         dataModel,
                         pageContext,
                         modelsUsed: [...(pageModelsUsed.get(source) ?? new Set<string>())],
+                        rosterMatch: pageRosterMeta.get(source),
                     };
                 }
             }
@@ -855,7 +987,16 @@ export async function runProcessJob(
 
         const meta = pageMeta.get(source);
         const modelsUsed = [...(pageModelsUsed.get(source) ?? new Set<string>())];
-        return { source, image, entries, warnings: pageWarnings, dataModel: meta?.dataModel ?? "unclear", pageContext: meta?.pageContext ?? "", modelsUsed };
+        return {
+            source,
+            image,
+            entries,
+            warnings: pageWarnings,
+            dataModel: meta?.dataModel ?? "unclear",
+            pageContext: meta?.pageContext ?? "",
+            modelsUsed,
+            rosterMatch: pageRosterMeta.get(source),
+        };
     });
 
     // A warning with no specific page source (e.g. the coverage check for a day nothing read at

@@ -958,6 +958,56 @@
       font-size: 12px;
     }
 
+    /* Worker-roster page card: the extracted worker table + "Use this row" picker, shown instead
+       of / alongside the normal per-date editable rows when a page is one shared date with many
+       named workers (see PageDataModel "worker_roster"). */
+    .roster-match-block {
+      margin-bottom: 10px;
+    }
+
+    .roster-confidence-note {
+      font-size: 12px;
+      font-weight: 600;
+      margin-bottom: 6px;
+    }
+
+    .roster-confidence-high { color: #1a7f37; }
+    .roster-confidence-low { color: #9a6700; }
+    .roster-confidence-none { color: #cf222e; }
+
+    .roster-worker-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 12px;
+      margin-bottom: 8px;
+    }
+
+    .roster-worker-table th, .roster-worker-table td {
+      border: 1px solid var(--border);
+      padding: 4px 6px;
+      text-align: left;
+    }
+
+    .roster-worker-table tr.roster-row-matched td {
+      background: #eaf6ec;
+      font-weight: 600;
+    }
+
+    .roster-pick-btn {
+      background: none;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 3px 8px;
+      font-size: 11px;
+      cursor: pointer;
+    }
+
+    .roster-pick-btn:hover {
+      background: var(--accent);
+      color: white;
+      border-color: var(--accent);
+    }
+
     .ipa-review {
       margin-top: 20px;
       padding: 16px;
@@ -2064,16 +2114,9 @@
       // rendering of the same data (see ipaReviewEl below), not something to edit twice.
       if (data.ipaImage || data.ipa || data.ipaWarning) {
         ipaPageReviewEl.style.display = 'block';
-        ipaPageReviewEl.innerHTML = `
-      <div class="page-review-row">
-        ${data.ipaImage ? `<div class="page-review-image"><img src="data:image/png;base64,${data.ipaImage}" alt="IPA letter"></div>` : ''}
-        <div class="page-review-details">
-          <div class="page-review-source"><span>IPA letter</span></div>
-          ${data.ipa ? renderIpaFieldsEditable(data.ipa) : ''}
-          ${data.ipaWarning ? `<div class="row-notes">${escapeHtml(data.ipaWarning)}</div>` : ''}
-          ${data.ipa?.notes ? `<div class="row-notes">${escapeHtml(data.ipa.notes)}</div>` : ''}
-        </div>
-      </div>`;
+        ipaPageReviewEl.innerHTML = renderIpaCard(data.ipaImage, data.ipa, data.ipaWarning);
+        const ipaRescanControls = ipaPageReviewEl.querySelector('.page-rescan-controls');
+        if (ipaRescanControls) wireIpaRescanControls(ipaRescanControls);
         if (data.ipa) {
           // Salary/allowances feed the rate formulas every row's guardrails depend on, AND the
           // Summary card's read-only figures — editing either one here needs to ripple through both,
@@ -2131,6 +2174,32 @@
             container.innerHTML = '<li class="empty">No entries extracted from this page</li>';
           } else {
             for (const row of matching) appendReviewRow(container, row);
+          }
+
+          // Worker-roster page: "Use this row" replaces whatever's currently in this page's own
+          // list with the manually picked worker's reading — same "edit fields, get picked up at
+          // Generate time" model every other row already uses, just constructed fresh rather than
+          // edited in place, since a picked row may not correspond to any row currently shown.
+          if (page.dataModel === 'worker_roster' && page.rosterMatch) {
+            const cardRoot = container.closest('.page-review-row');
+            cardRoot?.querySelectorAll('.roster-pick-btn').forEach(btn => {
+              btn.addEventListener('click', () => {
+                const picked = page.rosterMatch.allRows[Number(btn.dataset.idx)];
+                if (!picked || !page.rosterMatch.date) return;
+                container.querySelectorAll('.review-row').forEach(li => li.remove());
+                appendReviewRow(container, {
+                  date: page.rosterMatch.date,
+                  clockIn: picked.actualTimeIn,
+                  clockOut: picked.actualTimeOut,
+                  breakHours: picked.mealBreakHours ?? 1,
+                  restDay: false,
+                  guessed: true,
+                  notes: `manually picked from roster: ${picked.workerName || 'unnamed row'}${picked.notes ? ` — ${picked.notes}` : ''}`,
+                  source: page.source,
+                });
+                recomputeMonthlyOtCap();
+              });
+            });
           }
         });
         // Each page card also got its own "+ Add day" button (see renderPageReview) — wire each one
@@ -3780,6 +3849,39 @@
         ? `<div class="row-notes">Models used: ${page.modelsUsed.map(escapeHtml).join(', ')} (fallback model used because the primary model's attempts disagreed on at least one date)</div>`
         : '';
 
+      // A worker-roster page (one shared date, many named workers) shows the extracted worker
+      // table instead of the usual per-date rows — the auto-matched worker's row (if any) is
+      // highlighted and already reflected below as a normal editable row; "Use this row" lets the
+      // caseworker override the match. Wired up after this card lands in the DOM (see the
+      // /api/process success handler), same two-pass pattern as review-target-list's rows.
+      const rosterHtml = page.dataModel === 'worker_roster' && page.rosterMatch ? (() => {
+        const rm = page.rosterMatch;
+        const confidenceText = rm.confidence === 'high'
+          ? 'High-confidence match found — please still confirm below.'
+          : rm.confidence === 'low'
+            ? 'Low-confidence match — please verify against the list below.'
+            : 'No confident match found — please pick the correct worker below.';
+        const rowsHtml = rm.allRows.length === 0
+          ? '<tr><td colspan="6" class="empty">No worker rows extracted from this page.</td></tr>'
+          : rm.allRows.map((r, idx) => `
+              <tr class="${idx === rm.matchedRowIndex ? 'roster-row-matched' : ''}">
+                <td>${escapeHtml(r.workerName || '—')}</td>
+                <td>${escapeHtml(r.workerIc || '—')}</td>
+                <td>${r.actualTimeIn !== null ? hhmmToTimeInput(r.actualTimeIn) : '—'}</td>
+                <td>${r.actualTimeOut !== null ? hhmmToTimeInput(r.actualTimeOut) : '—'}</td>
+                <td>${r.mealBreakHours ?? '—'}</td>
+                <td><button type="button" class="roster-pick-btn" data-idx="${idx}">Use this row</button></td>
+              </tr>`).join('');
+        return `
+        <div class="roster-match-block">
+          <div class="roster-confidence-note roster-confidence-${rm.confidence}">${escapeHtml(confidenceText)}</div>
+          <table class="roster-worker-table">
+            <thead><tr><th>Name</th><th>IC</th><th>In</th><th>Out</th><th>Break</th><th></th></tr></thead>
+            <tbody>${rowsHtml}</tbody>
+          </table>
+        </div>`;
+      })() : '';
+
       // The <ul class="inline-review-list"> is left empty here — populated right after this page's
       // card lands in the DOM (see the /api/process success handler) with the reviewRows that trace
       // back to this exact page, so the editable Start/End/Break inputs sit right beside the image.
@@ -3799,6 +3901,7 @@
         <div class="page-review-source"><span>${escapeHtml(page.source)}</span></div>
         ${hoursOnlyHtml ? `<ul class="inline-review-list">${hoursOnlyHtml}</ul>` : ''}
         ${modelsUsedHtml}
+        ${rosterHtml}
         <ul class="inline-review-list review-target-list"></ul>
         <div class="page-add-day">
           <div class="review-hint">Add a date this page's scan didn't pick up.</div>
@@ -3967,6 +4070,127 @@
     // extract several named allowances (food, transport, etc.), but this view only needs the combined
     // figure, editable like any other field, empty (not 0) when nothing was scanned.
     // ===== IPA review card =====
+    // Extracted into its own function (rather than left inline in renderFinalResult, where it used
+    // to live) so the initial render and applyRescannedIpa below build the exact same markup and can
+    // never visually drift apart — same reasoning applyRescannedTimesheetPage already relies on
+    // renderPageReview for.
+    /** Builds the IPA letter's page-review card HTML (thumbnail + rescan controls + editable fields). */
+    function renderIpaCard(ipaImage, ipa, ipaWarning) {
+      return `
+      <div class="page-review-row">
+        ${ipaImage ? `<div class="page-review-image"><img src="data:image/png;base64,${ipaImage}" alt="IPA letter"></div>` : ''}
+        <div class="page-review-details">
+          <div class="page-review-source"><span>IPA letter</span></div>
+          <div class="page-rescan-controls">
+            <button type="button" class="page-rotate-btn" title="Rotate this page before rescanning">⟳ Rotate</button>
+            <button type="button" class="page-rescan-btn">Rescan IPA</button>
+          </div>
+          <div class="page-rescan-status"></div>
+          ${ipa ? renderIpaFieldsEditable(ipa) : ''}
+          ${ipaWarning ? `<div class="row-notes">${escapeHtml(ipaWarning)}</div>` : ''}
+          ${ipa?.notes ? `<div class="row-notes">${escapeHtml(ipa.notes)}</div>` : ''}
+        </div>
+      </div>`;
+    }
+
+    // A transient extraction failure (e.g. the truncated-JSON case this button exists for) shouldn't
+    // require re-uploading and rescanning the entire batch just to retry ONE document — reuses the
+    // same /api/process endpoint the "Rescan this page" timesheet flow already relies on: it always
+    // requires at least one pdfs page, so this attaches the first already-uploaded timesheet file but
+    // excludes every one of its pages, meaning only the IPA actually gets (re-)scanned.
+    /** Wires the IPA card's Rotate/Rescan controls. */
+    function wireIpaRescanControls(controls) {
+      const statusEl = controls.nextElementSibling;
+      const rotateBtn = controls.querySelector('.page-rotate-btn');
+      const rescanBtn = controls.querySelector('.page-rescan-btn');
+      const img = controls.closest('.page-review-row')?.querySelector('.page-review-image img');
+      // Same live-preview-only delta as wireTimesheetRescanControls — the displayed image is already
+      // server-rotated as of the last (re)scan; this just tracks what's pending since then.
+      let previewDelta = 0;
+
+      rotateBtn.addEventListener('click', () => {
+        ipaRotationDeg = (ipaRotationDeg + 90) % 360;
+        previewDelta = (previewDelta + 90) % 360;
+        if (img) img.style.transform = `rotate(${previewDelta}deg)`;
+        statusEl.className = 'page-rescan-status';
+        statusEl.textContent = `Pending rotation: +${previewDelta}° — click "Rescan IPA" to apply and re-read it.`;
+      });
+
+      rescanBtn.addEventListener('click', async () => {
+        const ipaFile = ipaInput.files[0];
+        if (!ipaFile) {
+          statusEl.className = 'page-rescan-status error';
+          statusEl.textContent = 'IPA letter no longer attached (selection changed since the scan ran) — re-attach it before rescanning.';
+          return;
+        }
+        const file = pdfsInput.files[0];
+        if (!file) {
+          statusEl.className = 'page-rescan-status error';
+          statusEl.textContent = 'No timesheet file attached — /api/process requires at least one, even though only the IPA is being rescanned here.';
+          return;
+        }
+        rescanBtn.disabled = true;
+        statusEl.className = 'page-rescan-status';
+        statusEl.textContent = 'Rescanning IPA…';
+
+        const pageCount = pdfsPreviewPages.filter(p => p.fileIndex === 0).length;
+        const excluded = [];
+        for (let pi = 0; pi < pageCount; pi++) excluded.push(`0-${pi}`);
+
+        const formData = new FormData();
+        formData.append('pdfs', file);
+        formData.append('ipa', ipaFile);
+        formData.append('rotations', JSON.stringify({ pdfs: {}, ipa: ipaRotationDeg }));
+        formData.append('excludedPages', JSON.stringify(excluded));
+        formData.append('standardBreakHours', getStandardBreakHours());
+        // Every timesheet page is excluded, so there's no page left to infer a claim year from —
+        // /api/process still requires SOME year to avoid erroring out before it ever reaches IPA
+        // extraction, even though the IPA itself doesn't need one. The original scan's own detected
+        // year is the best available value here.
+        if (currentYear && currentYear.length > 0) formData.append('fallbackYear', currentYear[0]);
+
+        try {
+          const res = await fetch('/api/process', { method: 'POST', body: formData });
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.error || `Server returned ${res.status}`);
+          const polled = await pollSinglePageJob('/api/process', data.jobId);
+          const result = polled.result;
+          if (!result) throw new Error('Rescan finished but returned no result.');
+          applyRescannedIpa(result);
+        } catch (err) {
+          statusEl.className = 'page-rescan-status error';
+          statusEl.textContent = 'Error: ' + err.message;
+        } finally {
+          rescanBtn.disabled = false;
+        }
+      });
+    }
+
+    // Splices a rescanned IPA result into its existing card, in place — every timesheet/bank
+    // statement/medical bills page already reviewed is left untouched, same "only update what was
+    // actually rescanned" approach applyRescannedTimesheetPage uses for a single timesheet page.
+    /** Splices a rescanned IPA result into the IPA card and the read-only Summary reflection. */
+    function applyRescannedIpa(result) {
+      ipaPageReviewEl.innerHTML = renderIpaCard(result.ipaImage, result.ipa, result.ipaWarning);
+      const controls = ipaPageReviewEl.querySelector('.page-rescan-controls');
+      if (controls) wireIpaRescanControls(controls);
+      if (result.ipa) {
+        ipaPageReviewEl.querySelectorAll('.ipa-input').forEach(input => {
+          input.addEventListener('input', () => { renderIpaSummaryText(); recomputeAllGuardrails(); });
+        });
+        ipaReviewEl.style.display = 'block';
+        renderIpaSummaryText();
+        renderComputedRates();
+      }
+      const statusEl = ipaPageReviewEl.querySelector('.page-rescan-status');
+      if (statusEl) {
+        statusEl.className = 'page-rescan-status success';
+        statusEl.textContent = 'Rescanned — fields updated above.';
+      }
+      updateSummarySectionVisibility();
+      recomputeAllGuardrails();
+    }
+
     /** Builds one editable numeric IPA field's HTML. */
     function ipaField(field, label, value) {
       const v = value === null || value === undefined ? '' : escapeHtml(String(value));

@@ -1,8 +1,16 @@
 import { describe, expect, it } from "vitest";
-import { reconcileAttempts, type ParsedEntry } from "../lib/reconcile";
+import { reconcileAttempts, reconcileRosterAttempts, type ParsedEntry, type RosterPageAttempt, type RosterRow } from "../lib/reconcile";
 
 function times(day: number, month: number, t: number[], overrides: Partial<ParsedEntry> = {}): ParsedEntry {
     return { day, month, times: t, hoursWorked: null, otHours: null, noBreak: null, guessed: null, rest_day: null, notes: null, ...overrides };
+}
+
+function rosterRow(overrides: Partial<RosterRow> = {}): RosterRow {
+    return { workerName: null, workerIc: null, actualTimeIn: null, actualTimeOut: null, mealBreakHours: null, struckThrough: false, notes: null, ...overrides };
+}
+
+function rosterAttempt(workers: RosterRow[], day: number | null = 14, month: number | null = 10): RosterPageAttempt {
+    return { day, month, workers };
 }
 
 function rest(day: number, month: number, notes: string | null = null): ParsedEntry {
@@ -130,5 +138,89 @@ describe("reconcileAttempts", () => {
         const attempts = [[times(1, 6, [800, 1700])], [times(1, 6, [800, 1800])], [times(1, 6, [900, 1700])]];
         const { warnings } = reconcileAttempts(attempts, "test", true, 2025);
         expect(warnings[0].date).toBe("2025-06-01");
+    });
+});
+
+describe("reconcileRosterAttempts", () => {
+    it("accepts a unanimous match across all attempts", () => {
+        const attempt = () =>
+            rosterAttempt([
+                rosterRow({ workerName: "Shun Lae Thiri", workerIc: "442P" }),
+                rosterRow({ workerName: "Ang See Choon", workerIc: "925A", actualTimeIn: 900, actualTimeOut: 1830, mealBreakHours: 0.5 }),
+            ]);
+        const { date, entry, allRows, warnings } = reconcileRosterAttempts([attempt(), attempt(), attempt()], "roster.pdf p1", "Ang See Choon", "925A", 2025);
+        expect(date).toEqual({ day: 14, month: 10 });
+        expect(entry).toMatchObject({ day: 14, month: 10, actualTimeIn: 900, actualTimeOut: 1830, mealBreakHours: 0.5, guessed: false, matchConfidence: "high" });
+        expect(allRows[entry!.matchedRowIndex].workerName).toBe("Ang See Choon");
+        expect(warnings).toHaveLength(0);
+    });
+
+    it("falls back to a flagged majority reading when 2 of 3 attempts agree on the matched row's times", () => {
+        const target = (timeOut: number) => rosterRow({ workerName: "Ang See Choon", workerIc: "925A", actualTimeIn: 900, actualTimeOut: timeOut });
+        const attempts = [
+            rosterAttempt([target(1830)]),
+            rosterAttempt([target(1830)]),
+            rosterAttempt([target(1900)]),
+        ];
+        const { entry } = reconcileRosterAttempts(attempts, "roster.pdf p1", "Ang See Choon", "925A", 2025);
+        expect(entry).toMatchObject({ actualTimeOut: 1830, guessed: true });
+        expect(entry!.notes).toMatch(/majority reading/);
+    });
+
+    it("drops the time reading (but still reports the match) when confident attempts disagree with no majority", () => {
+        const attempts = [
+            rosterAttempt([rosterRow({ workerName: "Ang See Choon", workerIc: "925A", actualTimeIn: 900, actualTimeOut: 1830 })]),
+            rosterAttempt([rosterRow({ workerName: "Ang See Choon", workerIc: "925A", actualTimeIn: 900, actualTimeOut: 1900 })]),
+        ];
+        const { entry, warnings } = reconcileRosterAttempts(attempts, "roster.pdf p1", "Ang See Choon", "925A", 2025);
+        expect(entry).toMatchObject({ actualTimeIn: null, actualTimeOut: null, guessed: true, matchConfidence: "high" });
+        expect(warnings.some(w => w.category === "dropped_disagreement")).toBe(true);
+    });
+
+    it("reports no entry (needs manual pick) when no attempt confidently matches the target worker", () => {
+        const attempts = [
+            rosterAttempt([rosterRow({ workerName: "Nyein Chan Aung", workerIc: "311M", actualTimeIn: 700, actualTimeOut: 1900 })]),
+        ];
+        const { entry, allRows, warnings } = reconcileRosterAttempts(attempts, "roster.pdf p1", "Ang See Choon", "925A", 2025);
+        expect(entry).toBeNull();
+        expect(allRows).toHaveLength(1);
+        expect(warnings.some(w => w.category === "flagged_review" && /pick the correct row manually/.test(w.reason))).toBe(true);
+    });
+
+    it("reports no date and no entry when no attempt can determine the page's date", () => {
+        const attempts = [rosterAttempt([rosterRow({ workerName: "Ang See Choon", workerIc: "925A" })], null, null)];
+        const { date, entry, warnings } = reconcileRosterAttempts(attempts, "roster.pdf p1", "Ang See Choon", "925A", 2025);
+        expect(date).toBeNull();
+        expect(entry).toBeNull();
+        expect(warnings[0].category).toBe("system");
+    });
+
+    it("excludes struck-through rows from matching and from allRows", () => {
+        const attempts = [
+            rosterAttempt([rosterRow({ workerName: "Ang See Choon", workerIc: "925A", actualTimeIn: 900, actualTimeOut: 1830, struckThrough: true })]),
+        ];
+        const { entry, allRows } = reconcileRosterAttempts(attempts, "roster.pdf p1", "Ang See Choon", "925A", 2025);
+        expect(entry).toBeNull();
+        expect(allRows).toHaveLength(0);
+    });
+
+    it("flags a single confidently-matching attempt as still needing verification", () => {
+        const attempts = [
+            rosterAttempt([rosterRow({ workerName: "Ang See Choon", workerIc: "925A", actualTimeIn: 900, actualTimeOut: 1830 })]),
+            rosterAttempt([rosterRow({ workerName: "Someone Else", workerIc: "111Z" })]),
+            rosterAttempt([rosterRow({ workerName: "Someone Else Too", workerIc: "222Y" })]),
+        ];
+        const { entry } = reconcileRosterAttempts(attempts, "roster.pdf p1", "Ang See Choon", "925A", 2025);
+        expect(entry).toMatchObject({ actualTimeIn: 900, actualTimeOut: 1830, guessed: true });
+        expect(entry!.notes).toMatch(/only one scan attempt/);
+    });
+
+    it("dedupes allRows by worker name across attempts", () => {
+        const attempts = [
+            rosterAttempt([rosterRow({ workerName: "Ang See Choon", workerIc: "925A" }), rosterRow({ workerName: "Thet Naung Oo", workerIc: "845P" })]),
+            rosterAttempt([rosterRow({ workerName: "Ang See Choon", workerIc: "925A" }), rosterRow({ workerName: "Thet Naung Oo", workerIc: "845P" })]),
+        ];
+        const { allRows } = reconcileRosterAttempts(attempts, "roster.pdf p1", "Ang See Choon", "925A", 2025);
+        expect(allRows).toHaveLength(2);
     });
 });

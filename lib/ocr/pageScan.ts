@@ -26,7 +26,7 @@ export async function scanPageImage(
     return sendVisionRequest(base64Image, prompt, temperature, seed, 16000, model);
 }
 
-export type PageDataModel = "clock_times" | "hours_total" | "punch_log" | "unclear";
+export type PageDataModel = "clock_times" | "hours_total" | "punch_log" | "worker_roster" | "unclear";
 
 // Reads the FULL, uncropped page once to find any page-level context (most importantly, a
 // header/title naming the month all rows on the page belong to) before it gets cropped into
@@ -72,10 +72,10 @@ export async function extractPageContext(
 Answer four things:
 1. context: Somewhere on the page — top, bottom, a corner, a margin, anywhere — there may be a title, header, label, or filename-like text indicating which calendar month (and possibly year) the date rows on this page belong to. There may also be other useful page-level context, like a worker's name. Reply with ONE short plain-text sentence stating what you found, e.g. "Header indicates December" or "No month header found, but page appears to be for a worker named Ahmad" or "No page-level context found."
 2. isTimesheet: true if this page genuinely contains a work time/attendance record for one or more calendar dates, in any format. false if this page is something else entirely — e.g. a blank ID-card cover with no date rows, a driving-school log, a signature-only page, or an unrelated document.
-3. dataModel: what's actually recorded per date on THIS page — "clock_times" if actual clock in/out times are shown in a day-per-row table/list (e.g. "8:00", "8am-5pm"), "hours_total" if only a total number of hours worked (and/or separate overtime hours) is shown per day with NO clock in/out times anywhere, "punch_log" if this is a phone app's chronological event-log screen instead of a table — individual timestamped clock in/out entries (often with seconds, e.g. "12-06-2026 06:29:54"), most-recent-first, one entry per punch rather than one row per day — or "unclear" if you can't tell, it's mixed, or no rows are populated yet.
+3. dataModel: what's actually recorded per date on THIS page — "clock_times" if actual clock in/out times are shown in a day-per-row table/list (e.g. "8:00", "8am-5pm"), "hours_total" if only a total number of hours worked (and/or separate overtime hours) is shown per day with NO clock in/out times anywhere, "punch_log" if this is a phone app's chronological event-log screen instead of a table — individual timestamped clock in/out entries (often with seconds, e.g. "12-06-2026 06:29:54"), most-recent-first, one entry per punch rather than one row per day — "worker_roster" if this page is an attendance register/muster sheet covering ONE shared date, with MULTIPLE DIFFERENT NAMED WORKERS listed as separate rows (each their own scheduled shift, actual time in/out, signature) — the inverse layout of the other three, which are all one worker's own record across many dates — or "unclear" if you can't tell, it's mixed, or no rows are populated yet.
 4. year: the 4-digit calendar year this page's date rows belong to, ONLY if it's stated as part of the DOCUMENT'S OWN content — a title naming the claim/pay period (e.g. "Timesheet - Jan 2026"), a filename like "2026_01_timesheet.pdf", or a printed form field for the period being recorded. Do NOT use a scanner, fax, photocopier, or "received/printed on" transmission timestamp/date-stamp banner (these usually sit right at the very top or bottom edge of the page, often with a time down to the second, e.g. "12/08/2026 17:41:57") — that is when the PAGE WAS SCANNED, not the period the timesheet covers, and using it is a common, serious mistake. Do NOT infer it from handwritten day/month digits in the row data itself either, and do NOT guess — if no genuine document-content year label exists anywhere on the page, reply null.
 
-Output ONLY a JSON object: {"context": string, "isTimesheet": boolean, "dataModel": "clock_times" | "hours_total" | "punch_log" | "unclear", "year": number | null}. No markdown fences, no other text.`;
+Output ONLY a JSON object: {"context": string, "isTimesheet": boolean, "dataModel": "clock_times" | "hours_total" | "punch_log" | "worker_roster" | "unclear", "year": number | null}. No markdown fences, no other text.`;
     // 300 was enough for qwen/gemini (a real answer here is normally one short sentence + a few
     // fields) but xiaomi/mimo-v2.5 was observed spending its token budget on internal reasoning
     // before emitting any visible answer for this specific longer, multi-part prompt — even with
@@ -86,7 +86,10 @@ Output ONLY a JSON object: {"context": string, "isTimesheet": boolean, "dataMode
     try {
         const parsed = JSON.parse(extractJsonBlock(content));
         const dataModel: PageDataModel =
-            parsed.dataModel === "clock_times" || parsed.dataModel === "hours_total" || parsed.dataModel === "punch_log"
+            parsed.dataModel === "clock_times" ||
+            parsed.dataModel === "hours_total" ||
+            parsed.dataModel === "punch_log" ||
+            parsed.dataModel === "worker_roster"
                 ? parsed.dataModel
                 : "unclear";
         const year = Number.isInteger(parsed.year) && parsed.year >= 2000 && parsed.year <= 2100 ? parsed.year : null;
