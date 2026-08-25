@@ -7,10 +7,9 @@
   "type": "commonjs",
   "main": "index.js",
   "scripts": {
-    "dev": "tsx --env-file=.env test.ts",
     "server": "node --max-old-space-size=4096 --require tsx/cjs --env-file=.env server.ts",
     "start": "node --max-old-space-size=1536 --require tsx/cjs server.ts",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "vitest run"
   },
   "dependencies": {
     "@google-cloud/firestore": "^8.7.0",
@@ -36,6 +35,7 @@
     "@types/node": "^26.1.0",
     "@types/pdfkit": "^0.17.6",
     "tsx": "^4.23.0",
-    "typescript": "^6.0.3"
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.11"
   }
 }
