@@ -23,6 +23,19 @@ export type FlaggedPageEntry = {
 // ground-truth corpus of OCR failures (raw model output vs. what the user actually corrected it
 // to) — not for the live scan/generate path, so a failure here shouldn't block the user's actual
 // work. Callers should catch and log rather than surface this as a request failure.
+/**
+ * Uploads one flagged timesheet page's image to Cloud Storage and records its raw vs.
+ * corrected entries in Firestore.
+ *
+ * @param params.source - Page identifier, e.g. `"file.pdf p2"`.
+ * @param params.image - Base64 PNG, the same downscaled copy already shown in the review UI.
+ * @param params.rawEntries - The model's original (uncorrected) reading of the page.
+ * @param params.correctedEntries - What the user actually edited it to.
+ * @param params.note - Optional free-text note the user attached when flagging.
+ * @param params.dataModel - The page's classified data model (e.g. `"clock_times"`, `"hours_total"`).
+ * @param params.pageContext - The page-level context string (e.g. a detected month header).
+ * @returns The new Firestore document's id.
+ */
 export async function uploadFlaggedPage(params: {
     source: string;
     image: string; // base64 PNG, same downscaled copy already shown in the review UI

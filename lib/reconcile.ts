@@ -34,6 +34,14 @@ export type ParsedEntry = {
 // clock time at all. Treating it as a normal vote lets it "disagree" with a genuinely correct
 // reading from another attempt and drop an otherwise-recoverable day. 2400 is allowed as the
 // documented sentinel for a shift ending exactly at midnight.
+/**
+ * Checks whether a bare HHMM integer can represent a real clock time (minutes 00-59, hours 0-23,
+ * or the documented `2400` midnight sentinel) — used to exclude unreadable values from voting
+ * rather than letting them "disagree" with a genuinely correct reading.
+ *
+ * @param t - The clock time as a bare HHMM integer, e.g. `800` for 8:00am.
+ * @returns Whether `t` could represent a real clock time.
+ */
 function isPlausibleTime(t: number): boolean {
     if (t < 0) return false;
     if (t === 2400) return true;
@@ -51,6 +59,15 @@ function isPlausibleTime(t: number): boolean {
 // that is a misread digit, not a genuine disagreement for reconciliation to weigh. otHours is
 // legitimately 0 on a no-overtime day, so zero is only rejected for hoursWorked itself (a day with
 // a genuine 0 hoursWorked reading should have come through as a rest day instead, not this field).
+/**
+ * Checks whether an hours-worked/OT-hours value is plausible for a single calendar day (under 24,
+ * and — unless `allowZero` — above 0).
+ *
+ * @param h - The hours value to check.
+ * @param allowZero - `true` for otHours (legitimately 0 on a no-overtime day); `false` for
+ * hoursWorked (a genuine 0 should have come through as a rest day instead).
+ * @returns Whether `h` is a plausible single-day hours value.
+ */
 function isPlausibleHours(h: number, allowZero: boolean): boolean {
     return allowZero ? h >= 0 && h < 24 : h > 0 && h < 24;
 }
@@ -77,6 +94,26 @@ function isPlausibleHours(h: number, allowZero: boolean): boolean {
 //   merging multiple bands' already-reconciled results — bands see genuinely different (only
 //   partially overlapping) crops by design, so one band having no opinion on a day the other
 //   band's row sits entirely outside its crop for isn't disagreement, it's expected non-coverage.
+/**
+ * Reconciles multiple independent scan attempts of the same page (or band) into one agreed-upon
+ * entry per day — strict unanimity by default, with a majority fallback for clock times, and an
+ * explicit "dropped, not guessed" warning for anything that couldn't be resolved either way.
+ *
+ * @param attempts - One `ParsedEntry[]` per independent scan attempt of the same source material.
+ * @param source - Page/band identifier, used to tag any warnings produced.
+ * @param requireFullParticipation - `true` (default) requires every attempt to mention a day and
+ * all of them to agree — for reconciling attempts that all saw the exact same image. `false`
+ * allows agreement from a subset of attempts — for merging already-reconciled results across bands
+ * that only partially overlap.
+ * @param year - Used only to build the `date` field on warnings (for downstream deduping); never
+ * needed for the reconciliation logic itself.
+ * @param orderMatters - `true` (default) treats `[2200, 600]` and `[600, 2200]` as different (real)
+ * readings, since a table row's left-to-right order is meaningful (an overnight shift must not be
+ * reordered). Pass `false` only for punch-log pages, where each punch is independently timestamped
+ * and reading order carries no real signal.
+ * @returns The reconciled entries (one per agreed-upon day) and any warnings for days that
+ * couldn't be resolved.
+ */
 export function reconcileAttempts(
     attempts: ParsedEntry[][],
     source: string,

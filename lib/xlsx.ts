@@ -33,6 +33,13 @@ export type FillWarning = {
     date?: string; // YYYY-MM-DD, when this warning concerns one specific date
 };
 
+/**
+ * Formats a `Date` as `YYYY-MM-DD` in local time (never `.toISOString()`, which would shift the
+ * calendar date in timezones ahead of UTC).
+ *
+ * @param d - The date to format.
+ * @returns The formatted string.
+ */
 function toLocalDateString(d: Date): string {
     return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
@@ -71,16 +78,34 @@ export const MONTH_ABBR = [
 // Remarks column) would otherwise fall back to a generic default instead of matching the sheet.
 const DATA_FONT: Partial<ExcelJS.Font> = { name: "Calibri", size: 12 };
 
+/**
+ * Builds the template sheet name for a given date, e.g. `"2-Sep 2025"`.
+ *
+ * @param date - The date to build a sheet name for.
+ * @returns The sheet name.
+ */
 function sheetNameFor(date: Date): string {
     return `2-${MONTH_ABBR[date.getMonth()]} ${date.getFullYear()}`;
 }
 
+/**
+ * Converts an Excel column letter (e.g. `"AB"`) to its 1-based column number.
+ *
+ * @param letters - The column letters.
+ * @returns The 1-based column number.
+ */
 function colLettersToNum(letters: string): number {
     let n = 0;
     for (const ch of letters) n = n * 26 + (ch.charCodeAt(0) - 64);
     return n;
 }
 
+/**
+ * Converts a 1-based column number to its Excel column letters (e.g. `28` -> `"AB"`).
+ *
+ * @param num - The 1-based column number.
+ * @returns The column letters.
+ */
 function colNumToLetters(num: number): string {
     let letters = "";
     while (num > 0) {
@@ -100,6 +125,14 @@ function colNumToLetters(num: number): string {
 // read-only, so there's no supported way to override it through the object model — this patches
 // the actual XML after writeBuffer(), recomputing each worksheet's true min/max row and column
 // straight from its own <c r="..."> cell references and correcting the declared range.
+/**
+ * Patches a written .xlsx buffer's worksheet `<dimension>` XML to the true min/max row/column,
+ * working around an exceljs bug that undershoots the declared range (which Excel's file-format
+ * validator rejects outright).
+ *
+ * @param buffer - The .xlsx file as written by exceljs.
+ * @returns The corrected .xlsx buffer.
+ */
 async function fixWorksheetDimensions(buffer: Buffer): Promise<Buffer> {
     const zip = await JSZip.loadAsync(buffer);
     const sheetFiles = Object.keys(zip.files).filter(name => /^xl\/worksheets\/sheet\d+\.xml$/.test(name));
@@ -134,12 +167,24 @@ async function fixWorksheetDimensions(buffer: Buffer): Promise<Buffer> {
     return fixedBuffer;
 }
 
-// HHMM (e.g. 800, 2200, 2400) -> minutes since midnight
+/**
+ * Converts a bare HHMM clock time to minutes since midnight.
+ *
+ * @param hhmm - The clock time, e.g. `800` for 8:00am, `2200` for 10:00pm.
+ * @returns Minutes since midnight.
+ */
 function toMinutes(hhmm: number): number {
     return Math.trunc(hhmm / 100) * 60 + (hhmm % 100);
 }
 
-// Duration of a single shift in hours, handling an overnight wrap within the same entry
+/**
+ * Computes a single shift's duration in hours, handling an overnight wrap (clock-out earlier than
+ * clock-in means the shift crossed midnight).
+ *
+ * @param clockIn - Shift start, bare HHMM.
+ * @param clockOut - Shift end, bare HHMM.
+ * @returns The shift's duration in hours.
+ */
 function shiftHours(clockIn: number, clockOut: number): number {
     let minutes = toMinutes(clockOut) - toMinutes(clockIn);
     if (minutes < 0) minutes += 24 * 60;
@@ -153,6 +198,13 @@ type Shift = { clockIn: number; clockOut: number; source: string; guessed: boole
 // meal break (summed if there are 3+ shifts, i.e. 2+ gaps). This lets the day still go through
 // N/O like a normal single-shift day, just with the template's default meal-break (column G)
 // overridden by the actual observed gap instead of assumed.
+/**
+ * Collapses a day's multiple shifts into one overall span (first clock-in to last clock-out) plus
+ * the total break time (the gap(s) between consecutive shifts).
+ *
+ * @param sortedShifts - The day's shifts, sorted chronologically by clock-in.
+ * @returns The overall `start`/`end` clock times, the full `spanHours`, and the total `breakHours`.
+ */
 function computeSpanAndBreak(sortedShifts: Shift[]): { start: number; end: number; spanHours: number; breakHours: number } {
     const start = sortedShifts[0].clockIn;
     const end = sortedShifts[sortedShifts.length - 1].clockOut;
@@ -191,6 +243,17 @@ const FALLBACK_BREAK_HOURS = 1;
 // multi-shift day is different: the gap between shifts IS something actually observed on the
 // page, so that stays as the real measured value — genuinely comparable against the declared
 // standard, and worth a mismatch warning if it disagrees.
+/**
+ * Groups raw scanned `TimeEntry` rows into one `ReviewRow` per calendar date, collapsing 2+ shifts
+ * into a single span with the observed gap as the break, ready for human review before anything is
+ * written to the spreadsheet.
+ *
+ * @param entries - The raw scanned clock-in/clock-out entries.
+ * @param restDays - The raw scanned rest days.
+ * @param standardBreakHours - The caseworker's declared standard break, used as the assumed break
+ * for a single (non-multi-shift) day where nothing about the break was actually observed.
+ * @returns One `ReviewRow` per calendar date, sorted by date.
+ */
 export function buildReviewRows(entries: TimeEntry[], restDays: RestDay[], standardBreakHours: number = FALLBACK_BREAK_HOURS): ReviewRow[] {
     type Cell = { date: Date; shifts: Shift[]; source: string };
     const byDate = new Map<string, Cell>();
@@ -274,6 +337,15 @@ export function buildReviewRows(entries: TimeEntry[], restDays: RestDay[], stand
 //   here.
 // - A row still marked `guessed` (the human reviewer didn't clear it) gets a "Remarks" note and a
 //   highlighted fill so it's obvious at a glance which cells were flagged as needing a look.
+/**
+ * Loads the calculation template and writes each human-reviewed row's Start/End/Break directly
+ * into its date's cells.
+ *
+ * @param templatePath - Path to the `.xltx` template file.
+ * @param rows - The human-reviewed rows to write (rest days are skipped — a blank row already reads as unworked).
+ * @returns The filled workbook as a `Buffer`, any warnings for rows that couldn't be written, and
+ * the dates that were actually written.
+ */
 export async function fillTimesheetFromRows(
     templatePath: string,
     rows: ReviewRow[]

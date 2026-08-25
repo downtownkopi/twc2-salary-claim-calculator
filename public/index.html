@@ -600,6 +600,70 @@
       object-fit: contain;
       border-radius: 6px;
       display: block;
+      cursor: zoom-in;
+    }
+
+    /* Per-page "forgot to rotate this one" fix — rotate the source image and re-scan just this
+     page, without redoing the whole batch. Sits under the image, same sticky column. */
+    .page-rescan-controls {
+      display: flex;
+      gap: 8px;
+      margin-top: 8px;
+    }
+
+    .page-rotate-btn,
+    .page-rescan-btn {
+      background: var(--panel);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 6px 10px;
+      font-size: 12px;
+      cursor: pointer;
+    }
+
+    .page-rescan-btn:disabled {
+      opacity: 0.6;
+      cursor: default;
+    }
+
+    .page-rescan-status {
+      font-size: 12px;
+      margin-top: 4px;
+    }
+
+    .page-rescan-status.error {
+      color: #d33;
+    }
+
+    .page-rescan-status.success {
+      color: #2a8f4f;
+    }
+
+    /* Click-to-enlarge overlay for any .page-review-image (timesheet page, IPA letter, bank
+     statement) — same source image, just shown at full size against a dimmed backdrop instead of
+     constrained to the sticky column's width. Click anywhere (or Escape) to close. */
+    .image-lightbox {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.85);
+      z-index: 1000;
+      cursor: zoom-out;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+    }
+
+    .image-lightbox.open {
+      display: flex;
+    }
+
+    .image-lightbox img {
+      max-width: 100%;
+      max-height: 100%;
+      object-fit: contain;
+      border-radius: 4px;
     }
 
     /* Sticky to the SAME top offset as .page-review-image — whichever of the two columns is
@@ -689,6 +753,11 @@
       font-size: 11px;
     }
 
+    .field-label-body {
+      color: var(--muted);
+      font-size: 13px;
+    }
+
     .inline-review-row input {
       background: var(--bg);
       border: 1px solid var(--border);
@@ -775,6 +844,12 @@
       width: 48px;
     }
 
+    #noticeClaimFields .shift-default-row+.shift-default-row,
+    #leaveClaimFields .shift-default-row+.shift-default-row,
+    #sickClaimFields .shift-default-row+.shift-default-row {
+      margin-top: 12px;
+    }
+
     .spinner {
       display: inline-block;
       width: 12px;
@@ -818,7 +893,7 @@
     /* Two nested caps reproducing body's own centering (max-width:1100, which .page-reviews's
      matching 24px padding already stands in for) and then .container's (max-width:720) inside
      it — so the Generate button lands at the exact same distance from the browser's left edge as
-     "Process & Generate Claim" above, instead of centering within the full-bleed .page-reviews. */
+     "Extract details" above, instead of centering within the full-bleed .page-reviews. */
     .extra-days-body-width {
       max-width: 1100px;
       margin: 0 auto;
@@ -944,7 +1019,8 @@
             <li>Work week (5.5/6-day) and half-day, for 5.5-day weeks</li>
             <li>Standard break</li>
             <li>Default shift timing — used to fill in days with no timesheet entry</li>
-            <li>Claim period start/end dates (optional) — keeps auto-filled days inside the actual employment period</li>
+            <li>Claim period start/end dates (optional) — keeps auto-filled days inside the actual employment period
+            </li>
             <li>Bank statement line item(s) to look for (optional)</li>
           </ul>
         </div>
@@ -952,7 +1028,8 @@
           <div class="rules-summary-cat">Computed automatically (needs IPA basic salary)</div>
           <ul>
             <li>Hourly / daily basic rate, daily gross rate</li>
-            <li>Basic Salary / Overtime / Rest / Public Holiday Breakdown — each pay category shown separately, per month</li>
+            <li>Basic Salary / Overtime / Rest / Public Holiday Breakdown — each pay category shown separately, per
+              month</li>
             <li>Owed vs Paid delta (also needs a bank statement scan)</li>
           </ul>
         </div>
@@ -998,9 +1075,9 @@
             <td>A work day had no entry — app filled it in for you</td>
           </tr>
           <tr>
-            <td>Bank statement match</td>
-            <td>Transaction wording matches your keyword(s) exactly</td>
-            <td>Wording doesn't exactly match — flagged as an AI-judged guess</td>
+            <td>Bank statement transaction</td>
+            <td>All 3 independent scan passes caught this transaction</td>
+            <td>Fewer than 3 passes caught it — flagged, worth double-checking against the source page</td>
           </tr>
         </tbody>
       </table>
@@ -1077,13 +1154,120 @@
       <div class="field">
         <h4>Claim period (optional)</h4>
         <div class="shift-default-row">
-          <div class="field-group"><span class="field-label">Start</span><input type="date" id="contractStartDate">
+          <div class="field-group"><span class="field-label-body">Start</span><input type="date" id="contractStartDate">
           </div>
-          <div class="field-group"><span class="field-label">End</span><input type="date" id="contractEndDate"></div>
+          <div class="field-group"><span class="field-label-body">End</span><input type="date" id="contractEndDate">
+          </div>
         </div>
         <div class="file-list">Stops the app from inventing work days before the worker started or after they left —
           e.g. if they started on a Wednesday, Monday/Tuesday that same week won't be auto-filled even if the rest of
           the month otherwise falls short.</div>
+      </div>
+
+      <div class="field">
+        <h4>Claim salary-in-lieu of termination notice (optional)</h4>
+        <div class="radio-group">
+          <label><input type="checkbox" id="noticeClaimToggle"> Yes</label>
+        </div>
+        <div id="noticeClaimFields" style="display:none">
+          <div class="shift-default-row">
+            <div class="field-group"><span class="field-label-body">Employment start date</span><input type="date"
+                id="noticeEmploymentStart"></div>
+            <div class="field-group"><span class="field-label-body">Termination / last working day</span><input
+                type="date" id="noticeTerminationDate"></div>
+          </div>
+          <div class="shift-default-row">
+            <div class="field-group"><span class="field-label-body">Notice actually given (days)</span><input
+                type="number" min="0" step="1" id="noticeDaysGiven" value="0" style="width:80px"></div>
+          </div>
+          <div class="shift-default-row">
+            <div class="field-group"><span class="field-label-body">Contract notice period override</span>
+              <input type="number" min="0" step="0.5" id="noticeContractValue" placeholder="e.g. 2" style="width:80px">
+              <select id="noticeContractUnit">
+                <option value="days">days</option>
+                <option value="weeks">weeks</option>
+                <option value="months">months</option>
+              </select>
+            </div>
+          </div>
+          <div class="file-list">Leave the override blank to use the statutory tier (Employment Act ss.10-11) based
+            on length of service. Fill it in only if the employment contract itself specifies a different notice
+            period.
+            <ul style="margin:6px 0 0 18px">
+              <li>Less than 26 weeks' service — 1 day's notice</li>
+              <li>26 weeks to less than 2 years' service — 1 week's notice</li>
+              <li>2 years to less than 5 years' service — 2 weeks' notice</li>
+              <li>5 years or more service — 4 weeks' notice</li>
+            </ul>
+          </div>
+          <div id="noticeClaimResult" style="margin-top:8px"></div>
+        </div>
+      </div>
+
+      <div class="field">
+        <h4>Claim salary-in-lieu of paid annual leave (optional)</h4>
+        <div class="radio-group">
+          <label><input type="checkbox" id="leaveClaimToggle"> Yes</label>
+        </div>
+        <div id="leaveClaimFields" style="display:none">
+          <div class="shift-default-row">
+            <div class="field-group"><span class="field-label-body">Employment start date</span><input type="date"
+                id="leaveEmploymentStart"></div>
+            <div class="field-group"><span class="field-label-body">Termination / last working day</span><input
+                type="date" id="leaveTerminationDate"></div>
+          </div>
+          <div class="shift-default-row">
+            <div class="field-group"><span class="field-label-body">Leave days already taken this leave-year</span>
+              <input type="number" min="0" step="0.5" id="leaveDaysTaken" value="0" style="width:80px">
+            </div>
+          </div>
+          <div class="file-list">Gross rate of pay = basic salary + monthly allowances (Employment Act s.88A).
+            <ul style="margin:6px 0 0 18px">
+              <li>Only payable if the worker served more than 3 months</li>
+              <li>7 days' leave per 12 continuous months served, +1 additional day per completed year, capped at 14
+                days</li>
+              <li>Applied to the worker's final, partial leave-year, prorated by months served in it</li>
+            </ul>
+          </div>
+          <div id="leaveClaimResult" style="margin-top:8px"></div>
+        </div>
+      </div>
+
+      <div class="field">
+        <h4>Claim sick leave pay (optional)</h4>
+        <div class="radio-group">
+          <label><input type="checkbox" id="sickClaimToggle"> Yes</label>
+        </div>
+        <div id="sickClaimFields" style="display:none">
+          <div class="shift-default-row">
+            <div class="field-group"><span class="field-label-body">Employment start date</span><input type="date"
+                id="sickEmploymentStart"></div>
+            <div class="field-group"><span class="field-label-body">As-of date (usually claim/termination date)</span>
+              <input type="date" id="sickAsOfDate">
+            </div>
+          </div>
+          <div class="shift-default-row">
+            <div class="field-group"><span class="field-label-body">Unpaid non-hospitalization sick days</span>
+              <input type="number" min="0" step="0.5" id="sickDaysNonHosp" value="0" style="width:80px"></div>
+          </div>
+          <div class="shift-default-row">
+            <div class="field-group"><span class="field-label-body">Unpaid hospitalization sick days</span>
+              <input type="number" min="0" step="0.5" id="sickDaysHosp" value="0" style="width:80px"></div>
+          </div>
+          <div class="file-list">Gross rate of pay = basic salary + monthly allowances (Employment Act s.89).
+            <ul style="margin:6px 0 0 18px">
+              <li>Not payable before 3 months' service</li>
+              <li>3 months' service — 5 non-hospitalization / 15 hospitalization days</li>
+              <li>4 months' service — 8 non-hospitalization / 30 hospitalization days</li>
+              <li>5 months' service — 11 non-hospitalization / 45 hospitalization days</li>
+              <li>6+ months' service — 14 non-hospitalization / 60 hospitalization days (the hospitalization cap
+                already includes the non-hospitalization days within it)</li>
+              <li>"Unpaid" days are a caseworker judgment call — cross-check the worker's medical certificates
+                against the Basic Salary Breakdown table for that month to see whether pay was actually docked</li>
+            </ul>
+          </div>
+          <div id="sickClaimResult" style="margin-top:8px"></div>
+        </div>
       </div>
 
       <hr />
@@ -1093,10 +1277,10 @@
         uploading. A sideways page (common in scanned/photographed PDFs) can cause the scan to silently misread dates
         and times.</div>
       <div class="field">
-        <h4 for="ipa">IPA letter (optional — PDF or photo)</h4>
-        <input type="file" id="ipa" name="ipa" accept="application/pdf,image/*">
-        <div class="file-list">If attached, employer/salary/OT-rate terms are read off it alongside the timesheets, in
-          the same submit.</div>
+        <h4 for="ipa">IPA letter (PDF or photo)</h4>
+        <input type="file" id="ipa" name="ipa" accept="application/pdf,image/*" required>
+        <div class="file-list">Employer/salary/OT-rate terms are read off it alongside the timesheets, in the same
+          submit.</div>
         <div class="stage-grid" id="ipaStage"></div>
       </div>
 
@@ -1112,22 +1296,30 @@
         <input type="file" id="bankStatementInput" accept=".pdf,image/*" multiple>
         <div class="file-list" id="bankFileList"></div>
         <div class="stage-grid" id="bankStatementStage"></div>
-        <input type="text" id="bankKeywords"
-          placeholder="Line item(s) to look for, e.g. SALARY, ABC Engineering Pte Ltd, PAYROLL"
-          style="margin-top: 10px;">
         <div class="file-list">A worker sometimes says they were paid "some" but not all of what's owed — this is a
           separate check against their own bank statement, not tied to the claim scan above and not written to the
-          spreadsheet. Comma-separate multiple line items; the wording on the statement often won't match exactly
-          (abbreviated company name, a GIRO/PayNow reference, a manager's name), so the model uses judgement rather than
-          an exact match. Payments can be daily, monthly, or one-off/irregular.</div>
+          spreadsheet. Every incoming (credit) transaction on the statement is extracted — nothing is filtered by
+          keyword — so delete whatever's irrelevant in the review below before comparing against the claim total.</div>
+      </div>
+
+      <div class="field">
+        <h4 for="medicalBillsInput">Medical bills (optional — PDF or photo)</h4>
+        <input type="file" id="medicalBillsInput" accept=".pdf,image/*" multiple>
+        <div class="file-list" id="medicalBillsFileList"></div>
+        <div class="stage-grid" id="medicalBillsStage"></div>
+        <div class="file-list">An employer of a Work Permit holder is generally required to bear the worker's
+          medical costs — this checks whether that actually happened. Every medical bill/invoice is scanned for its
+          billed date and amount. Review the extracted amounts below, mark whether each one was reimbursed by the
+          employer, and the app totals the unreimbursed amount for you.</div>
       </div>
 
       <hr />
 
-      <button type="submit" id="submitBtn">Process & Generate Claim</button>
+      <button type="submit" id="submitBtn">Extract details</button>
 
       <div class="status" id="status"></div>
       <div class="status" id="bankStatus"></div>
+      <div class="status" id="medicalBillsStatus"></div>
       <ul class="month-summary" id="otCapWarnings" style="display:none"></ul>
     </form>
   </div>
@@ -1142,6 +1334,7 @@
     <div id="ipaPageReview" style="display:none"></div>
     <div id="pageReviewList"></div>
     <div id="bankPageReviewList" style="display:none"></div>
+    <div id="medicalPageReviewList" style="display:none"></div>
 
     <div class="extra-days-body-width">
       <div class="extra-days-claim-width">
@@ -1149,10 +1342,12 @@
           <h2 class="form-section-header">Summary</h2>
           <div class="ipa-review" id="ipaReview" style="display:none"></div>
           <div class="ipa-review" id="monthlyPayTotals" style="display:none; margin-top: 20px;"></div>
+          <div class="ipa-review" id="allowancesBreakdown" style="display:none; margin-top: 20px;"></div>
           <div class="ipa-review" id="overtimeBreakdown" style="display:none; margin-top: 20px;"></div>
           <div class="ipa-review" id="restBreakdown" style="display:none; margin-top: 20px;"></div>
           <div class="ipa-review" id="publicHolidayBreakdown" style="display:none; margin-top: 20px;"></div>
           <div class="ipa-review" id="bankResults" style="display:none; margin-top: 20px;"></div>
+          <div class="ipa-review" id="medicalBillsResults" style="display:none; margin-top: 20px;"></div>
         </div>
       </div>
     </div>
@@ -1167,17 +1362,30 @@
       <div class="extra-days-body-width">
         <div class="extra-days-claim-width">
           <div class="review-actions">
-            <button type="button" class="generate-btn" id="generateBtn">Generate Excel</button>
+            <button type="button" class="generate-btn" id="generateBtn">Generate Excel (.xlsx)</button>
+            <button type="button" class="generate-btn" id="exportDocxBtn" style="display:none">Generate Word Doc
+              (.docx)</button>
+            <button type="button" class="generate-btn" id="exportPdfBtn" style="display:none">Generate PDF
+              (.pdf)</button>
           </div>
           <div class="status" id="generateStatus"></div>
+          <div class="status" id="exportDocxStatus"></div>
+          <div class="status" id="exportPdfStatus"></div>
         </div>
       </div>
     </div>
   </div>
 
+  <div class="image-lightbox" id="imageLightbox"><img id="imageLightboxImg" alt=""></div>
+
   <script>
+    // ===== Theme toggle =====
     // Light by default — dark mode is opt-in and remembered per-browser via localStorage.
     const themeToggleBtn = document.getElementById('themeToggleBtn');
+    /**
+     * Applies the light/dark theme to the document and updates the toggle button's label.
+     * @param {'light'|'dark'} theme - Which theme to apply.
+     */
     function applyTheme(theme) {
       if (theme === 'dark') {
         document.documentElement.setAttribute('data-theme', 'dark');
@@ -1194,6 +1402,7 @@
       applyTheme(next);
     });
 
+    // ===== Top-level DOM refs and shared state =====
     const form = document.getElementById('form');
     const pdfsInput = document.getElementById('pdfs');
     const ipaInput = document.getElementById('ipa');
@@ -1211,8 +1420,9 @@
     // at least one of its three boxes actually has something to show — called after each of those
     // three toggles its own display, from wherever that happens (renderFinalResult,
     // recomputeMonthlyPayTotals, runBankStatementScan).
+    /** Shows the Summary section once at least one of its boxes has something to display. */
     function updateSummarySectionVisibility() {
-      const anyVisible = ['ipaReview', 'monthlyPayTotals', 'overtimeBreakdown', 'restBreakdown', 'bankResults']
+      const anyVisible = ['ipaReview', 'monthlyPayTotals', 'allowancesBreakdown', 'overtimeBreakdown', 'restBreakdown', 'bankResults', 'medicalBillsResults']
         .some(id => document.getElementById(id).style.display !== 'none');
       summarySectionEl.style.display = anyVisible ? 'block' : 'none';
     }
@@ -1222,6 +1432,7 @@
     // statement scan, or — if no statement was attached at all — assumed $0 (see runBankStatementScan
     // / paidIsAssumedZero), so the box can still show a worst-case number rather than staying hidden;
     // the assumption is called out in the box itself so it isn't mistaken for a confirmed read.
+    /** Renders the headline "amount still owed" box from `totalOwedCache`/`totalPaidCache`. */
     function updateOwedVsPaidBox() {
       if (totalOwedCache === null || totalPaidCache === null) {
         owedVsPaidBoxEl.style.display = 'none';
@@ -1242,8 +1453,40 @@
     </div>
     ${paidIsAssumedZero ? `<div class="owed-vs-paid-sub">No bank statement attached — assuming $0 paid so far. Attach one to check against an actual figure.</div>` : ''}`;
     }
+    // Click-to-enlarge for every review/preview image — both the final page-by-page review
+    // (.page-review-image, timesheet pages/IPA letter/bank statement) and the pre-upload staging
+    // thumbnails (.stage-tile-img-wrap, shown right after picking files, before Extract is even
+    // clicked). Delegated on document rather than wired per-image, since these cards are
+    // re-rendered (innerHTML replaced) throughout the review flow and per-element listeners would
+    // need re-attaching every time. The rotate/delete buttons that sit on top of a staging thumbnail
+    // are separate elements, so clicking them doesn't match this selector and won't open the lightbox.
+    const imageLightbox = document.getElementById('imageLightbox');
+    const imageLightboxImg = document.getElementById('imageLightboxImg');
+    document.addEventListener('click', e => {
+      const img = e.target.closest('.page-review-image img, .stage-tile-img-wrap img');
+      if (!img) return;
+      imageLightboxImg.src = img.src;
+      imageLightboxImg.alt = img.alt;
+      imageLightboxImg.style.transform = img.style.transform || '';
+      imageLightbox.classList.add('open');
+    });
+    imageLightbox.addEventListener('click', () => {
+      imageLightbox.classList.remove('open');
+      imageLightboxImg.src = '';
+    });
+    document.addEventListener('keydown', e => {
+      if (e.key === 'Escape' && imageLightbox.classList.contains('open')) {
+        imageLightbox.classList.remove('open');
+        imageLightboxImg.src = '';
+      }
+    });
+
     const generateBtn = document.getElementById('generateBtn');
     const generateStatusEl = document.getElementById('generateStatus');
+    const exportDocxBtn = document.getElementById('exportDocxBtn');
+    const exportDocxStatusEl = document.getElementById('exportDocxStatus');
+    const exportPdfBtn = document.getElementById('exportPdfBtn');
+    const exportPdfStatusEl = document.getElementById('exportPdfStatus');
     let currentYear = null; // captured once the scan finishes (server-detected — see renderFinalResult), reused when generating
     let currentCostByModel = null; // { [modelId]: costUsd } — captured once the scan finishes, shown in the final status line
     // The /api/process response's pageReviews (pre-edit, reconciled OCR output per page) — kept here
@@ -1256,6 +1499,11 @@
     // available yet" (no salary set / bank statement never scanned), not "zero".
     let totalOwedCache = null;
     let totalPaidCache = null;
+    // Snapshot of the same monthKeys/totals/otRate/allocated/etc. recomputeMonthlyPayTotals just
+    // built its breakdown tables from — the Worker Personal Details export reads this rather than
+    // recomputing anything itself, so the docx can never disagree with what's on screen. null
+    // until a full breakdown (salary + at least one claimed month) exists.
+    let lastBreakdownForExport = null;
     // True only when totalPaidCache was set to 0 because no bank statement was attached at all (see
     // runBankStatementScan), as opposed to a real scan that genuinely found $0 in matching payments —
     // updateOwedVsPaidBox uses this to label the figure as an assumption rather than a confirmed read.
@@ -1271,12 +1519,28 @@
     // attaching one doesn't reset or re-fetch the other's already-confirmed state.
     let pdfsRotations = {};
     let ipaRotationDeg = 0;
+    // Every {fileIndex, pageIndex} pair the staging preview found, in file/page order — same order
+    // server.ts's own pageTasks loop walks (see runProcessJob), just without the excluded-page
+    // filter applied yet. Kept around after staging so the final page-by-page review can work out
+    // which (fileIndex, pageIndex) a given rendered card corresponds to (see rescanTimesheetPage) —
+    // needed for the per-page "Rotate + Rescan" action, which has to re-attach the correct original
+    // File object.
+    let pdfsPreviewPages = [];
     // Pages a human dropped in the staging preview, keyed "<fileIndex>-<pageIndex>" same as
     // pdfsRotations. A PDF's underlying pages can't be excluded from the file itself client-side (the
     // server always re-renders every page from the uploaded bytes) — so this set is sent alongside
     // `rotations` on the real submit, and server.ts skips scanning any page whose key is in it.
     let excludedPdfsPages = new Set();
 
+    // ===== Timesheet/IPA staging preview (pre-scan rotate/exclude step) =====
+    /**
+     * Builds one staging-grid thumbnail tile (used for both timesheet pages and the IPA letter).
+     * @param {'pdfs'|'ipa'} kind - Which upload this tile belongs to.
+     * @param {string} key - `"<fileIndex>-<pageIndex>"` for pdfs; unused for ipa.
+     * @param {string} label - Tile caption, e.g. `"p3"`.
+     * @param {string} imageB64 - The page thumbnail, base64-encoded.
+     * @returns {string} The tile's HTML.
+     */
     function renderStageTile(kind, key, label, imageB64) {
       const rotation = kind === 'pdfs' ? (pdfsRotations[key] || 0) : ipaRotationDeg;
       const removeTitle = kind === 'pdfs' ? 'Remove this page' : 'Remove this file';
@@ -1291,6 +1555,7 @@
     </div>`;
     }
 
+    /** Wires every staging tile's rotate button within `container` to cycle 90° on click. */
     function wireStageRotateButtons(container) {
       container.querySelectorAll('.stage-tile').forEach(tile => {
         const kind = tile.dataset.kind;
@@ -1305,6 +1570,7 @@
       });
     }
 
+    /** Updates the "N file(s): ..." label under the timesheet file input. */
     function updateFileListLabel() {
       const names = Array.from(pdfsInput.files).map(f => f.name);
       fileList.textContent = names.length ? `${names.length} file(s): ${names.join(', ')}` : '';
@@ -1315,10 +1581,12 @@
     // or unwanted page can be caught before paying for the real (expensive, multi-pass) scan. Grouped
     // by source file purely for display; each page tile has its own delete button (excludedPdfsPages)
     // since the file itself is still uploaded whole — the server just skips excluded page indices.
+    /** Fetches and renders staging thumbnails for every attached timesheet page. */
     async function refreshPdfsPreview() {
       const hasPdfs = pdfsInput.files.length > 0;
       pdfsRotations = {};
       excludedPdfsPages = new Set();
+      pdfsPreviewPages = [];
 
       if (!hasPdfs) {
         pdfsStageEl.innerHTML = '';
@@ -1338,6 +1606,7 @@
         for (const p of data.pdfsPreview || []) {
           if (!byFile.has(p.fileIndex)) byFile.set(p.fileIndex, { fileName: p.fileName, tiles: [] });
           byFile.get(p.fileIndex).tiles.push(renderStageTile('pdfs', `${p.fileIndex}-${p.pageIndex}`, `p${p.pageIndex + 1}`, p.image));
+          pdfsPreviewPages.push({ fileIndex: p.fileIndex, pageIndex: p.pageIndex });
         }
         pdfsStageEl.innerHTML = [...byFile.entries()].map(([fileIndex, { fileName, tiles }]) => `
       <div class="stage-file-group">
@@ -1368,6 +1637,7 @@
     // Same idea as refreshPdfsPreview but for the single optional IPA file — kept as a separate
     // function (rather than one combined refreshPreview covering both) specifically so attaching a
     // timesheet doesn't reset/re-fetch the already-confirmed IPA rotation, and vice versa.
+    /** Fetches and renders a staging thumbnail for the attached IPA letter's first page. */
     async function refreshIpaPreview() {
       const hasIpa = !!ipaInput.files[0];
       ipaRotationDeg = 0;
@@ -1410,6 +1680,7 @@
     // rather than a CSS :has() selector (tried first, dropped: it measurably highlighted the wrong,
     // unchecked label, a real browser quirk with :has() + the visually-hidden position:absolute
     // radio, confirmed via computed-style inspection, not just eyeballing a screenshot).
+    /** Toggles the `.radio-selected` visual class to track whichever radio in `groupEl` is checked. */
     function wireRadioGroupHighlight(groupEl) {
       const labels = [...groupEl.querySelectorAll('label')];
       const sync = () => labels.forEach(l => l.classList.toggle('radio-selected', l.querySelector('input').checked));
@@ -1449,6 +1720,7 @@
     document.querySelectorAll('input[name="halfDayOfWeek"]').forEach(input => {
       input.addEventListener('change', () => { halfDayTouched = true; });
     });
+    /** Shows/hides the half-day field for a 5.5-day work week and defaults it to the day before the declared rest day. */
     function updateHalfDayDefault() {
       const is55 = document.querySelector('input[name="workWeekType"]:checked').value === '5.5';
       halfDayField.style.display = is55 ? 'block' : 'none';
@@ -1462,10 +1734,104 @@
     document.getElementById('restDayGroup').addEventListener('change', updateHalfDayDefault);
     updateHalfDayDefault();
 
+    // ===== One-off claim toggles: notice / annual leave / sick leave =====
+    // Salary-in-lieu of termination notice — optional, off by default. Toggling it on defaults the
+    // termination date to the Claim End Date (editable after) since that's usually the worker's
+    // last day too, same "sensible default, not forced" pattern as updateHalfDayDefault above.
+    const noticeClaimToggle = document.getElementById('noticeClaimToggle');
+    const noticeClaimFields = document.getElementById('noticeClaimFields');
+    /** Re-renders the notice-claim result box and rolls it into the monthly pay totals. */
+    function refreshNoticeClaim() {
+      renderNoticeClaimResult();
+      recomputeMonthlyPayTotals();
+    }
+    const noticeEmploymentStartEl = document.getElementById('noticeEmploymentStart');
+    const noticeTerminationDateEl = document.getElementById('noticeTerminationDate');
+    noticeClaimToggle.addEventListener('change', () => {
+      const on = noticeClaimToggle.checked;
+      noticeClaimFields.style.display = on ? 'block' : 'none';
+      // Once the caseworker opts into this claim, the two dates that drive the whole formula
+      // (length of service, notice period) become mandatory — no silent "toggle on, forget to fill
+      // dates in, claim total quietly excludes it" failure mode.
+      noticeEmploymentStartEl.required = on;
+      noticeTerminationDateEl.required = on;
+      if (on && !noticeTerminationDateEl.value) {
+        noticeTerminationDateEl.value = document.getElementById('contractEndDate').value || '';
+      }
+      refreshNoticeClaim();
+    });
+    ['noticeEmploymentStart', 'noticeTerminationDate', 'noticeDaysGiven', 'noticeContractValue', 'noticeContractUnit'].forEach(id => {
+      const el = document.getElementById(id);
+      el.addEventListener('input', refreshNoticeClaim);
+      el.addEventListener('change', refreshNoticeClaim);
+    });
+
+    // Salary-in-lieu of unused annual leave — same optional/off-by-default, required-once-toggled
+    // pattern as the notice claim above, own independent employment start/termination dates (a
+    // caseworker might claim one without the other).
+    const leaveClaimToggle = document.getElementById('leaveClaimToggle');
+    const leaveClaimFields = document.getElementById('leaveClaimFields');
+    /** Re-renders the annual-leave-claim result box and rolls it into the monthly pay totals. */
+    function refreshLeaveClaim() {
+      renderLeaveClaimResult();
+      recomputeMonthlyPayTotals();
+    }
+    const leaveEmploymentStartEl = document.getElementById('leaveEmploymentStart');
+    const leaveTerminationDateEl = document.getElementById('leaveTerminationDate');
+    leaveClaimToggle.addEventListener('change', () => {
+      const on = leaveClaimToggle.checked;
+      leaveClaimFields.style.display = on ? 'block' : 'none';
+      leaveEmploymentStartEl.required = on;
+      leaveTerminationDateEl.required = on;
+      if (on && !leaveTerminationDateEl.value) {
+        leaveTerminationDateEl.value = document.getElementById('noticeTerminationDate').value || document.getElementById('contractEndDate').value || '';
+      }
+      refreshLeaveClaim();
+    });
+    ['leaveEmploymentStart', 'leaveTerminationDate', 'leaveDaysTaken'].forEach(id => {
+      const el = document.getElementById(id);
+      el.addEventListener('input', refreshLeaveClaim);
+      el.addEventListener('change', refreshLeaveClaim);
+    });
+
+    // Sick leave pay — same optional/off-by-default, required-once-toggled pattern as the other two.
+    const sickClaimToggle = document.getElementById('sickClaimToggle');
+    const sickClaimFields = document.getElementById('sickClaimFields');
+    /** Re-renders the sick-leave-claim result box and rolls it into the monthly pay totals. */
+    function refreshSickClaim() {
+      renderSickClaimResult();
+      recomputeMonthlyPayTotals();
+    }
+    const sickEmploymentStartEl = document.getElementById('sickEmploymentStart');
+    const sickAsOfDateEl = document.getElementById('sickAsOfDate');
+    sickClaimToggle.addEventListener('change', () => {
+      const on = sickClaimToggle.checked;
+      sickClaimFields.style.display = on ? 'block' : 'none';
+      sickEmploymentStartEl.required = on;
+      sickAsOfDateEl.required = on;
+      if (on && !sickAsOfDateEl.value) {
+        sickAsOfDateEl.value = document.getElementById('noticeTerminationDate').value
+          || document.getElementById('leaveTerminationDate').value
+          || document.getElementById('contractEndDate').value || '';
+      }
+      refreshSickClaim();
+    });
+    ['sickEmploymentStart', 'sickAsOfDate', 'sickDaysNonHosp', 'sickDaysHosp'].forEach(id => {
+      const el = document.getElementById(id);
+      el.addEventListener('input', refreshSickClaim);
+      el.addEventListener('change', refreshSickClaim);
+    });
+
     // Scans can run for minutes on multiple/large PDFs — a browser notification means the user
     // doesn't have to keep the tab in view to know when it's done. Permission must be requested from
     // a real user-gesture handler (not after an await, some browsers drop "user activation" by then),
     // so this fires as the very first thing in the submit handler, before the fetch call.
+    // ===== Scan lifecycle: notifications, timer, submit handler =====
+    /**
+     * Shows a browser notification if permitted and the tab isn't currently focused.
+     * @param {string} title - Notification title.
+     * @param {string} body - Notification body text.
+     */
     function notifyIfPermitted(title, body) {
       if (typeof Notification === 'undefined' || Notification.permission !== 'granted') return;
       // Only notify if the tab isn't already the one the user's looking at — no point interrupting
@@ -1483,6 +1849,7 @@
     // shows both "how long" and "how much done" without the two updaters fighting over statusEl.
     let scanTimerInterval = null;
     let livePagesProcessedCount = 0;
+    /** Starts the live "Scanning pages… Ns elapsed" status readout, ticking once per second. */
     function startScanTimer() {
       const startedAt = Date.now();
       const tick = () => {
@@ -1493,6 +1860,7 @@
       tick();
       scanTimerInterval = setInterval(tick, 1000);
     }
+    /** Stops the scan timer started by {@link startScanTimer}, if running. */
     function stopScanTimer() {
       if (scanTimerInterval === null) return;
       clearInterval(scanTimerInterval);
@@ -1558,10 +1926,11 @@
         }
       })();
 
-      const [mainResult, bankResult] = await Promise.allSettled([mainScan, runBankStatementScan()]);
+      const [mainResult, bankResult, medicalResult] = await Promise.allSettled([mainScan, runBankStatementScan(), runMedicalBillsScan()]);
       if (!mainErrored) {
         const mainCost = mainResult.status === 'fulfilled' && typeof mainResult.value === 'number' ? mainResult.value : 0;
         const bankCost = bankResult.status === 'fulfilled' && typeof bankResult.value === 'number' ? bankResult.value : 0;
+        const medicalCost = medicalResult.status === 'fulfilled' && typeof medicalResult.value === 'number' ? medicalResult.value : 0;
         statusEl.className = 'status success';
         // currentYear is server-detected now (no manual picker — see renderFinalResult) — surfaced
         // here so a caseworker has some visible confirmation of what got auto-detected, since
@@ -1576,7 +1945,7 @@
         const modelBreakdown = currentCostByModel && Object.keys(currentCostByModel).length > 0
           ? ' (' + Object.entries(currentCostByModel).map(([model, cost]) => `${model}: $${cost.toFixed(4)}`).join(', ') + ')'
           : '';
-        statusEl.textContent = `Scan done in ${formatDuration(Date.now() - submitStartedAt)}${formatCost(mainCost + bankCost)}${modelBreakdown}${yearNote}`;
+        statusEl.textContent = `Scan done in ${formatDuration(Date.now() - submitStartedAt)}${formatCost(mainCost + bankCost + medicalCost)}${modelBreakdown}${yearNote}`;
       }
       submitBtn.disabled = false;
     });
@@ -1588,6 +1957,11 @@
     // fragile (proxies/networks can drop it) and gives zero visibility until the very end. Each poll
     // renders whatever pages have finished so far (renderLivePages) before the job is done, then
     // switches to the full editable review UI (renderFinalResult) the moment it completes.
+    /**
+     * Polls `/api/process/:jobId` until it settles, rendering live progress on each tick.
+     * @param {string} jobId - The job id returned by `/api/process`.
+     * @returns {Promise<number>} The scan's total cost in USD once done.
+     */
     function pollJobUntilDone(jobId) {
       return new Promise((resolve, reject) => {
         const tick = async () => {
@@ -1624,6 +1998,7 @@
     // One line per extracted entry, read-only — shown as soon as a page finishes, before the
     // editable review UI exists. hhmmToTimeInput is the same HHMM->"HH:MM" formatter the final
     // editable rows use, so the live preview and the final view read identically.
+    /** Formats one live-progress entry as a single read-only display line. */
     function formatLiveEntry(e) {
       if (e.type === 'rest_day') return `${e.date}: Rest day`;
       if (e.type === 'hours_worked') {
@@ -1638,6 +2013,7 @@
     // values land as each page completes, rather than waiting on the whole batch. No editable inputs
     // yet since reviewRows (the thing those inputs edit) don't exist until the batch completes — this
     // view is fully replaced by renderFinalResult's editable cards once status flips to "done".
+    /** Renders one read-only card per timesheet page finished so far, while the job is still running. */
     function renderLivePages(pages) {
       livePagesProcessedCount = pages.length;
       if (pages.length > 0) pageReviewsEl.style.display = 'block'; // reveal only once there's something to show
@@ -1645,16 +2021,9 @@
         const entriesHtml = page.entries.length
           ? `<ul class="inline-review-list">${page.entries.map(e => `<li class="empty">${escapeHtml(formatLiveEntry(e))}</li>`).join('')}</ul>`
           : `<div class="review-hint">No entries found on this page.</div>`;
-        // "missing_data" (the coverage check's generic "no entry anywhere for this date" catch-all)
-        // is deliberately excluded from display here — it fires once per uncovered date and got
-        // noisy on a file with several genuinely missing days. Still present in page.warnings itself
-        // (unfiltered), since detectAndInsertMissingDays relies on that full list to skip
-        // auto-inserting a fabricated default-shift row over these exact dates — only the on-screen
-        // text is trimmed, not the underlying protection.
-        const visibleWarnings = page.warnings.filter(w => w.category !== 'missing_data');
-        const warningsHtml = visibleWarnings.length
-          ? `<div class="row-notes">${visibleWarnings.map(w => escapeHtml(w.reason)).join('<br>')}</div>`
-          : '';
+        // page.warnings is still the source of truth for detectAndInsertMissingDays' skip logic
+        // (a dropped/flagged date must never get a fabricated default-shift row inserted over it) —
+        // just not rendered as a text block here anymore, per caseworker request (wall of text).
         return `
       <div class="page-review-row">
         <div class="page-review-image">
@@ -1663,7 +2032,6 @@
         <div class="page-review-details">
           <div class="page-review-source"><span>${escapeHtml(page.source)}</span></div>
           ${entriesHtml}
-          ${warningsHtml}
         </div>
       </div>`;
       }).join('');
@@ -1676,6 +2044,11 @@
     // form's submit handler) combines this with the bank statement scan's own cost into ONE status
     // line, written only once every concurrent scan has settled, so there's a single total instead
     // of two separate "Scan done" messages.
+    /**
+     * Renders the complete editable review UI once a scan job finishes.
+     * @param {object} data - The job's `result` (same shape `/api/process` returns).
+     * @returns {number} The scan's cost in USD.
+     */
     function renderFinalResult(data) {
       // server-detected (runProcessJob's prescan) — an array, not a single value, since an upload
       // can genuinely span a year boundary (each page keeps its own resolved year server-side).
@@ -1698,6 +2071,7 @@
           <div class="page-review-source"><span>IPA letter</span></div>
           ${data.ipa ? renderIpaFieldsEditable(data.ipa) : ''}
           ${data.ipaWarning ? `<div class="row-notes">${escapeHtml(data.ipaWarning)}</div>` : ''}
+          ${data.ipa?.notes ? `<div class="row-notes">${escapeHtml(data.ipa.notes)}</div>` : ''}
         </div>
       </div>`;
         if (data.ipa) {
@@ -1725,12 +2099,19 @@
       }
       updateSummarySectionVisibility();
 
-      // Shown even when zero pages came back (e.g. every file failed to read) so "Generate Excel"
+      // Shown even when zero pages came back (e.g. every file failed to read) so "Generate Excel (.xlsx)"
       // at the bottom always stays reachable after a scan completes.
       pageReviewsEl.style.display = 'block';
       currentPageReviews = data.pageReviews || [];
       if (data.pageReviews && data.pageReviews.length > 0) {
-        pageReviewList.innerHTML = data.pageReviews.map(renderPageReview).join('');
+        // Same order the server itself walked (pdfsPreviewPages, minus whatever the staging step
+        // excluded) — zipped with data.pageReviews by position so each card knows its own
+        // (fileIndex, pageIndex) for the per-page "Rotate + Rescan" action below.
+        const orderedKeys = pdfsPreviewPages
+          .filter(p => !excludedPdfsPages.has(`${p.fileIndex}-${p.pageIndex}`))
+          .map(p => `${p.fileIndex}-${p.pageIndex}`);
+        pageReviewList.innerHTML = data.pageReviews.map((page, idx) => renderPageReview(page, orderedKeys[idx], idx)).join('');
+        pageReviewList.querySelectorAll('.page-rescan-controls').forEach(wireTimesheetRescanControls);
         // Each page card was rendered with an empty placeholder list (see renderPageReview) — now
         // that they're in the DOM, populate each with the reviewRows whose `source` traces back to
         // that page, so the editable Start/End/Break inputs sit right beside their source image.
@@ -1784,13 +2165,13 @@
         const res = await fetch('/api/generate', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ rows }),
+          body: JSON.stringify({ rows, workerFin: getIpaTextField('workerFin') }),
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || `Server returned ${res.status}`);
 
         generateStatusEl.className = 'status success';
-        generateStatusEl.textContent = `Generated — ${data.entriesWritten} day(s) written.`;
+        generateStatusEl.textContent = `Generated.`;
         const bytes = Uint8Array.from(atob(data.file), c => c.charCodeAt(0));
         const blob = new Blob([bytes], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
         const url = URL.createObjectURL(blob);
@@ -1809,18 +2190,160 @@
       }
     });
 
+    // Builds the exact per-month rows/totals the Worker Personal Details docx needs, straight off
+    // lastBreakdownForExport (the same monthKeys/totals/allocated recomputeMonthlyPayTotals just
+    // rendered the on-screen breakdown tables from) — so the docx can never show different numbers
+    // than what the caseworker is already looking at. Returns null with a reason if a breakdown
+    // isn't available yet (e.g. no basic salary set, nothing claimed).
+    /**
+     * Builds the request body for the docx/pdf export endpoints from `lastBreakdownForExport`.
+     * @returns {object} The export payload, or `{ error }` if no breakdown exists yet.
+     */
+    function buildExportPayload() {
+      if (!lastBreakdownForExport) return { error: 'No claim breakdown yet — set a basic salary and add at least one claimed day first.' };
+      const { monthKeys, totals, otRate, allocated, restDayWorkedDatesByMonth, phWorkedDatesByMonth, basicSalary, basicFullAmountByMonth, allowancesFullAmountByMonth, noticeClaim, leaveClaim, sickClaim, medicalBillsClaim } = lastBreakdownForExport;
+
+      /** Builds one export category's per-month rows and totals. */
+      function category(getFullAmount, getBucketKey, getDaysOrHours) {
+        const rows = [];
+        let totalDaysOrHours = 0, totalEarned = 0, totalPaid = 0, totalOwed = 0;
+        for (const month of monthKeys) {
+          const t = totals.get(month) || { netHours: 0, otHours: 0, restDayPay: 0, phPay: 0 };
+          const earned = getFullAmount(month, t);
+          const paid = allocated.get(month)[getBucketKey];
+          const owed = paid - earned; // negative = shortfall, matches template's parens convention
+          const daysOrHours = getDaysOrHours(month, t);
+          rows.push({ month: formatMonthLabelFull(month), daysOrHours, earned, paid, owed });
+          totalDaysOrHours += daysOrHours;
+          totalEarned += earned;
+          totalPaid += paid;
+          totalOwed += owed;
+        }
+        return { rows, totalDaysOrHours, totalEarned, totalPaid, totalOwed };
+      }
+
+      const basic = category(month => basicFullAmountByMonth.get(month) || 0, 'basic', () => null);
+      const allowances = category(month => allowancesFullAmountByMonth.get(month) || 0, 'allowances', () => null);
+      const overtime = category((month, t) => otRate * t.otHours, 'ot', (month, t) => t.otHours);
+      const restDays = category((month, t) => t.restDayPay, 'rest', month => (restDayWorkedDatesByMonth.get(month) || []).length);
+      const publicHolidays = category((month, t) => t.phPay, 'ph', month => (phWorkedDatesByMonth.get(month) || []).length);
+
+      return {
+        workerName: getIpaTextField('workerName'),
+        workerFin: getIpaTextField('workerFin'),
+        employerName: getIpaTextField('employerName'),
+        claimStartDate: document.getElementById('contractStartDate').value || null,
+        claimEndDate: document.getElementById('contractEndDate').value || null,
+        workWeekType: getWorkDaysPerWeek(),
+        basicSalary,
+        basic, allowances, overtime, restDays, publicHolidays,
+        noticeClaim: noticeClaim ? {
+          employmentStartDate: noticeClaim.employmentStartDate,
+          terminationDate: noticeClaim.terminationDate,
+          tierLabel: noticeClaim.tierLabel,
+          entitledPay: noticeClaim.entitledPay,
+          noticeGivenPay: noticeClaim.noticeGivenPay,
+          owedAmount: noticeClaim.owedAmount,
+        } : null,
+        leaveClaim: leaveClaim && leaveClaim.qualifies ? {
+          employmentStartDate: leaveClaim.employmentStartDate,
+          terminationDate: leaveClaim.terminationDate,
+          tierDaysForFinalYear: leaveClaim.tierDaysForFinalYear,
+          proratedEntitlementDays: leaveClaim.proratedEntitlementDays,
+          daysTaken: leaveClaim.daysTaken,
+          daysOwed: leaveClaim.daysOwed,
+          owedAmount: leaveClaim.owedAmount,
+        } : null,
+        sickClaim: sickClaim && sickClaim.qualifies ? {
+          employmentStartDate: sickClaim.employmentStartDate,
+          asOfDate: sickClaim.asOfDate,
+          tierLabel: sickClaim.tierLabel,
+          nonHospCap: sickClaim.nonHospCap,
+          hospCap: sickClaim.hospCap,
+          owedNonHospDays: sickClaim.owedNonHospDays,
+          owedHospDays: sickClaim.owedHospDays,
+          totalDaysOwed: sickClaim.totalDaysOwed,
+          owedAmount: sickClaim.owedAmount,
+        } : null,
+        medicalBillsClaim: medicalBillsClaim ? {
+          totalBilled: medicalBillsClaim.totalBilled,
+          totalReimbursed: medicalBillsClaim.totalReimbursed,
+          owedAmount: medicalBillsClaim.owedAmount,
+        } : null,
+      };
+    }
+
+    // Shared by both the .docx and .pdf download buttons — same payload (buildExportPayload),
+    // same request/download dance, only the endpoint URL and blob MIME type differ.
+    /**
+     * Shared docx/pdf export flow: builds the payload, POSTs it, and downloads the returned file.
+     * @param {HTMLButtonElement} btn - The export button (disabled while in flight).
+     * @param {HTMLElement} statusEl - Where to show progress/error/success text.
+     * @param {string} endpoint - `/api/export-docx` or `/api/export-pdf`.
+     * @param {string} mimeType - The downloaded blob's MIME type.
+     */
+    async function runExport(btn, statusEl, endpoint, mimeType) {
+      const payload = buildExportPayload();
+      if (payload.error) {
+        statusEl.className = 'status error';
+        statusEl.textContent = payload.error;
+        return;
+      }
+      btn.disabled = true;
+      statusEl.className = 'status loading';
+      statusEl.innerHTML = '<span class="spinner"></span>Generating document…';
+      try {
+        const res = await fetch(endpoint, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || `Server returned ${res.status}`);
+
+        statusEl.className = 'status success';
+        statusEl.textContent = 'Generated.';
+        const bytes = Uint8Array.from(atob(data.file), c => c.charCodeAt(0));
+        const blob = new Blob([bytes], { type: mimeType });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = data.filename;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+      } catch (err) {
+        statusEl.className = 'status error';
+        statusEl.textContent = 'Error: ' + err.message;
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    exportDocxBtn.addEventListener('click', () => runExport(
+      exportDocxBtn, exportDocxStatusEl, '/api/export-docx',
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+    ));
+    exportPdfBtn.addEventListener('click', () => runExport(
+      exportPdfBtn, exportPdfStatusEl, '/api/export-pdf', 'application/pdf'
+    ));
+
     // HHMM (e.g. 800, 1730) <-> the In/Out text input's displayed value ("0800", "1730") — bare
     // 4-digit 24-hour, no colon, matching the exact convention lib/ocr.ts's own prompt already uses
     // ("Report the values as bare 24-hour numbers, no colon, e.g. 800 means 8:00am"). A midnight-ending
     // overnight shift (the 2400 sentinel elsewhere in this codebase) round-trips fine as plain "0000"
     // here — the hours calculation already wraps correctly for either representation, so the edit UI
     // doesn't need to special-case it.
+    // ===== Time/date formatting helpers =====
+    /** Formats a bare HHMM integer as the time input's `"HHMM"` display text (e.g. `800` -> `"0800"`). */
     function hhmmToTimeInput(hhmm) {
       if (hhmm === null || hhmm === undefined) return '';
       const h = Math.floor(hhmm / 100) % 24;
       const m = hhmm % 100;
       return `${String(h).padStart(2, '0')}${String(m).padStart(2, '0')}`;
     }
+    /** Parses a time input's text into a bare HHMM integer, or `null` if unparseable. */
     function timeInputToHHMM(str) {
       return normalizeTimeInputToParts(str)?.hhmm ?? null;
     }
@@ -1832,6 +2355,7 @@
     // Shared by normalizeTimeInput (reformat on blur) and timeInputToHHMM (parse at submit time,
     // which can't assume the field was ever blurred) so both agree on how loose input like "8", "800",
     // or "1730" gets interpreted.
+    /** Parses loose time-input text (`"8"`, `"800"`, `"1730"`) into `{h, m, hhmm}`, or `null` if unparseable. */
     function normalizeTimeInputToParts(value) {
       if (!value) return null;
       const digits = value.replace(/[^0-9]/g, '');
@@ -1843,6 +2367,7 @@
       if (h > 23 || m > 59) return null; // can't confidently parse
       return { h, m, hhmm: h * 100 + m };
     }
+    /** Reformats a time input's text to canonical `"HHMM"`, leaving it unchanged if unparseable. */
     function normalizeTimeInput(value) {
       const parts = normalizeTimeInputToParts(value);
       if (!parts) return value; // can't confidently parse — leave it for the reviewer to fix by hand
@@ -1852,6 +2377,7 @@
     const WEEKDAY_ABBR = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
     // Parsed and constructed in local time (not new Date(dateStr), which parses as UTC and can shift
     // the weekday by a day) — same local-date discipline server.ts already uses everywhere else.
+    /** Formats a `YYYY-MM-DD` date's weekday as a 3-letter abbreviation, parsed in local time. */
     function weekdayAbbr(dateStr) {
       if (!dateStr) return '';
       const [y, m, d] = dateStr.split('-').map(Number);
@@ -1865,6 +2391,14 @@
     // renderPageReview) or the standalone "add a missing day" list at the bottom. `.review-row` is
     // the shared marker collectAllReviewRows() uses to gather every row on the page regardless of
     // which list it lives in.
+    // ===== Timesheet review rows =====
+    /**
+     * Appends one editable review row (date/start/end/break) into a page card's list or the
+     * standalone "add a missing day" list.
+     * @param {HTMLElement} container - The `<ul>` to append into.
+     * @param {object} row - The row data (date, clockIn, clockOut, breakHours, restDay, guessed, notes, source).
+     * @param {HTMLElement} [beforeEl] - Insert before this element instead of appending at the end.
+     */
     function appendReviewRow(container, row, beforeEl) {
       const li = document.createElement('li');
       li.className = 'inline-review-row review-row' + (row.guessed ? ' flagged-row' : '') + (row.autoInserted ? ' missing-day-row' : '');
@@ -1935,56 +2469,123 @@
     // generated spreadsheet — the template's own formulas handle actual pay, this just helps a
     // caseworker spot rows worth a closer look before trusting the scan.
 
+    // ===== IPA-derived rate calculators (Employment Act 1968 — see docs/employment-act-1968-rules.md) =====
+    /** Reads a text-type editable IPA field's current value (name/FIN/employer), or `null` if blank. */
+    function getIpaTextField(field) {
+      const el = document.querySelector(`#ipaPageReview input[data-field="${field}"]`);
+      return el && el.value.trim() !== '' ? el.value.trim() : null;
+    }
+    /** Reads the editable "Basic monthly salary" IPA field, or `null` if unset. */
     function getBasicMonthlySalary() {
       const el = document.querySelector('#ipaPageReview input[data-field="basicMonthlySalary"]');
       if (!el || el.value === '') return null;
       const v = Number(el.value);
       return Number.isFinite(v) ? v : null;
     }
+    /** Reads the editable "Fixed monthly allowances" IPA field, defaulting to 0 if unset. */
     function getMonthlyAllowances() {
       const el = document.querySelector('#ipaPageReview input[data-field="fixedMonthlyAllowances"]');
       if (!el || el.value === '') return 0;
       const v = Number(el.value);
       return Number.isFinite(v) ? v : 0;
     }
+    // Declared hourly OT rate straight off the IPA (lib/ipa.ts otRate) — null if the scan didn't
+    // find one printed/written on the document. Distinct from getHourlyBasicRate: that's a rate
+    // computed by us from salary; this is a rate MOM already has on record for this worker.
+    /** Reads the IPA's declared hourly OT rate, or `null` if not printed on the document. */
+    function getOtRate() {
+      const el = document.querySelector('#ipaPageReview input[data-field="otRate"]');
+      if (!el || el.value === '') return null;
+      const v = Number(el.value);
+      return Number.isFinite(v) ? v : null;
+    }
+    // Declared daily basic rate straight off the IPA (lib/ipa.ts dailyBasicRate) — null if the scan
+    // didn't find one printed/written on the document. Distinct from getComputedDailyBasicRate:
+    // that's a rate computed by us from salary; this is a rate MOM already has on record.
+    /** Reads the IPA's declared daily basic rate, or `null` if not printed on the document. */
+    function getDeclaredDailyBasicRate() {
+      const el = document.querySelector('#ipaPageReview input[data-field="dailyBasicRate"]');
+      if (!el || el.value === '') return null;
+      const v = Number(el.value);
+      return Number.isFinite(v) ? v : null;
+    }
+    /** Reads the declared work week radio (5.5 or 6 days), defaulting to 5.5. */
     function getWorkDaysPerWeek() {
       const checked = document.querySelector('input[name="workWeekType"]:checked');
       return checked ? Number(checked.value) : 5.5;
     }
+    /** Reads the declared weekly rest day radio (0=Sun..6=Sat), defaulting to Sunday. */
     function getDeclaredRestDayOfWeek() {
       const checked = document.querySelector('input[name="restDayOfWeek"]:checked');
       return checked ? Number(checked.value) : 0;
     }
     // Fourth Schedule item 1 (s.38(6)) — fixed 52×44 divisor, NOT the declared work week (that's a
-    // different, Third Schedule rate — see getDailyBasicRate below). This is the multiplier used for
-    // OT, rest-day, and public-holiday pay alike.
+    // different, Third Schedule rate — see getDailyBasicRate below). Statutory-minimum hourly rate;
+    // only used directly as the fallback inside getEffectiveOtRate below when the IPA didn't
+    // declare an OT rate of its own.
+    /** Computes the statutory-minimum hourly rate (Fourth Schedule item 1, s.38(6), fixed 52×44 divisor). */
     function getHourlyBasicRate() {
       const salary = getBasicMonthlySalary();
       return salary === null ? null : (salary * 12) / (52 * 44);
     }
+    // The rate used for every excess/overtime hour — OT proper (s.38), and the excess-hours portion
+    // of rest-day-worked pay (s.37) — uses whatever rate MOM actually has on record for this worker
+    // (the IPA's own declared otRate) rather than a statutory-minimum figure we derive from salary.
+    // Only falls back to 1.5× hourly basic rate when the IPA scan didn't turn up a declared otRate
+    // at all. Public-holiday (s.88) pay is untouched by this — it has no excess-hours component,
+    // just daily gross + daily basic, so it keeps calling getDailyGrossRate()/getDailyBasicRate().
+    /** Returns the IPA-declared OT rate if present, else 1.5× the statutory hourly basic rate. */
+    function getEffectiveOtRate() {
+      const declared = getOtRate();
+      if (declared !== null) return declared;
+      const hourly = getHourlyBasicRate();
+      return hourly === null ? null : 1.5 * hourly;
+    }
     // Third Schedule item 2 (s.107A) — daily basic/gross rate, DOES use the declared work week.
-    function getDailyBasicRate() {
+    /** Computes the daily basic rate (Third Schedule item 2, s.107A, uses the declared work week). */
+    function getComputedDailyBasicRate() {
       const salary = getBasicMonthlySalary();
       return salary === null ? null : (salary * 12) / (52 * getWorkDaysPerWeek());
     }
+    // Same declared-over-computed preference as getEffectiveOtRate: the IPA's own printed daily
+    // basic rate is what MOM has on record for this worker, so use it directly wherever daily
+    // basic rate feeds rest-day/PH pay. Only falls back to the statutory formula above when the
+    // IPA scan didn't turn up a declared dailyBasicRate at all.
+    /** Returns the IPA-declared daily basic rate if present, else the computed statutory rate. */
+    function getDailyBasicRate() {
+      const declared = getDeclaredDailyBasicRate();
+      if (declared !== null) return declared;
+      return getComputedDailyBasicRate();
+    }
+    /** Computes the daily gross rate of pay (basic salary + allowances, over the declared work week). */
     function getDailyGrossRate() {
       const salary = getBasicMonthlySalary();
       if (salary === null) return null;
       return ((salary + getMonthlyAllowances()) * 12) / (52 * getWorkDaysPerWeek());
     }
+    /** Formats a number as `"$1,234.56"`, or `"—"` for `null`/`NaN`. */
     function formatMoney(n) {
       return (n === null || Number.isNaN(n)) ? '—' : `$${n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
     }
     // Underlying data/dataset.date stays YYYY-MM-DD (what the scan produces and what date math above
     // keys off) — this is display-only, for the bank statement date columns.
+    /** Formats a `YYYY-MM-DD` date as `DD-MM-YYYY` for display. */
     function formatDateDMY(dateStr) {
       const [y, m, d] = (dateStr || '').split('-');
       return (y && m && d) ? `${d}-${m}-${y}` : (dateStr || '');
     }
     const MONTH_ABBR = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    /** Formats a `"YYYY-MM"` month key as `"Sep 2025"`. */
     function formatMonthLabel(monthKey) {
       const [y, m] = monthKey.split('-').map(Number);
       return `${MONTH_ABBR[m - 1]} ${y}`;
+    }
+    const MONTH_FULL = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+    // "September-25" — the exact per-row month format the Worker Personal Details template uses.
+    /** Formats a `"YYYY-MM"` month key as `"September-25"`, the Worker Personal Details template's own format. */
+    function formatMonthLabelFull(monthKey) {
+      const [y, m] = monthKey.split('-').map(Number);
+      return `${MONTH_FULL[m - 1]}-${String(y).slice(-2)}`;
     }
 
     // Official gazetted dates (data.gov.sg / MOM datasets, verified live — see
@@ -2021,24 +2622,29 @@
         '2026-12-25': 'Christmas Day',
       },
     };
+    /** Checks whether a `YYYY-MM-DD` date is a gazetted Singapore public holiday. */
     function isPublicHoliday(dateStr) {
       if (!dateStr) return false;
       const year = Number(dateStr.slice(0, 4));
       return !!(PUBLIC_HOLIDAYS[year] || {})[dateStr];
     }
+    /** Returns a public holiday's name for a `YYYY-MM-DD` date, or `null` if it isn't one. */
     function publicHolidayName(dateStr) {
       if (!dateStr) return null;
       const year = Number(dateStr.slice(0, 4));
       return (PUBLIC_HOLIDAYS[year] || {})[dateStr] || null;
     }
 
+    /** Returns a `YYYY-MM-DD` date's weekday index (0=Sun..6=Sat), or `null` if unparseable. */
     function weekdayIndex(dateStr) {
       if (!dateStr) return null;
       const [y, m, d] = dateStr.split('-').map(Number);
       if (!y || !m || !d) return null;
       return new Date(y, m - 1, d).getDay();
     }
+    /** Converts a bare HHMM integer to minutes since midnight. */
     function toMinutesClient(hhmm) { return Math.trunc(hhmm / 100) * 60 + (hhmm % 100); }
+    /** Computes a shift's duration in hours, handling an overnight wrap. */
     function shiftHoursClient(clockIn, clockOut) {
       let minutes = toMinutesClient(clockOut) - toMinutesClient(clockIn);
       if (minutes < 0) minutes += 24 * 60;
@@ -2047,6 +2653,7 @@
     // Net hours actually worked (span minus meal break) for a review row currently in the DOM — "hours
     // of work" per s.2(1). Null if the row isn't a valid worked shift yet (rest day, or times not
     // filled in — e.g. mid-edit, or a freshly-added blank row).
+    /** Computes a review row's net worked hours (span minus break), or `null` if not a valid worked shift yet. */
     function rowNetHours(li) {
       if (li.dataset.restDay === '1') return null;
       const start = timeInputToHHMM(li.querySelector('.f-start').value);
@@ -2062,34 +2669,244 @@
     // to know than asking (see the rest-day-work-block wired in appendReviewRow).
     // Returns both the amount and a formula string with the actual numbers substituted in, so the
     // reviewer can see WHY the figure is what it is rather than just trusting a bare dollar amount.
+    /**
+     * Computes rest-day-worked pay (s.37) and a human-readable formula string.
+     * @param {number} netHours - Hours actually worked that day.
+     * @param {'worker'|'employer'} initiator - Who asked for the work — pay differs by 2×.
+     * @returns {{pay: number|null, formula: string|null}}
+     */
     function computeRestDayPay(netHours, initiator) {
-      const hourly = getHourlyBasicRate();
+      const otRate = getEffectiveOtRate();
       const dailyBasic = getDailyBasicRate();
-      if (hourly === null || dailyBasic === null) return { pay: null, formula: null };
+      if (otRate === null || dailyBasic === null) return { pay: null, formula: null };
       const half = NORMAL_HOURS_PER_DAY / 2;
       const excess = Math.max(0, netHours - NORMAL_HOURS_PER_DAY);
       const db = formatMoney(dailyBasic);
-      const hr = formatMoney(hourly);
+      const ot = formatMoney(otRate);
       if (initiator === 'worker') {
         if (netHours <= half) return { pay: dailyBasic / 2, formula: `half day's basic rate (${db} ÷ 2)` };
         if (netHours <= NORMAL_HOURS_PER_DAY) return { pay: dailyBasic, formula: `1 day's basic rate (${db})` };
         return {
-          pay: dailyBasic + 1.5 * hourly * excess,
-          formula: `1 day's basic rate (${db}) + 1.5× hourly rate × excess hours (1.5 × ${hr} × ${excess.toFixed(2)}h)`,
+          pay: dailyBasic + otRate * excess,
+          formula: `1 day's basic rate (${db}) + OT rate × excess hours (${ot} × ${excess.toFixed(2)}h)`,
         };
       }
       if (netHours <= half) return { pay: dailyBasic, formula: `1 day's basic rate (${db})` };
       if (netHours <= NORMAL_HOURS_PER_DAY) return { pay: dailyBasic * 2, formula: `2 × daily basic rate (${db})` };
       return {
-        pay: dailyBasic * 2 + 1.5 * hourly * excess,
-        formula: `2 × daily basic rate (${db}) + 1.5× hourly rate × excess hours (1.5 × ${hr} × ${excess.toFixed(2)}h)`,
+        pay: dailyBasic * 2 + otRate * excess,
+        formula: `2 × daily basic rate (${db}) + OT rate × excess hours (${ot} × ${excess.toFixed(2)}h)`,
       };
+    }
+
+    // Employment Act ss.10-11 — salary-in-lieu of termination notice. A one-off entitlement,
+    // independent of the monthly claim period: length of service (employment start -> termination
+    // date) picks the statutory notice tier, unless the caseworker has the actual contract's own
+    // notice period to enter as an override. "Gross rate of pay" here is basic salary + allowances,
+    // same definition used for the daily gross rate elsewhere, but at a calendar-week basis (÷52,
+    // not ÷ declared work-week days) since notice periods run in calendar days/weeks/months, not
+    // working days. Notice actually given/paid by the employer is subtracted in dollar terms (not
+    // day-count) so a fractional day of notice given still reduces what's owed correctly.
+    /** Computes the salary-in-lieu-of-notice claim (ss.10-11), or `null` if not toggled on/incomplete. */
+    function computeSalaryInLieuOfNotice() {
+      if (!document.getElementById('noticeClaimToggle').checked) return null;
+      const startVal = document.getElementById('noticeEmploymentStart').value;
+      const endVal = document.getElementById('noticeTerminationDate').value;
+      const basicSalary = getBasicMonthlySalary();
+      if (!startVal || !endVal || basicSalary === null) return null;
+
+      const grossMonthly = basicSalary + getMonthlyAllowances();
+      const grossWeekly = grossMonthly * 12 / 52;
+      const grossDaily = grossWeekly / 7;
+
+      const start = new Date(startVal);
+      const end = new Date(endVal);
+      const serviceWeeks = Math.max(0, (end - start) / (1000 * 60 * 60 * 24 * 7));
+
+      const overrideRaw = document.getElementById('noticeContractValue').value;
+      const overrideValue = Number(overrideRaw);
+      const overrideUnit = document.getElementById('noticeContractUnit').value;
+      const hasOverride = overrideRaw !== '' && Number.isFinite(overrideValue) && overrideValue > 0;
+
+      let tierLabel, entitledPay;
+      if (hasOverride) {
+        entitledPay = overrideUnit === 'months' ? grossMonthly * overrideValue
+          : overrideUnit === 'weeks' ? grossWeekly * overrideValue
+            : grossDaily * overrideValue;
+        tierLabel = `Contract-specified notice: ${overrideValue} ${overrideUnit}`;
+      } else if (serviceWeeks < 26) {
+        entitledPay = grossDaily;
+        tierLabel = "1 day's pay — under 26 weeks' service";
+      } else if (serviceWeeks < 104) {
+        entitledPay = grossWeekly;
+        tierLabel = "1 week's pay — 26 weeks to under 2 years' service";
+      } else if (serviceWeeks < 260) {
+        entitledPay = grossWeekly * 2;
+        tierLabel = "2 weeks' pay — 2 years to under 5 years' service";
+      } else {
+        entitledPay = grossWeekly * 4;
+        tierLabel = "4 weeks' pay — 5 years or more service";
+      }
+
+      const daysGivenRaw = Number(document.getElementById('noticeDaysGiven').value);
+      const daysGiven = Number.isFinite(daysGivenRaw) ? Math.max(0, daysGivenRaw) : 0;
+      const noticeGivenPay = daysGiven * grossDaily;
+      const owedAmount = Math.max(0, entitledPay - noticeGivenPay);
+
+      return { employmentStartDate: startVal, terminationDate: endVal, tierLabel, entitledPay, daysGiven, noticeGivenPay, owedAmount };
+    }
+
+    /** Renders the notice-claim result box from {@link computeSalaryInLieuOfNotice}. */
+    function renderNoticeClaimResult() {
+      const el = document.getElementById('noticeClaimResult');
+      const result = computeSalaryInLieuOfNotice();
+      if (!result) {
+        el.innerHTML = '';
+        return;
+      }
+      el.innerHTML = `
+    <div class="ipa-field-group"><span class="field-label">Entitlement</span><strong>${escapeHtml(result.tierLabel)}</strong></div>
+    <div class="ipa-field-group"><span class="field-label">Full notice pay</span><strong>${formatMoney(result.entitledPay)}</strong></div>
+    <div class="ipa-field-group"><span class="field-label">Notice already given (${result.daysGiven} day(s))</span><strong>${formatMoney(result.noticeGivenPay)}</strong></div>
+    <div class="ipa-field-group"><span class="field-label">Amount owed</span><strong>${formatMoney(result.owedAmount)}</strong></div>`;
+    }
+
+    // Employment Act s.88A — salary-in-lieu of unused annual leave, paid out on termination. Only
+    // the worker's final, partial leave-year is computed here (prior completed leave-years are
+    // assumed already taken/settled — a caseworker with reason to believe otherwise handles that as
+    // a separate finding, this isn't meant to reconstruct a multi-year leave ledger). Tier table
+    // matches docs/employment-act-1968-rules.md's own note: 7 days in year 1, +1 day per completed
+    // year of continuous service, capped at 14 — applied to the completed-years count as of the
+    // start of the final leave-year, then prorated by how much of that final year was actually
+    // served. No payout at all if total service is 3 months or under (s.88A's own threshold).
+    /** Computes the salary-in-lieu-of-unused-annual-leave claim (s.88A), or `null` if not toggled on/incomplete. */
+    function computeSalaryInLieuOfLeave() {
+      if (!document.getElementById('leaveClaimToggle').checked) return null;
+      const startVal = document.getElementById('leaveEmploymentStart').value;
+      const endVal = document.getElementById('leaveTerminationDate').value;
+      const basicSalary = getBasicMonthlySalary();
+      if (!startVal || !endVal || basicSalary === null) return null;
+
+      const start = new Date(startVal);
+      const end = new Date(endVal);
+      const totalMonthsServed = Math.max(0, (end - start) / (1000 * 60 * 60 * 24 * (365.25 / 12)));
+      if (totalMonthsServed <= 3) {
+        return { employmentStartDate: startVal, terminationDate: endVal, qualifies: false, completedYears: 0, monthsIntoFinalYear: 0, tierDaysForFinalYear: 0, proratedEntitlementDays: 0, daysTaken: 0, daysOwed: 0, owedAmount: 0 };
+      }
+
+      const completedYears = Math.floor(totalMonthsServed / 12);
+      const monthsIntoFinalYear = totalMonthsServed - completedYears * 12;
+      const tierDaysForFinalYear = Math.min(14, 7 + completedYears);
+      const proratedEntitlementDays = tierDaysForFinalYear * (monthsIntoFinalYear / 12);
+
+      const daysTakenRaw = Number(document.getElementById('leaveDaysTaken').value);
+      const daysTaken = Number.isFinite(daysTakenRaw) ? Math.max(0, daysTakenRaw) : 0;
+      const daysOwed = Math.max(0, proratedEntitlementDays - daysTaken);
+
+      const grossMonthly = basicSalary + getMonthlyAllowances();
+      const grossDaily = (grossMonthly * 12 / 52) / 7;
+      const owedAmount = daysOwed * grossDaily;
+
+      return { employmentStartDate: startVal, terminationDate: endVal, qualifies: true, completedYears, monthsIntoFinalYear, tierDaysForFinalYear, proratedEntitlementDays, daysTaken, daysOwed, owedAmount };
+    }
+
+    /** Renders the annual-leave-claim result box from {@link computeSalaryInLieuOfLeave}. */
+    function renderLeaveClaimResult() {
+      const el = document.getElementById('leaveClaimResult');
+      const result = computeSalaryInLieuOfLeave();
+      if (!result) {
+        el.innerHTML = '';
+        return;
+      }
+      if (!result.qualifies) {
+        el.innerHTML = `<div class="ipa-field-group"><span class="field-label">Not payable</span><strong>service ≤ 3 months</strong></div>`;
+        return;
+      }
+      el.innerHTML = `
+    <div class="ipa-field-group"><span class="field-label">Final leave-year entitlement</span><strong>${result.tierDaysForFinalYear.toFixed(0)} days/year, prorated to ${result.proratedEntitlementDays.toFixed(2)} days</strong></div>
+    <div class="ipa-field-group"><span class="field-label">Days already taken</span><strong>${result.daysTaken.toFixed(2)}</strong></div>
+    <div class="ipa-field-group"><span class="field-label">Days owed</span><strong>${result.daysOwed.toFixed(2)}</strong></div>
+    <div class="ipa-field-group"><span class="field-label">Amount owed</span><strong>${formatMoney(result.owedAmount)}</strong></div>`;
+    }
+
+    // Employment Act s.89 — sick leave pay. A step table by length of service (not a smooth
+    // prorate like annual leave): none before 3 months, then a fixed non-hospitalization/
+    // hospitalization day count per tier, topping out at 14/60 days for 6+ months' service. The
+    // hospitalization cap is INCLUSIVE of the non-hospitalization days within it (per MOM's own
+    // wording — "60 days hospitalisation leave, includes the 14 days non-hospitalisation leave"),
+    // so the hospitalization-only headroom is (hospCap - nonHospCap), not the full hospCap on top
+    // of whatever non-hospitalization days were already used. Unpaid day counts are entered by the
+    // caseworker directly (see the file-list note in the HTML) — cross-checked against the worker's
+    // own MCs/medical records off-app, not sourced from the Medical bills upload (that upload is a
+    // separate, unrelated check — unreimbursed billed amounts, not leave days; see
+    // computeMedicalBillsClaim).
+    /** Computes the sick leave pay claim (s.89), or `null` if not toggled on/incomplete. */
+    function computeSickLeaveClaim() {
+      if (!document.getElementById('sickClaimToggle').checked) return null;
+      const startVal = document.getElementById('sickEmploymentStart').value;
+      const asOfVal = document.getElementById('sickAsOfDate').value;
+      const basicSalary = getBasicMonthlySalary();
+      if (!startVal || !asOfVal || basicSalary === null) return null;
+
+      const start = new Date(startVal);
+      const asOf = new Date(asOfVal);
+      const monthsServed = Math.max(0, (asOf - start) / (1000 * 60 * 60 * 24 * (365.25 / 12)));
+
+      let nonHospCap, hospCap, tierLabel;
+      if (monthsServed < 3) {
+        nonHospCap = 0; hospCap = 0; tierLabel = 'Not payable — under 3 months’ service';
+      } else if (monthsServed < 4) {
+        nonHospCap = 5; hospCap = 15; tierLabel = '3 months’ service tier';
+      } else if (monthsServed < 5) {
+        nonHospCap = 8; hospCap = 30; tierLabel = '4 months’ service tier';
+      } else if (monthsServed < 6) {
+        nonHospCap = 11; hospCap = 45; tierLabel = '5 months’ service tier';
+      } else {
+        nonHospCap = 14; hospCap = 60; tierLabel = '6+ months’ service tier';
+      }
+      const hospOnlyCap = Math.max(0, hospCap - nonHospCap);
+
+      const daysNonHospRaw = Number(document.getElementById('sickDaysNonHosp').value);
+      const daysHospRaw = Number(document.getElementById('sickDaysHosp').value);
+      const daysNonHospTaken = Number.isFinite(daysNonHospRaw) ? Math.max(0, daysNonHospRaw) : 0;
+      const daysHospTaken = Number.isFinite(daysHospRaw) ? Math.max(0, daysHospRaw) : 0;
+
+      const owedNonHospDays = Math.min(daysNonHospTaken, nonHospCap);
+      const owedHospDays = Math.min(daysHospTaken, hospOnlyCap);
+      const totalDaysOwed = owedNonHospDays + owedHospDays;
+
+      const grossMonthly = basicSalary + getMonthlyAllowances();
+      const grossDaily = (grossMonthly * 12 / 52) / 7;
+      const owedAmount = totalDaysOwed * grossDaily;
+
+      return { employmentStartDate: startVal, asOfDate: asOfVal, qualifies: monthsServed >= 3, tierLabel, nonHospCap, hospCap, owedNonHospDays, owedHospDays, totalDaysOwed, owedAmount };
+    }
+
+    /** Renders the sick-leave-claim result box from {@link computeSickLeaveClaim}. */
+    function renderSickClaimResult() {
+      const el = document.getElementById('sickClaimResult');
+      const result = computeSickLeaveClaim();
+      if (!result) {
+        el.innerHTML = '';
+        return;
+      }
+      if (!result.qualifies) {
+        el.innerHTML = `<div class="ipa-field-group"><span class="field-label">Not payable</span><strong>service under 3 months</strong></div>`;
+        return;
+      }
+      el.innerHTML = `
+    <div class="ipa-field-group"><span class="field-label">Entitlement tier</span><strong>${escapeHtml(result.tierLabel)} (${result.nonHospCap} non-hosp / ${result.hospCap} hosp days)</strong></div>
+    <div class="ipa-field-group"><span class="field-label">Non-hospitalization days owed</span><strong>${result.owedNonHospDays.toFixed(2)}</strong></div>
+    <div class="ipa-field-group"><span class="field-label">Hospitalization days owed</span><strong>${result.owedHospDays.toFixed(2)}</strong></div>
+    <div class="ipa-field-group"><span class="field-label">Amount owed</span><strong>${formatMoney(result.owedAmount)}</strong></div>`;
     }
 
     // Re-evaluates one row's three Employment Act guardrails: the 12h/day hard cap (s.38(8)), whether
     // this date is the declared weekly rest day worked (s.37, needs the initiator radio), and whether
     // it's a public holiday worked (s.88(4)). Called on every edit to this row, and whenever a global
     // input (salary, work week, declared rest day) that the underlying formulas depend on changes.
+    // ===== Row guardrails and monthly pay totals =====
+    /** Re-evaluates one row's 12h/day cap, rest-day-worked, and public-holiday-worked guardrails. */
     function recomputeRowGuardrails(li) {
       const dateVal = li.querySelector('.f-date').value;
       const isRestDay = li.dataset.restDay === '1';
@@ -2138,6 +2955,7 @@
 
     // s.38(5): overtime must not exceed 72 hours in a calendar month. OT is hours beyond
     // NORMAL_HOURS_PER_DAY, summed per month across every worked row currently on screen.
+    /** Recomputes monthly pay totals and flags any month exceeding the 72h/month OT cap (s.38(5)). */
     function recomputeMonthlyOtCap() {
       recomputeMonthlyPayTotals();
       const otByMonth = new Map();
@@ -2164,30 +2982,36 @@
         .join('');
     }
 
-    // Splits each month's actual bank-matched payment across the four pay categories in a fixed
-    // priority order — basic salary first, then OT, then rest-day-worked, then public-holiday-worked
-    // — filling each category's full amount before spilling into the next, per caseworker request
-    // (an employer paying, say, $1800 against a $1700 basic salary is read as "basic salary paid in
-    // full, $100 of it went toward OT" rather than splitting proportionally or ambiguously).
-    // Any amount left over after all four categories are filled for a month (the worker was paid
+    // Splits each month's actual bank-matched payment across the five pay categories in a fixed
+    // priority order — basic salary first, then fixed allowances (paid together with basic in the
+    // same monthly wage), then OT, then rest-day-worked, then public-holiday-worked — filling each
+    // category's full amount before spilling into the next, per caseworker request (an employer
+    // paying, say, $1800 against a $1700 basic salary is read as "basic salary paid in full, $100
+    // of it went toward the next category" rather than splitting proportionally or ambiguously).
+    // Any amount left over after all five categories are filled for a month (the worker was paid
     // MORE than everything owed that month) carries forward as extra available payment for the
-    // NEXT month, applied through the same basic->OT->rest->PH order again — months are walked in
-    // chronological order (monthKeys is already sorted "YYYY-MM" ascending) specifically so this
-    // carry-forward flows the right direction. Returns a Map monthKey -> {basic, ot, rest, ph}.
-    function allocatePaymentsWaterfall(monthKeys, basicSalary, hourly, totals, paidByMonth) {
+    // NEXT month, applied through the same order again — months are walked in chronological order
+    // (monthKeys is already sorted "YYYY-MM" ascending) specifically so this carry-forward flows
+    // the right direction. Returns a Map monthKey -> {basic, allowances, ot, rest, ph}.
+    /**
+     * Splits each month's actual bank-matched payment across the five pay categories in priority order.
+     * @returns {Map<string, {basic: number, allowances: number, ot: number, rest: number, ph: number}>}
+     */
+    function allocatePaymentsWaterfall(monthKeys, basicFullAmountByMonth, allowancesFullAmountByMonth, otRate, totals, paidByMonth) {
       const allocated = new Map();
       let carryover = 0;
       for (const month of monthKeys) {
         const t = totals.get(month) || { otHours: 0, restDayPay: 0, phPay: 0 };
         const fullAmounts = {
-          basic: basicSalary,
-          ot: 1.5 * hourly * t.otHours,
+          basic: basicFullAmountByMonth.get(month) || 0,
+          allowances: allowancesFullAmountByMonth.get(month) || 0,
+          ot: otRate * t.otHours,
           rest: t.restDayPay,
           ph: t.phPay,
         };
         let available = (paidByMonth.get(month) || 0) + carryover;
-        const buckets = { basic: 0, ot: 0, rest: 0, ph: 0 };
-        for (const key of ['basic', 'ot', 'rest', 'ph']) {
+        const buckets = { basic: 0, allowances: 0, ot: 0, rest: 0, ph: 0 };
+        for (const key of ['basic', 'allowances', 'ot', 'rest', 'ph']) {
           const take = Math.max(0, Math.min(available, fullAmounts[key]));
           buckets[key] = take;
           available -= take;
@@ -2202,8 +3026,9 @@
     // rest-day-worked pay, and public-holiday-worked pay, summed from every row currently on screen.
     // Basic salary already covers ordinary working days, so only these three components are added
     // here. Advisory only, same as every other guardrail — not written into the generated spreadsheet.
+    /** Recomputes every month's earned/paid/owed totals across all pay categories and re-renders the breakdown tables. */
     function recomputeMonthlyPayTotals() {
-      const hourly = getHourlyBasicRate();
+      const otRate = getEffectiveOtRate();
       const restDayOfWeek = getDeclaredRestDayOfWeek();
       const totals = new Map(); // monthKey -> { netHours, otHours, restDayPay, phPay }
       const claimedDatesByMonth = new Map(); // monthKey -> Set of dateVal, every row regardless of rest-day/netHours
@@ -2252,9 +3077,11 @@
       // still needs to show up here with $0 OT/rest-day/PH pay, not silently vanish from the table.
       const monthKeys = [...new Set([...totals.keys(), ...claimedDatesByMonth.keys()])].sort();
       const basicSalary = getBasicMonthlySalary();
-      if (monthKeys.length === 0 || hourly === null || basicSalary === null) {
+      if (monthKeys.length === 0 || otRate === null || basicSalary === null) {
         el.style.display = 'none';
         el.innerHTML = '';
+        document.getElementById('allowancesBreakdown').style.display = 'none';
+        document.getElementById('allowancesBreakdown').innerHTML = '';
         document.getElementById('overtimeBreakdown').style.display = 'none';
         document.getElementById('overtimeBreakdown').innerHTML = '';
         document.getElementById('restBreakdown').style.display = 'none';
@@ -2262,24 +3089,54 @@
         document.getElementById('publicHolidayBreakdown').style.display = 'none';
         document.getElementById('publicHolidayBreakdown').innerHTML = '';
         totalOwedCache = null;
+        lastBreakdownForExport = null;
+        document.getElementById('exportDocxBtn').style.display = 'none';
+        document.getElementById('exportPdfBtn').style.display = 'none';
         updateSummarySectionVisibility();
         updateOwedVsPaidBox();
         return;
       }
       el.style.display = 'block';
 
-      // Bank statement credits/debits, netted per month — same sign convention as
-      // formatBankTransactionsTable's own Total row. Undated manual rows (a caseworker added an
-      // amount without a date) have no month to attribute to, so they're left out of this
-      // per-month split; they're still counted in the overall totalPaidCache/owed-vs-paid box.
+      // "Full amount" per month = gross rate of pay, prorated by days actually worked/claimed that
+      // month: (days claimed / days available in month) × (the category's own monthly figure). A
+      // part month (worker joined/left partway, or only some days are being claimed) only earns/
+      // owes a fraction of the full month's entitlement, not the whole flat monthly figure.
+      // Basic salary and fixed allowances are prorated the same way but kept as SEPARATE categories
+      // (own breakdown table, own waterfall bucket) rather than blended into one figure — otherwise
+      // a standalone "Non-payment and short payment of allowances" table would double-count
+      // allowances that were already folded into the Basic Salary Breakdown's own "Full amount".
+      const monthlyAllowances = getMonthlyAllowances();
+      const basicFullAmountByMonth = new Map();
+      const allowancesFullAmountByMonth = new Map();
+      for (const month of monthKeys) {
+        const [fy, fm] = month.split('-');
+        const daysInMonth = new Date(Number(fy), Number(fm), 0).getDate();
+        const daysClaimed = claimedDatesByMonth.get(month)?.size || 0;
+        const proration = daysClaimed / daysInMonth;
+        basicFullAmountByMonth.set(month, proration * basicSalary);
+        allowancesFullAmountByMonth.set(month, proration * monthlyAllowances);
+      }
+
+      // "Payment received" only counts money actually coming IN (credits) — debits/withdrawals are
+      // ignored here rather than netted against credits, since a withdrawal from the worker's own
+      // account isn't the employer taking back wages, it's unrelated account activity. Undated
+      // manual rows (a caseworker added an amount without a date) have no month to attribute to, so
+      // they're left out of this per-month split; they're still counted in the overall
+      // totalPaidCache/owed-vs-paid box (see refreshBankSummary, same credits-only rule there too).
+      // Wages are paid a month in arrears here (October's payment is September's salary, November's
+      // is October's, etc.) — a transaction's OWN month is never what it's earned-vs-paid against;
+      // it's attributed to the month before it instead, across all four breakdown tables (basic,
+      // overtime, rest days, public holidays all share this same paidByMonth/allocated pair).
       const paidByMonth = new Map();
       collectAllBankTransactions().forEach(t => {
-        if (!t.date) return;
-        const monthKey = t.date.slice(0, 7);
-        const signed = t.direction === 'debit' ? -t.amount : t.amount;
-        paidByMonth.set(monthKey, (paidByMonth.get(monthKey) || 0) + signed);
+        if (!t.date || t.direction === 'debit') return;
+        const [ty, tm] = t.date.slice(0, 7).split('-').map(Number);
+        const earnedForMonth = new Date(ty, tm - 1 - 1, 1); // one calendar month before the payment date
+        const monthKey = `${earnedForMonth.getFullYear()}-${String(earnedForMonth.getMonth() + 1).padStart(2, '0')}`;
+        paidByMonth.set(monthKey, (paidByMonth.get(monthKey) || 0) + t.amount);
       });
-      const allocated = allocatePaymentsWaterfall(monthKeys, basicSalary, hourly, totals, paidByMonth);
+      const allocated = allocatePaymentsWaterfall(monthKeys, basicFullAmountByMonth, allowancesFullAmountByMonth, otRate, totals, paidByMonth);
 
       // Grand total across every month, added as a bottom Total row — each month's own row is a
       // sub-amount, this is the figure the caseworker actually wants to hand to the worker.
@@ -2287,17 +3144,18 @@
       let sumComputedClaim = 0;
       const rows = monthKeys.map(month => {
         const t = totals.get(month) || { netHours: 0, otHours: 0, restDayPay: 0, phPay: 0 };
-        // Basic salary only — OT, rest-day-worked, and public-holiday-worked pay each already have
-        // their own dedicated breakdown table (renderOvertimeBreakdown/renderRestBreakdown/PH),
-        // so folding them in here double-counted them across tables and made this column not
-        // actually mean "basic salary" despite the section's name.
-        const fullAmount = basicSalary;
-        sumTotal += fullAmount;
 
         const [yearStr, monthNumStr] = month.split('-');
         const daysInMonth = new Date(Number(yearStr), Number(monthNumStr), 0).getDate();
         const daysClaimed = claimedDatesByMonth.get(month)?.size || 0;
         const isFullMonth = daysClaimed === daysInMonth;
+
+        // Basic salary's gross rate of pay, prorated by days claimed — OT, rest-day-worked, and
+        // public-holiday-worked pay each already have their own dedicated breakdown table
+        // (renderOvertimeBreakdown/renderRestBreakdown/PH), so folding them in here double-counted
+        // them across tables.
+        const fullAmount = basicFullAmountByMonth.get(month);
+        sumTotal += fullAmount;
 
         const paymentReceived = allocated.get(month).basic;
         const computedClaim = fullAmount - paymentReceived;
@@ -2331,27 +3189,82 @@
       let grossOwed = sumTotal;
       for (const month of monthKeys) {
         const t = totals.get(month) || { otHours: 0, restDayPay: 0, phPay: 0 };
-        grossOwed += 1.5 * hourly * t.otHours + t.restDayPay + t.phPay;
+        grossOwed += otRate * t.otHours + t.restDayPay + t.phPay;
       }
+      for (const month of monthKeys) {
+        grossOwed += allowancesFullAmountByMonth.get(month) || 0;
+      }
+      const noticeClaim = computeSalaryInLieuOfNotice();
+      if (noticeClaim) grossOwed += noticeClaim.owedAmount;
+      const leaveClaim = computeSalaryInLieuOfLeave();
+      if (leaveClaim && leaveClaim.qualifies) grossOwed += leaveClaim.owedAmount;
+      const sickClaim = computeSickLeaveClaim();
+      if (sickClaim && sickClaim.qualifies) grossOwed += sickClaim.owedAmount;
+      const medicalBillsClaim = computeMedicalBillsClaim();
+      if (medicalBillsClaim) grossOwed += medicalBillsClaim.owedAmount;
       totalOwedCache = grossOwed;
-      renderOvertimeBreakdown(monthKeys, totals, hourly, allocated);
+      lastBreakdownForExport = { monthKeys, totals, otRate, allocated, restDayWorkedDatesByMonth, phWorkedDatesByMonth, basicSalary, basicFullAmountByMonth, allowancesFullAmountByMonth, noticeClaim, leaveClaim, sickClaim, medicalBillsClaim };
+      document.getElementById('exportDocxBtn').style.display = '';
+      document.getElementById('exportPdfBtn').style.display = '';
+      renderAllowancesBreakdown(monthKeys, allowancesFullAmountByMonth, allocated);
+      renderOvertimeBreakdown(monthKeys, totals, otRate, allocated);
       renderRestBreakdown(monthKeys, totals, restDayWorkedDatesByMonth, allocated);
       renderPublicHolidayBreakdown(monthKeys, totals, phWorkedDatesByMonth, allocated);
       updateSummarySectionVisibility();
       updateOwedVsPaidBox();
     }
 
+    // Fixed-allowances-only view, same idea as renderOvertimeBreakdown — allowancesFullAmountByMonth
+    // is basic salary's own prorated-by-days-claimed formula applied to monthly allowances instead
+    // (see recomputeMonthlyPayTotals), kept as its own table/waterfall bucket rather than blended
+    // into the Basic Salary Breakdown so neither table double-counts the other.
+    // ===== Per-category breakdown table renderers =====
+    /** Renders the Fixed Allowances Breakdown table. */
+    function renderAllowancesBreakdown(monthKeys, allowancesFullAmountByMonth, allocated) {
+      const el = document.getElementById('allowancesBreakdown');
+      if (monthKeys.length === 0) {
+        el.style.display = 'none';
+        el.innerHTML = '';
+        return;
+      }
+      el.style.display = 'block';
+      let sumComputedClaim = 0;
+      const rows = monthKeys.map(month => {
+        const fullAmount = allowancesFullAmountByMonth.get(month) || 0;
+        const paymentReceived = allocated.get(month).allowances;
+        const computedClaim = fullAmount - paymentReceived;
+        sumComputedClaim += computedClaim;
+        const [yearStr, monthNumStr] = month.split('-');
+        return `<tr>
+      <td>${yearStr}</td>
+      <td>${MONTH_ABBR[Number(monthNumStr) - 1]}</td>
+      <td>${formatMoney(fullAmount)}</td>
+      <td>${formatMoney(paymentReceived)}</td>
+      <td>${formatMoney(computedClaim)}</td>
+    </tr>`;
+      }).join('');
+      const totalRow = `<tr class="pay-total-row">
+      <td colspan="4">Total</td>
+      <td><strong>${formatMoney(sumComputedClaim)}</strong></td>
+    </tr>`;
+      el.innerHTML = `<h3>Fixed Allowances Breakdown</h3><table class="pay-total-table">
+    <thead><tr><th>Year</th><th>Month</th><th>Full amount</th><th>Payment received</th><th>Computed claim</th></tr></thead>
+    <tbody>${rows}${totalRow}</tbody>
+  </table>`;
+    }
+
     // OT-only view of the same per-month totals recomputeMonthlyPayTotals already built — separate
     // table since a caseworker may want to claim/track overtime independently of the basic-salary
     // figure. Payment received comes from allocatePaymentsWaterfall — the portion of that month's
     // actual bank-matched payment allocated to OT after basic salary was filled first.
-    function renderOvertimeBreakdown(monthKeys, totals, hourly, allocated) {
+    /** Renders the Overtime Breakdown table. */
+    function renderOvertimeBreakdown(monthKeys, totals, otRate, allocated) {
       const el = document.getElementById('overtimeBreakdown');
       el.style.display = 'block';
       let sumTotal = 0;
       const rows = monthKeys.map(month => {
         const t = totals.get(month) || { otHours: 0 };
-        const fullAmount = 1.5 * hourly * t.otHours;
+        const fullAmount = otRate * t.otHours;
         const paymentReceived = allocated.get(month).ot;
         const computedClaim = fullAmount - paymentReceived;
         sumTotal += computedClaim;
@@ -2383,6 +3296,7 @@
     // Always shows every claimed month, even ones with zero rest days worked (same as
     // renderOvertimeBreakdown/renderPublicHolidayBreakdown) — a caseworker wants to see "$0,
     // nothing worked" as confirmation the app looked, not have the section silently vanish.
+    /** Renders the Rest Days Breakdown table. */
     function renderRestBreakdown(monthKeys, totals, restDayWorkedDatesByMonth, allocated) {
       const el = document.getElementById('restBreakdown');
       if (monthKeys.length === 0) {
@@ -2428,6 +3342,7 @@
     // renderOvertimeBreakdown), even ones with zero PH days worked — per caseworker request, a
     // caseworker checking a claim wants to SEE "$0, nothing worked" as confirmation the app looked,
     // not have the section silently vanish and leave them unsure whether it was checked at all.
+    /** Renders the Public Holiday Breakdown table. */
     function renderPublicHolidayBreakdown(monthKeys, totals, phWorkedDatesByMonth, allocated) {
       const el = document.getElementById('publicHolidayBreakdown');
       if (monthKeys.length === 0) {
@@ -2467,12 +3382,14 @@
 
     // Top-level orchestrator — called whenever something ALL rows' guardrails depend on changes
     // (salary, allowances, work week, declared rest day), as opposed to a single row's own edit.
+    /** Recomputes every row's guardrails plus the monthly OT cap — call when a global input changes. */
     function recomputeAllGuardrails() {
       renderComputedRates();
       document.querySelectorAll('.review-row').forEach(recomputeRowGuardrails);
       recomputeMonthlyOtCap();
     }
 
+    /** Reads the declared standard meal break (radio group, or the custom hours field). */
     function getStandardBreakHours() {
       const checked = document.querySelector('input[name="breakStandard"]:checked').value;
       if (checked === 'other') return Number(document.getElementById('breakOtherHours').value || 0);
@@ -2483,6 +3400,7 @@
     // standard from the form above the upload fields — covers both a genuinely observed gap (a
     // multi-shift day's actual measured break) and the plain default a single-shift day starts with,
     // since either way a mismatch is something the reviewer should look at before trusting the row.
+    /** Flags a row whose break value doesn't match the declared standard break. */
     function checkBreakMismatch(li) {
       const note = li.querySelector('.break-mismatch-note');
       if (li.dataset.restDay === '1') { note.style.display = 'none'; li.classList.remove('break-flag'); return; }
@@ -2495,6 +3413,7 @@
       li.classList.add('break-flag');
     }
 
+    /** Reads the declared half-day-of-week radio (5.5-day week only), or `null` if none checked. */
     function getHalfDayOfWeek() {
       const checked = document.querySelector('input[name="halfDayOfWeek"]:checked');
       return checked ? Number(checked.value) : null;
@@ -2504,6 +3423,8 @@
     // whose rows include another date in the same Sun–Sat week. Keeps the auto-inserted row sitting
     // right next to the scan it's filling a gap in, in the SAME list as the extracted rows (not a
     // separate "+ Add day" list) so it can be slotted into date order alongside them.
+    // ===== Missing-day auto-insert =====
+    /** Finds the page card whose rows share a Sun–Sat week with `dateStr`, for placing an auto-inserted row nearby. */
     function findPageListForWeek(dateStr, pageCards) {
       const [y, m, d] = dateStr.split('-').map(Number);
       const target = new Date(y, m - 1, d);
@@ -2530,6 +3451,7 @@
     // meaningful signal a page card is the right home for this date; "just pick the last page card"
     // is not — that was blindly dumping dates from a completely different (often phantom, see
     // detectAndInsertMissingDays) month into whatever page happened to be last in the list.
+    /** Fallback for {@link findPageListForWeek}: finds a page card sharing `dateStr`'s month instead. */
     function findPageListForMonth(dateStr, pageCards) {
       const monthKey = dateStr.slice(0, 7);
       for (const card of pageCards) {
@@ -2544,6 +3466,7 @@
     // rows + any auto-inserted ones from an earlier date in this same pass), instead of appending at
     // the bottom — so the reviewer reads the whole page top-to-bottom as one chronological list.
     // Clears the "No entries extracted from this page" placeholder if this is the first row landing.
+    /** Inserts a review row into `container` in date order, clearing the "no entries" placeholder if present. */
     function insertReviewRowSorted(container, row) {
       const emptyLi = container.querySelector('li.empty');
       if (emptyLi) emptyLi.remove();
@@ -2558,6 +3481,7 @@
     // Runs automatically once a scan's rows are all rendered (see renderFinalResult) — silently does
     // nothing if there's not enough data yet (no rows, or no default shift timing set), since there's
     // no user action here to report back to.
+    /** Auto-inserts a default-shift row for any uncovered date implied by the declared work week, flagged for review. */
     function detectAndInsertMissingDays() {
       const rows = collectAllReviewRows();
       if (rows.length === 0) return;
@@ -2659,25 +3583,33 @@
         (currentPageReviews || []).flatMap(page => (page.warnings || []).map(w => w.date).filter(Boolean))
       );
 
+      // Same "dash = deliberate signal, resolve it" treatment this app already gives an explicit
+      // dash mark on a date — applied here to a date that's blank instead (per lib/ocr.ts, a
+      // genuinely blank box never produces a row at all, so it lands here as "missing" either way).
+      // A blank box on the worker's declared weekly rest day isn't ambiguous — it's exactly what an
+      // unworked rest day looks like — so it's confirmed as a rest day row instead of being silently
+      // dropped (which used to leave it uncovered and surface a generic, misleading "please check
+      // the source PDF" coverage warning later, even though the declared pattern already answers it).
       const missingDates = [];
+      const missingRestDates = [];
       for (const monthKey of touchedMonths) {
         const [my, mm] = monthKey.split('-').map(Number);
         const range = fillRangeForMonth(new Date(my, mm - 1, 1), new Date(my, mm, 0));
         if (!range) continue;
         for (let d = new Date(range.fillStart); d <= range.fillEnd; d.setDate(d.getDate() + 1)) {
-          if (d.getDay() === restDayOfWeek) continue; // declared rest day - expected to have no entry
           const dateStr = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+          if (accountedDates.has(dateStr)) continue;
+          if (datesWithWarnings.has(dateStr)) continue;
+          if (d.getDay() === restDayOfWeek) { missingRestDates.push(dateStr); continue; }
           // A public holiday with no extracted entry is genuinely ambiguous (worker may have taken
           // it off, same as a rest day) — fabricating a full default-shift workday here would be a
           // guess this feature isn't meant to make, so leave it for the caseworker to check by hand.
           if (isPublicHoliday(dateStr)) continue;
-          if (accountedDates.has(dateStr)) continue;
-          if (datesWithWarnings.has(dateStr)) continue;
           missingDates.push(dateStr);
         }
       }
 
-      if (missingDates.length === 0) return;
+      if (missingDates.length === 0 && missingRestDates.length === 0) return;
 
       // Scoped to pageReviewList specifically — .page-review-row is also used by the IPA and bank
       // statement cards now (page-by-page review), which don't have a .review-target-list and would
@@ -2705,8 +3637,24 @@
           autoInserted: true,
         });
       }
+      for (const dateStr of missingRestDates) {
+        const targetList = findPageListForWeek(dateStr, pageCards) || findPageListForMonth(dateStr, pageCards);
+        if (!targetList) continue;
+        insertReviewRowSorted(targetList, {
+          date: dateStr,
+          clockIn: null,
+          clockOut: null,
+          breakHours: null,
+          restDay: true,
+          guessed: false,
+          notes: `Auto-confirmed as this worker's declared weekly rest day — no timesheet entry found (blank box), consistent with the declared rest day pattern. Verify against the source document.`,
+          source: 'auto-inserted (missing day)',
+          autoInserted: true,
+        });
+      }
     }
 
+    /** Reads every editable review row currently in the DOM into plain `ReviewRow` objects. */
     function collectAllReviewRows() {
       const rows = [];
       for (const li of document.querySelectorAll('.review-row')) {
@@ -2731,6 +3679,8 @@
     // original pre-edit OCR output (currentPageReviews[idx].entries, from /api/process) to
     // /api/flag-page — building a raw-vs-corrected ground-truth pair for this specific misread,
     // rather than just recording that "something" was wrong.
+    // ===== Ground-truth auto-flagging =====
+    /** Reads one page card's current rows into the raw-entry shape `/api/flag-page` expects. */
     function buildCorrectedEntries(card) {
       const correctedEntries = [];
       for (const li of card.querySelectorAll('.review-row')) {
@@ -2755,6 +3705,7 @@
     // Order-independent signature of a page's worked/rest-day entries, for detecting whether the
     // reviewer changed anything from the raw scan (edited a time, added a row, or removed one) —
     // hours_worked entries aren't part of the editable rows so aren't comparable here.
+    /** Builds an order-independent signature of a page's entries, to detect whether the reviewer changed anything. */
     function entrySetSignature(entries) {
       return entries
         .map(e => e.type === 'rest_day' ? `${e.date}|rest_day` : e.type === 'worked' ? `${e.date}|worked|${e.clockIn}|${e.clockOut}` : null)
@@ -2767,6 +3718,7 @@
     // what the scan originally produced — replaces the old manual "Flag as wrong" button so a
     // reviewer's edits get captured automatically instead of relying on them to notice and click it.
     // Best-effort and non-blocking: a storage hiccup here shouldn't look like a Generate failure.
+    /** Silently saves a raw-vs-corrected ground-truth pair for every page the reviewer actually edited. */
     async function autoFlagChangedPages() {
       // Scoped to pageReviewList — .page-review-row is also used by the IPA/bank statement page-by-page
       // cards now, which would misalign this against currentPageReviews (positional, timesheet-only).
@@ -2796,7 +3748,16 @@
       }));
     }
 
-    function renderPageReview(page) {
+    // ===== Timesheet page-by-page review, rescan =====
+    /**
+     * Renders one timesheet page's review card (image, extracted rows list, rescan controls).
+     * @param {object} page - The `PageReview` from `/api/process`.
+     * @param {string} [key] - `"<fileIndex>-<pageIndex>"` into pdfsPreviewPages/pdfsRotations;
+     * `undefined` when this card isn't rescannable.
+     * @param {number} [reviewIndex] - This page's position in `currentPageReviews`.
+     * @returns {string} The card's HTML.
+     */
+    function renderPageReview(page, key, reviewIndex) {
       // hours_worked entries have no clock in/out at all (lib/ocr.ts's "hours_total" data model) —
       // there's no Start/End to make editable, and they're already flagged elsewhere as not written
       // to the spreadsheet, so they're shown here as plain read-only context rather than a row in the
@@ -2809,37 +3770,34 @@
         })
         .join('');
 
-      // Surfaced here too (not just the transient in-progress view) since detectAndInsertMissingDays
-      // deliberately skips auto-inserting a default row over any date named in one of these — without
-      // showing the warning itself in this, the FINAL view, that date would just look like a silent,
-      // unexplained gap instead of the "we saw something here but couldn't agree on it" it actually is.
-      // Exception: "missing_data" (the coverage check's generic "no entry anywhere for this date"
-      // catch-all) is filtered out of the on-screen text — it got noisy on files with several
-      // genuinely missing days — but stays in page.warnings unfiltered, so
-      // detectAndInsertMissingDays's auto-insert-skip protection for these dates is unaffected.
-      const visibleWarnings = (page.warnings || []).filter(w => w.category !== 'missing_data');
-      const warningsHtml = visibleWarnings.length
-        ? `<div class="row-notes">${visibleWarnings.map(w => escapeHtml(w.reason)).join('<br>')}</div>`
-        : '';
+      // page.warnings is still the source of truth for detectAndInsertMissingDays' skip logic (a
+      // dropped/flagged date must never get a fabricated default-shift row inserted over it) — just
+      // not rendered as a text block here anymore, per caseworker request (wall of text).
 
       // Only shown when a page actually used more than one model — the common case (primary model
       // alone handled everything cleanly) doesn't need this called out on every single card.
       const modelsUsedHtml = (page.modelsUsed || []).length > 1
-        ? `<div class="row-notes">Models used: ${page.modelsUsed.map(escapeHtml).join(', ')} (fallback model used because the primary model's attempts disagreed on at least one date — see warnings above)</div>`
+        ? `<div class="row-notes">Models used: ${page.modelsUsed.map(escapeHtml).join(', ')} (fallback model used because the primary model's attempts disagreed on at least one date)</div>`
         : '';
 
       // The <ul class="inline-review-list"> is left empty here — populated right after this page's
       // card lands in the DOM (see the /api/process success handler) with the reviewRows that trace
       // back to this exact page, so the editable Start/End/Break inputs sit right beside the image.
+      const rescanHtml = key !== undefined ? `
+        <div class="page-rescan-controls" data-file-index="${key.split('-')[0]}" data-page-index="${key.split('-')[1]}" data-key="${escapeHtml(key)}">
+          <button type="button" class="page-rotate-btn" title="Rotate this page before rescanning">⟳ Rotate</button>
+          <button type="button" class="page-rescan-btn">Rescan this page</button>
+        </div>
+        <div class="page-rescan-status"></div>` : '';
+
       return `
-    <div class="page-review-row">
+    <div class="page-review-row" data-review-index="${reviewIndex}">
       <div class="page-review-image">
-        <img src="data:image/png;base64,${page.image}" alt="${escapeHtml(page.source)}">
+        <img src="data:image/png;base64,${page.image}" alt="${escapeHtml(page.source)}">${rescanHtml}
       </div>
       <div class="page-review-details">
         <div class="page-review-source"><span>${escapeHtml(page.source)}</span></div>
         ${hoursOnlyHtml ? `<ul class="inline-review-list">${hoursOnlyHtml}</ul>` : ''}
-        ${warningsHtml}
         ${modelsUsedHtml}
         <ul class="inline-review-list review-target-list"></ul>
         <div class="page-add-day">
@@ -2851,27 +3809,193 @@
     </div>`;
     }
 
-    // Only basic monthly salary + fixed monthly allowances are shown here — every other extracted
-    // IPA field (employer/UEN/occupation/sector/rates/working hours/WP validity/deductions/notes) is
-    // still returned by the server (lib/ipa.ts) but intentionally not surfaced in this card.
+    // Generic poll for a background job kicked off purely to rescan ONE page — deliberately not
+    // pollJobUntilDone/pollBankJobUntilDone/pollMedicalJobUntilDone, which each drive the FULL
+    // batch's live-progress rendering (renderLivePages etc.) and would wipe out every other
+    // already-reviewed page's state. This just waits for the job to finish and hands back its
+    // result — the caller splices that single result into the right card itself.
+    // Returns the whole polled response (not just .result) — /api/process's job.result already
+    // carries each page's image inline (PageReview), but /api/bank-statement's and
+    // /api/medical-bills's job.result is a flattened, source-tagged list with the image stripped
+    // out (that lives in job.pages instead) — callers for those two need .pages[0], not .result.
+    /**
+     * Polls a single-page rescan job until it settles.
+     * @param {string} statusEndpoint - `/api/process`, `/api/bank-statement`, or `/api/medical-bills`.
+     * @param {string} jobId - The job id.
+     * @returns {Promise<object>} The full polled response (not just `.result` — see caller for why).
+     */
+    async function pollSinglePageJob(statusEndpoint, jobId) {
+      for (; ;) {
+        const res = await fetch(`${statusEndpoint}/${jobId}`);
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || `Server returned ${res.status}`);
+        if (data.status === 'done') return data;
+        if (data.status === 'error') throw new Error(data.error || 'Scan failed');
+        await new Promise(r => setTimeout(r, 1500));
+      }
+    }
+
+    // Wires one page card's rotate/rescan buttons — called both on the initial batch render and
+    // again on each fresh card a rescan produces (applyRescannedTimesheetPage), so the buttons keep
+    // working after repeated use. pdfsRotations[key] is reused as the running rotation state here,
+    // same object the pre-scan staging step wrote into — a rescan just keeps incrementing from
+    // wherever that page's rotation already stood, no separate state needed.
+    /** Wires one timesheet page card's Rotate/Rescan buttons. */
+    function wireTimesheetRescanControls(controls) {
+      const fileIndex = Number(controls.dataset.fileIndex);
+      const pageIndex = Number(controls.dataset.pageIndex);
+      const key = controls.dataset.key;
+      const statusEl = controls.nextElementSibling;
+      const rotateBtn = controls.querySelector('.page-rotate-btn');
+      const rescanBtn = controls.querySelector('.page-rescan-btn');
+      const img = controls.parentElement.querySelector('img');
+      // The displayed image is already server-rotated (whatever pdfsRotations[key] was at the last
+      // scan/rescan) — this tracks only the ADDITIONAL rotation since then, as a live CSS preview.
+      // Starts fresh at 0 every time this card is (re)wired (a new card after a rescan means a new
+      // closure), so it never has to know the image's own baseline rotation to compute a delta.
+      let previewDelta = 0;
+
+      rotateBtn.addEventListener('click', () => {
+        pdfsRotations[key] = ((pdfsRotations[key] || 0) + 90) % 360;
+        previewDelta = (previewDelta + 90) % 360;
+        img.style.transform = `rotate(${previewDelta}deg)`;
+        statusEl.className = 'page-rescan-status';
+        statusEl.textContent = `Pending rotation: +${previewDelta}° — click "Rescan this page" to apply and re-read it.`;
+      });
+
+      rescanBtn.addEventListener('click', async () => {
+        const file = pdfsInput.files[fileIndex];
+        if (!file) {
+          statusEl.className = 'page-rescan-status error';
+          statusEl.textContent = 'Original file no longer attached (selection changed since the scan ran) — re-upload and rescan the whole batch instead.';
+          return;
+        }
+        // /api/process requires an IPA letter on every request, not just the first — re-attach
+        // whatever's still in the IPA input (same "same session" assumption as the pdfs file above).
+        const ipaFile = ipaInput.files[0];
+        if (!ipaFile) {
+          statusEl.className = 'page-rescan-status error';
+          statusEl.textContent = 'IPA letter no longer attached (selection changed since the scan ran) — re-attach it before rescanning a single page.';
+          return;
+        }
+        rescanBtn.disabled = true;
+        statusEl.className = 'page-rescan-status';
+        statusEl.textContent = 'Rescanning…';
+
+        // Excludes every OTHER page of this same file — only the target page actually gets
+        // (re-)scanned; the rest of the batch, and the rest of this file, is left untouched.
+        const pageCount = pdfsPreviewPages.filter(p => p.fileIndex === fileIndex).length;
+        const excluded = [];
+        for (let pi = 0; pi < pageCount; pi++) if (pi !== pageIndex) excluded.push(`0-${pi}`);
+
+        const formData = new FormData();
+        formData.append('pdfs', file);
+        formData.append('ipa', ipaFile);
+        formData.append('rotations', JSON.stringify({ pdfs: { [`0-${pageIndex}`]: pdfsRotations[key] || 0 }, ipa: ipaRotationDeg }));
+        formData.append('excludedPages', JSON.stringify(excluded));
+        formData.append('standardBreakHours', getStandardBreakHours());
+        // Isolating this page from its neighbors (excludedPages above) means it can't borrow a year
+        // from an adjacent page the way the original full-batch scan could — see runProcessJob's
+        // fallbackYear param. Best available fallback: the first year the original scan detected
+        // anywhere in the batch: right virtually always (a real upload spans at most a couple of
+        // years), and even if wrong, the caseworker will immediately see it in the resulting dates.
+        if (currentYear && currentYear.length > 0) formData.append('fallbackYear', currentYear[0]);
+
+        try {
+          const res = await fetch('/api/process', { method: 'POST', body: formData });
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.error || `Server returned ${res.status}`);
+          const polled = await pollSinglePageJob('/api/process', data.jobId);
+          const result = polled.result;
+          if (!result || !result.pageReviews || result.pageReviews.length === 0) {
+            throw new Error('Scan finished but returned no page — this may not look like a timesheet page after rotating; double-check the rotation and try again.');
+          }
+          applyRescannedTimesheetPage(controls.closest('.page-review-row'), result, key);
+        } catch (err) {
+          statusEl.className = 'page-rescan-status error';
+          statusEl.textContent = 'Error: ' + err.message;
+        } finally {
+          rescanBtn.disabled = false;
+        }
+      });
+    }
+
+    // Splices a single rescanned page's fresh result into its existing card, in place — everything
+    // else in the review (every other page's rows, the summary totals so far) is left untouched.
+    // Rebuilds the whole card via renderPageReview (same function the initial batch render uses) so
+    // the two paths can never visually drift apart, then re-wires it exactly like a freshly-rendered
+    // card needs: rows inserted, "+ Add day" bound, rescan controls bound again for next time.
+    /** Splices a single rescanned timesheet page's fresh result into its existing card, in place. */
+    function applyRescannedTimesheetPage(rowEl, result, key) {
+      const reviewIndex = Number(rowEl.dataset.reviewIndex);
+      const newPage = result.pageReviews[0];
+      currentPageReviews[reviewIndex] = newPage;
+
+      const temp = document.createElement('div');
+      temp.innerHTML = renderPageReview(newPage, key, reviewIndex);
+      const newRowEl = temp.firstElementChild;
+      rowEl.replaceWith(newRowEl);
+
+      const container = newRowEl.querySelector('.review-target-list');
+      const matching = (result.reviewRows || []).filter(r => r.source.split(', ').includes(newPage.source));
+      if (matching.length === 0) {
+        container.innerHTML = '<li class="empty">No entries extracted from this page</li>';
+      } else {
+        for (const row of matching) appendReviewRow(container, row);
+      }
+
+      const addBtn = newRowEl.querySelector('.page-add-day-btn');
+      const extraList = newRowEl.querySelector('.page-extra-list');
+      addBtn.addEventListener('click', () => {
+        appendReviewRow(extraList, { date: '', clockIn: null, clockOut: null, breakHours: 1, restDay: false, guessed: false, notes: null, source: 'manually added' });
+      });
+
+      newRowEl.querySelectorAll('.page-rescan-controls').forEach(wireTimesheetRescanControls);
+      const newStatusEl = newRowEl.querySelector('.page-rescan-status');
+      newStatusEl.className = 'page-rescan-status success';
+      newStatusEl.textContent = 'Rescanned — rows updated below.';
+
+      detectAndInsertMissingDays();
+      recomputeMonthlyPayTotals();
+    }
+
+    // Only basic monthly salary, fixed monthly allowances, and the declared OT/daily-basic rates
+    // are shown here — every other extracted IPA field (employer/UEN/occupation/sector/hourly
+    // rate/working hours/WP validity/deductions/notes) is still returned by the server (lib/ipa.ts)
+    // but intentionally not surfaced in this card.
     // Allowances collapse to a single total ($) input rather than per-line-item rows — the model can
     // extract several named allowances (food, transport, etc.), but this view only needs the combined
     // figure, editable like any other field, empty (not 0) when nothing was scanned.
+    // ===== IPA review card =====
+    /** Builds one editable numeric IPA field's HTML. */
     function ipaField(field, label, value) {
       const v = value === null || value === undefined ? '' : escapeHtml(String(value));
       return `<div class="ipa-field-group"><label>${escapeHtml(label)}</label><input type="number" class="ipa-input" data-field="${field}" value="${v}"></div>`;
+    }
+    // Same as ipaField above but for the name/FIN/employer strings the Worker Personal Details
+    // export needs — those aren't numeric, so a text input rather than ipaField's type="number".
+    /** Builds one editable text-type IPA field's HTML (name/FIN/employer). */
+    function ipaFieldText(field, label, value) {
+      const v = value === null || value === undefined ? '' : escapeHtml(String(value));
+      return `<div class="ipa-field-group"><label>${escapeHtml(label)}</label><input type="text" class="ipa-input" data-field="${field}" value="${v}"></div>`;
     }
 
     // The ONLY editable version — goes in the page-by-page review, next to the IPA letter's own
     // thumbnail. Bare inputs, no heading/computed-rates clutter (that lives in the read-only Summary
     // card below instead).
+    /** Renders the editable IPA fields shown next to the IPA letter's thumbnail. */
     function renderIpaFieldsEditable(f) {
       const allowanceTotal = f.fixedMonthlyAllowances.length
         ? f.fixedMonthlyAllowances.reduce((sum, a) => sum + (typeof a.amount === 'number' ? a.amount : 0), 0)
         : null;
       return `<div class="ipa-field-grid">
+    ${ipaFieldText('workerName', 'Worker name', f.workerName)}
+    ${ipaFieldText('workerFin', 'FIN', f.workerFin)}
+    ${ipaFieldText('employerName', 'Name of employer', f.employerName)}
     ${ipaField('basicMonthlySalary', 'Basic monthly salary ($)', f.basicMonthlySalary)}
     ${ipaField('fixedMonthlyAllowances', 'Fixed monthly allowances ($)', allowanceTotal)}
+    ${ipaField('otRate', 'Declared OT rate ($/hr)', f.otRate)}
+    ${ipaField('dailyBasicRate', 'Declared daily basic rate ($)', f.dailyBasicRate)}
   </div>`;
     }
 
@@ -2881,23 +4005,33 @@
     // re-rendering this on every edit keeps Summary's figures in sync with whatever the caseworker
     // last typed there — otherwise this would show the stale scanned value right next to computed
     // rates that already reflect the edit (see the .ipa-input listener in renderFinalResult).
+    /** Renders the read-only IPA summary card, kept in sync with the editable fields above. */
     function renderIpaSummaryText() {
       const salaryEl = document.querySelector('#ipaPageReview input[data-field="basicMonthlySalary"]');
       const allowEl = document.querySelector('#ipaPageReview input[data-field="fixedMonthlyAllowances"]');
+      const otRateEl = document.querySelector('#ipaPageReview input[data-field="otRate"]');
+      const dailyBasicEl = document.querySelector('#ipaPageReview input[data-field="dailyBasicRate"]');
       const salary = salaryEl && salaryEl.value !== '' ? Number(salaryEl.value) : null;
       const allowances = allowEl && allowEl.value !== '' ? Number(allowEl.value) : null;
+      const otRate = otRateEl && otRateEl.value !== '' ? Number(otRateEl.value) : null;
+      const dailyBasic = dailyBasicEl && dailyBasicEl.value !== '' ? Number(dailyBasicEl.value) : null;
       ipaReviewEl.innerHTML = `
     <h3>IPA — declared employment terms</h3>
     <div class="ipa-field-grid">
       <div class="ipa-field-group"><span class="field-label">Basic monthly salary</span><strong>${formatMoney(salary)}</strong></div>
       <div class="ipa-field-group"><span class="field-label">Fixed monthly allowances</span><strong>${formatMoney(allowances)}</strong></div>
+      <div class="ipa-field-group"><span class="field-label">Declared OT rate</span><strong>${otRate === null ? '—' : `${formatMoney(otRate)}/hr`}</strong></div>
+      <div class="ipa-field-group"><span class="field-label">Declared daily basic rate</span><strong>${dailyBasic === null ? '—' : `${formatMoney(dailyBasic)}/day`}</strong></div>
     </div>
     <div class="review-hint" id="ipaComputedRates"></div>`;
     }
 
-    // Fourth Schedule item 1 (s.38(6)) — hourly basic rate used as the OT/rest-day/PH multiplier.
-    // Fixed 52×44 divisor regardless of the declared work week — do NOT substitute
-    // getWorkDaysPerWeek() here, that's a different (Third Schedule) rate below.
+    // Fourth Schedule item 1 (s.38(6)) — hourly basic rate, shown mainly as the OT fallback's own
+    // input (see getEffectiveOtRate) since OT/rest-day excess pay use the declared/effective OT
+    // rate directly rather than this multiplied by 1.5 inline. Fixed 52×44 divisor regardless of
+    // the declared work week — do NOT substitute getWorkDaysPerWeek() here, that's a different
+    // (Third Schedule) rate below.
+    /** Renders the derived-rate formula bullets (hourly/OT/daily basic/daily gross) under the IPA summary. */
     function renderComputedRates() {
       const el = document.getElementById('ipaComputedRates');
       if (!el) return;
@@ -2906,17 +4040,28 @@
       const salary = getBasicMonthlySalary();
       const allowances = getMonthlyAllowances();
       const workWeek = getWorkDaysPerWeek();
+      const computedDailyBasic = getComputedDailyBasicRate();
       const dailyBasic = getDailyBasicRate();
       const dailyGross = getDailyGrossRate();
       const sal = formatMoney(salary);
+      const declaredOtRate = getOtRate();
+      const otRateLine = declaredOtRate !== null
+        ? `<li>OT rate: <span class="ipa-formula">as declared on the IPA</span> <strong>${formatMoney(declaredOtRate)}/hr</strong></li>`
+        : `<li>OT rate: <span class="ipa-formula">not declared on the IPA — falling back to 1.5× hourly basic rate (1.5 × ${formatMoney(hourly)}) =</span> <strong>${formatMoney(1.5 * hourly)}/hr</strong></li>`;
+      const declaredDailyBasic = getDeclaredDailyBasicRate();
+      const dailyBasicLine = declaredDailyBasic !== null
+        ? `<li>Daily basic rate: <span class="ipa-formula">as declared on the IPA</span> <strong>${formatMoney(declaredDailyBasic)}/day</strong></li>`
+        : `<li>Daily basic rate (${workWeek}-day week): <span class="ipa-formula">not declared on the IPA — falling back to ${sal} basic pay × 12 months ÷ (52 weeks × ${workWeek} days/week) =</span> <strong>${formatMoney(computedDailyBasic)}/day</strong></li>`;
       el.innerHTML = `
     <ul class="ipa-computed-rates-list">
-      <li>Hourly basic rate (overtime / rest-day / public holiday multiplier): <span class="ipa-formula">${sal} basic pay × 12 months ÷ (52 weeks × 44 hours/week) =</span> <strong>${formatMoney(hourly)}/hr</strong></li>
-      <li>Daily basic rate (${workWeek}-day week): <span class="ipa-formula">${sal} basic pay × 12 months ÷ (52 weeks × ${workWeek} days/week) =</span> <strong>${formatMoney(dailyBasic)}/day</strong></li>
+      <li>Hourly basic rate: <span class="ipa-formula">${sal} basic pay × 12 months ÷ (52 weeks × 44 hours/week) =</span> <strong>${formatMoney(hourly)}/hr</strong></li>
+      ${otRateLine}
+      ${dailyBasicLine}
       <li>Daily gross rate: <span class="ipa-formula">(${sal} basic pay + ${formatMoney(allowances)} allowances) × 12 months ÷ (52 weeks × ${workWeek} days/week) =</span> <strong>${formatMoney(dailyGross)}/day</strong></li>
     </ul>`;
     }
 
+    /** Formats a millisecond duration as "X min Y seconds" (or just seconds under 1 min). */
     function formatDuration(ms) {
       const totalSeconds = Math.round((ms ?? 0) / 1000);
       const mins = Math.floor(totalSeconds / 60);
@@ -2925,6 +4070,7 @@
       return mins === 0 ? secLabel : `${mins} min ${secLabel}`;
     }
 
+    /** Formats a per-scan USD model-credit cost as a trailing " — $X.XXXX in model credits" suffix. */
     function formatCost(usd) {
       if (usd === undefined || usd === null) return '';
       // Costs per request are typically fractions of a cent — 4 decimal places keeps it meaningful
@@ -2932,6 +4078,7 @@
       return ` — $${usd.toFixed(4)} in model credits`;
     }
 
+    /** Escapes HTML-special characters so untrusted/scanned text can be safely inserted into innerHTML. */
     function escapeHtml(s) {
       return String(s).replace(/[&<>"']/g, c => ({
         '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
@@ -2940,12 +4087,11 @@
 
     // ===== Bank statement cross-check — standalone tool, no OCR/xlsx pipeline reuse =====
     // Separate upload + scan flow from the claim form above: different files (worker's own bank
-    // statement), a caseworker-supplied keyword list instead of a fixed extraction schema, and no
+    // statement), every incoming transaction extracted with no keyword filtering, and no
     // spreadsheet output. See lib/bankstatement.ts / server.ts's /api/bank-statement.
     const bankStatementInput = document.getElementById('bankStatementInput');
     const bankFileListEl = document.getElementById('bankFileList');
     const bankStatementStageEl = document.getElementById('bankStatementStage');
-    const bankKeywordsInput = document.getElementById('bankKeywords');
     const bankStatusEl = document.getElementById('bankStatus');
     const bankResultsEl = document.getElementById('bankResults');
 
@@ -2954,7 +4100,9 @@
     // risk regressing the already-working timesheet staging flow. Keyed "<fileIndex>-<pageIndex>".
     let bankStatementRotations = {};
     let excludedBankStatementPages = new Set();
+    let bankStatementPreviewPages = []; // {fileIndex, pageIndex} in file/page order — see pdfsPreviewPages
 
+    /** Renders one staging-page thumbnail (image + rotate/delete buttons) for the bank statement upload. */
     function renderBankStageTile(key, label, imageB64) {
       const rotation = bankStatementRotations[key] || 0;
       return `
@@ -2968,6 +4116,7 @@
     </div>`;
     }
 
+    /** Wires each staged bank-statement tile's rotate button to update state and the tile's live CSS transform. */
     function wireBankStageRotateButtons(container) {
       container.querySelectorAll('.stage-tile').forEach(tile => {
         const key = tile.dataset.key;
@@ -2982,11 +4131,13 @@
 
     // No OCR here, same as refreshPdfsPreview — just thumbnails so a sideways/unwanted page can be
     // fixed before the real (model-calling) scan runs.
+    /** Fetches and renders staging thumbnails for every page of the selected bank statement file(s). */
     async function refreshBankStatementPreview() {
       const files = [...bankStatementInput.files];
       bankFileListEl.textContent = files.length === 0 ? '' : files.map(f => f.name).join(', ');
       bankStatementRotations = {};
       excludedBankStatementPages = new Set();
+      bankStatementPreviewPages = [];
 
       if (files.length === 0) {
         bankStatementStageEl.innerHTML = '';
@@ -3006,6 +4157,7 @@
         for (const p of data.bankStatementPreview || []) {
           if (!byFile.has(p.fileIndex)) byFile.set(p.fileIndex, { fileName: p.fileName, tiles: [] });
           byFile.get(p.fileIndex).tiles.push(renderBankStageTile(`${p.fileIndex}-${p.pageIndex}`, `p${p.pageIndex + 1}`, p.image));
+          bankStatementPreviewPages.push({ fileIndex: p.fileIndex, pageIndex: p.pageIndex });
         }
         bankStatementStageEl.innerHTML = [...byFile.entries()].map(([fileIndex, { fileName, tiles }]) => `
       <div class="stage-file-group">
@@ -3031,34 +4183,24 @@
 
     bankStatementInput.addEventListener('change', refreshBankStatementPreview);
 
-    // Read-only — used for the Summary section's aggregated bank-results box only. Matches
-    // formatBankTransactionsTableEditable's Total math exactly, just without the inputs.
-    // Case-insensitive "does this description literally contain any of the caseworker's keywords" —
-    // mirrors lib/bankstatement.ts's own server-side check, so a row edited client-side (description
-    // changed, or the keyword list itself edited before a re-scan) gets re-evaluated the same way.
-    function escapeRegExpClient(s) {
-      return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    }
-    function isKeywordVerified(description) {
-      const keywords = bankKeywordsInput.value.split(',').map(k => k.trim()).filter(Boolean);
-      if (keywords.length === 0) return true;
-      return new RegExp(keywords.map(escapeRegExpClient).join('|'), 'i').test(description);
-    }
-
+    /** Renders the read-only "matched payments" summary table (credits only) with a Total row. */
     function formatBankTransactionsTable(transactions) {
-      const rows = transactions.map(t => `
+      // Credits only — this section is titled "matched payments", and a debit/withdrawal is money
+      // leaving the account, not a wage payment, so it's dropped before it's even rendered as a row
+      // here (not just excluded from the Total below). Same rule as everywhere else "payment
+      // received" is computed (paidByMonth, totalPaidCache).
+      const credits = transactions.filter(t => t.direction !== 'debit');
+      const rows = credits.map(t => `
     <tr>
       <td>${escapeHtml(formatDateDMY(t.date))}</td>
-      <td>${escapeHtml(t.description)}${t.keywordVerified === false ? '<div class="pay-total-sub">⚠ doesn\'t literally match a keyword — model matched by judgement, worth verifying</div>' : ''}</td>
-      <td><strong>${t.direction === 'debit' ? '−' : ''}${formatMoney(t.amount)}</strong></td>
+      <td>${escapeHtml(t.description)}${t.confirmedByAttempts && t.confirmedByAttempts.seen < t.confirmedByAttempts.total ? `<div class="pay-total-sub">⚠ only ${t.confirmedByAttempts.seen}/${t.confirmedByAttempts.total} scan passes caught this — worth double-checking against the source page</div>` : ''}</td>
+      <td><strong>${formatMoney(t.amount)}</strong></td>
       <td>${escapeHtml(t.source)}</td>
     </tr>`).join('');
-      // Debits net out against credits in the bottom Total, same sign convention as each row's own
-      // "−" prefix, rather than just summing every transaction's amount regardless of direction.
-      const net = transactions.reduce((sum, t) => sum + (t.direction === 'debit' ? -t.amount : t.amount), 0);
+      const net = credits.reduce((sum, t) => sum + t.amount, 0);
       const totalRow = `<tr class="pay-total-row">
       <td colspan="2">Total</td>
-      <td><strong>${net < 0 ? '−' : ''}${formatMoney(Math.abs(net))}</strong></td>
+      <td><strong>${formatMoney(net)}</strong></td>
       <td></td>
     </tr>`;
       return `<table class="pay-total-table">
@@ -3078,6 +4220,7 @@
     // just not shown/edited here).
     // manual=true is used for rows added via "+ Add amount" (see wireBankPageCard) — there's no scan
     // data for those, so date/description are inputs too instead of the plain scanned text.
+    /** Renders one editable bank-transaction row for the page-by-page review (scanned or manually-added). */
     function formatBankTransactionRow(t, manual) {
       const dateCell = manual
         ? `<input type="date" class="bt-date-input" value="${escapeHtml(t.date || '')}">`
@@ -3086,17 +4229,17 @@
         ? `<input type="text" class="bt-desc-input" placeholder="Description" value="${escapeHtml(t.description || '')}">`
         : escapeHtml(t.description);
       return `
-    <tr class="bt-row" data-source="${escapeHtml(t.source)}" data-date="${escapeHtml(t.date || '')}" data-description="${escapeHtml(t.description || '')}" data-direction="${t.direction || 'credit'}">
+    <tr class="bt-row" data-source="${escapeHtml(t.source)}" data-date="${escapeHtml(t.date || '')}" data-description="${escapeHtml(t.description || '')}" data-direction="${t.direction || 'credit'}" data-confirmed-seen="${t.confirmedByAttempts ? t.confirmedByAttempts.seen : ''}" data-confirmed-total="${t.confirmedByAttempts ? t.confirmedByAttempts.total : ''}">
       <td>${dateCell}</td>
       <td>
         ${descCell}
-        <div class="pay-total-sub bt-keyword-note" style="display:${t.keywordVerified === false ? 'block' : 'none'}">⚠ doesn't literally match a keyword — verify</div>
       </td>
       <td><input type="number" step="0.01" class="bt-amount" value="${t.amount}"></td>
       <td><button type="button" class="row-delete-btn bt-delete-btn" title="Remove" aria-label="Remove"><svg viewBox="0 0 16 16" style="width:13px;height:13px;flex-shrink:0;" fill="currentColor" aria-hidden="true"><path d="M6 1a1 1 0 0 0-1 1v1H2.5a.5.5 0 0 0 0 1h.55l.65 9.1A1.5 1.5 0 0 0 5.2 15h5.6a1.5 1.5 0 0 0 1.5-1.4l.65-9.1h.55a.5.5 0 0 0 0-1H11V2a1 1 0 0 0-1-1H6zm0 2V2h4v1H6zM4.55 4h6.9l-.64 9h-5.62l-.64-9zM6.5 6a.5.5 0 0 1 .5.5v5a.5.5 0 0 1-1 0v-5a.5.5 0 0 1 .5-.5zm3 0a.5.5 0 0 1 .5.5v5a.5.5 0 0 1-1 0v-5a.5.5 0 0 1 .5-.5z"/></svg></button></td>
     </tr>`;
     }
 
+    /** Renders the editable bank-transaction table (all rows via formatBankTransactionRow) for a review page. */
     function formatBankTransactionsTableEditable(transactions) {
       const rows = transactions.map(t => formatBankTransactionRow(t, false)).join('');
       return `<table class="pay-total-table">
@@ -3109,6 +4252,7 @@
     // after whatever edits/deletions the reviewer has made) and rebuilds the Summary section's
     // read-only bank-results box + Total from that live state — called on every edit so Summary never
     // drifts out of sync with what's actually in the editable rows, same idea as renderIpaSummaryText.
+    /** Reads every bank-transaction row currently in the page-by-page review into a plain array. */
     function collectAllBankTransactions() {
       return [...bankPageReviewListEl.querySelectorAll('.bt-row')].map(tr => ({
         date: tr.dataset.date,
@@ -3116,21 +4260,13 @@
         amount: Number(tr.querySelector('.bt-amount').value) || 0,
         direction: tr.dataset.direction,
         source: tr.dataset.source,
-        keywordVerified: isKeywordVerified(tr.dataset.description),
+        confirmedByAttempts: tr.dataset.confirmedSeen !== '' ? { seen: Number(tr.dataset.confirmedSeen), total: Number(tr.dataset.confirmedTotal) } : null,
       }));
-    }
-
-    // Toggles every row's own "⚠ doesn't literally match" note in place, without a full re-render —
-    // date/description are fixed, but the keyword list itself can still be edited after the scan, so
-    // this re-checks against that.
-    function refreshBankKeywordNotes() {
-      bankPageReviewListEl.querySelectorAll('.bt-row').forEach(tr => {
-        tr.querySelector('.bt-keyword-note').style.display = isKeywordVerified(tr.dataset.description) ? 'none' : 'block';
-      });
     }
 
     // Wires a single bt-row's inputs/delete button — shared by wireBankPageCard's initial pass and by
     // the "+ Add amount" handler for the one row it just inserted.
+    /** Wires one bank-transaction row's amount/date/description inputs and delete button to live summary refresh. */
     function wireBankRow(tr) {
       const amountInput = tr.querySelector('.bt-amount');
       amountInput.addEventListener('input', refreshBankSummary);
@@ -3143,7 +4279,6 @@
       const descInput = tr.querySelector('.bt-desc-input');
       if (descInput) descInput.addEventListener('input', () => {
         tr.dataset.description = descInput.value;
-        refreshBankKeywordNotes();
         refreshBankSummary();
       });
       tr.querySelector('.bt-delete-btn').addEventListener('click', () => {
@@ -3152,6 +4287,7 @@
       });
     }
 
+    /** Rebuilds the Summary section's bank-results table/total from the live editable rows, and cascades to owed-vs-paid. */
     function refreshBankSummary() {
       const transactions = collectAllBankTransactions();
       if (transactions.length > 0) {
@@ -3165,7 +4301,9 @@
       // reviewer edited/deleted an existing row) — never speculatively — so an empty list here is a
       // confirmed "$0 matched", not "never checked". That distinction is what lets
       // updateOwedVsPaidBox tell "nothing paid" apart from "we don't know".
-      totalPaidCache = transactions.reduce((sum, t) => sum + (t.direction === 'debit' ? -t.amount : t.amount), 0);
+      // Credits only, same rule as paidByMonth above — a debit isn't the employer clawing back
+      // wages, so it doesn't reduce how much has been "paid".
+      totalPaidCache = transactions.filter(t => t.direction !== 'debit').reduce((sum, t) => sum + t.amount, 0);
       paidIsAssumedZero = false; // a real scan ran — whatever it found (even $0) is confirmed, not assumed
       recomputeMonthlyPayTotals(); // payment breakdown's per-month "payment received"/"computed claim" columns read bank data too
       updateSummarySectionVisibility();
@@ -3174,6 +4312,7 @@
 
     // Wires one page card's editable rows (see wireBankRow) plus its "+ Add amount" button — called
     // once per card right after its HTML lands in the DOM.
+    /** Wires one bank-statement page card's editable rows and "+ Add amount" button. */
     function wireBankPageCard(card) {
       card.querySelectorAll('.bt-row').forEach(wireBankRow);
       const addBtn = card.querySelector('.bt-add-amount-btn');
@@ -3183,28 +4322,27 @@
         // First manual add on a page the scan found nothing on — swap the "no matches" hint for an
         // actual (empty) table so there's a tbody to append into.
         if (!container.querySelector('tbody')) container.innerHTML = formatBankTransactionsTableEditable([]);
-        const row = { date: '', description: '', amount: 0, direction: 'credit', source: addBtn.dataset.source, keywordVerified: true };
+        const row = { date: '', description: '', amount: 0, direction: 'credit', source: addBtn.dataset.source, confirmedByAttempts: null };
         container.querySelector('tbody').insertAdjacentHTML('beforeend', formatBankTransactionRow(row, true));
         wireBankRow(container.querySelector('tbody').lastElementChild);
         refreshBankSummary();
       });
     }
-    bankKeywordsInput.addEventListener('input', () => { refreshBankKeywordNotes(); refreshBankSummary(); });
 
-    // Renders each page as it finishes, same live-progress pattern as the timesheet scan
-    // (pollJobUntilDone/renderLivePages) — a multi-page statement can take a while page by page.
-    // Page-by-page view of the bank statement scan — one card per page WITH its thumbnail (same
-    // "verify against the source scan" pattern as the timesheet page cards), showing every page
-    // scanned so far regardless of whether it had a match. This is distinct from the Summary
-    // section's bank-results box, which stays thumbnail-free and only lists actual matches — see
-    // runBankStatementScan's own final render for that one.
-    function renderBankLivePages(pages) {
-      if (pages.length === 0) return;
-      pageReviewsEl.style.display = 'block'; // reveal page-by-page review even if the main scan hasn't produced anything yet
-      bankPageReviewListEl.style.display = 'block';
-      bankPageReviewListEl.innerHTML = pages.map(p => `
-    <div class="page-review-row">
-      <div class="page-review-image"><img src="data:image/png;base64,${p.image}" alt="${escapeHtml(p.source)}"></div>
+    // Shared by the batch live-progress render and the single-page rescan splice (same idea as
+    // timesheet's renderPageReview) — key/reviewIndex undefined during live polling (no rescan
+    // controls needed on a page that's still mid-scan as part of the same batch).
+    /** Renders one bank-statement page-review card: source thumbnail, editable transactions, optional rescan controls. */
+    function renderBankPageCard(p, key, reviewIndex) {
+      const rescanHtml = key !== undefined ? `
+        <div class="page-rescan-controls" data-file-index="${key.split('-')[0]}" data-page-index="${key.split('-')[1]}" data-key="${escapeHtml(key)}">
+          <button type="button" class="page-rotate-btn" title="Rotate this page before rescanning">⟳ Rotate</button>
+          <button type="button" class="page-rescan-btn">Rescan this page</button>
+        </div>
+        <div class="page-rescan-status"></div>` : '';
+      return `
+    <div class="page-review-row"${reviewIndex !== undefined ? ` data-review-index="${reviewIndex}"` : ''}>
+      <div class="page-review-image"><img src="data:image/png;base64,${p.image}" alt="${escapeHtml(p.source)}">${rescanHtml}</div>
       <div class="page-review-details">
         <div class="page-review-source"><span>${escapeHtml(p.source)}</span></div>
         <div class="bt-table-container">${p.transactions.length === 0
@@ -3215,28 +4353,132 @@
           <button type="button" class="add-day-btn bt-add-amount-btn" data-source="${escapeHtml(p.source)}">+ Add amount</button>
         </div>
       </div>
-    </div>`).join('');
+    </div>`;
+    }
+
+    // Renders each page as it finishes, same live-progress pattern as the timesheet scan
+    // (pollJobUntilDone/renderLivePages) — a multi-page statement can take a while page by page.
+    // Page-by-page view of the bank statement scan — one card per page WITH its thumbnail (same
+    // "verify against the source scan" pattern as the timesheet page cards), showing every page
+    // scanned so far regardless of whether it had a match. This is distinct from the Summary
+    // section's bank-results box, which stays thumbnail-free and only lists actual matches — see
+    // runBankStatementScan's own final render for that one. Rescan controls only appear once the
+    // job is done (key/reviewIndex only computed then) — a page still mid-scan as part of this same
+    // batch has nothing sensible to rescan yet.
+    /** Renders the bank-statement page-by-page review as pages arrive during a scan (or on completion). */
+    function renderBankLivePages(pages, done) {
+      if (pages.length === 0) return;
+      pageReviewsEl.style.display = 'block'; // reveal page-by-page review even if the main scan hasn't produced anything yet
+      bankPageReviewListEl.style.display = 'block';
+      const orderedKeys = done
+        ? bankStatementPreviewPages
+          .filter(p => !excludedBankStatementPages.has(`${p.fileIndex}-${p.pageIndex}`))
+          .map(p => `${p.fileIndex}-${p.pageIndex}`)
+        : [];
+      bankPageReviewListEl.innerHTML = pages
+        .map((p, idx) => renderBankPageCard(p, done ? orderedKeys[idx] : undefined, done ? idx : undefined))
+        .join('');
       bankPageReviewListEl.querySelectorAll('.page-review-row').forEach(wireBankPageCard);
+      if (done) bankPageReviewListEl.querySelectorAll('.page-rescan-controls').forEach(wireBankRescanControls);
       refreshBankSummary();
     }
 
+    /** Polls a bank-statement scan job until done/error, rendering live page results along the way. */
     async function pollBankJobUntilDone(jobId) {
       for (; ;) {
         const res = await fetch(`/api/bank-statement/${jobId}`);
         const job = await res.json();
         if (!res.ok) throw new Error(job.error || `Server returned ${res.status}`);
-        renderBankLivePages(job.pages);
+        renderBankLivePages(job.pages, job.status === 'done');
         if (job.status === 'done') return job.result;
         if (job.status === 'error') throw new Error(job.error || 'Scan failed');
         await new Promise(r => setTimeout(r, 2000));
       }
     }
 
-    // Runs as part of the main "Process & Generate Claim" submit (see form's submit listener below),
+    // Same rotate-then-rescan pattern as wireTimesheetRescanControls, mirrored for bank statement
+    // pages — no year/fallback complexity here (bank statement scanning doesn't depend on a
+    // resolved claim year at all), so this is simpler: rotate, resend just this one page, splice
+    // the fresh result back into its card.
+    /** Wires a bank-statement page's rotate + rescan controls, splicing the fresh single-page result back into its card. */
+    function wireBankRescanControls(controls) {
+      const fileIndex = Number(controls.dataset.fileIndex);
+      const pageIndex = Number(controls.dataset.pageIndex);
+      const key = controls.dataset.key;
+      const statusEl = controls.nextElementSibling;
+      const rotateBtn = controls.querySelector('.page-rotate-btn');
+      const rescanBtn = controls.querySelector('.page-rescan-btn');
+      const img = controls.parentElement.querySelector('img');
+      let previewDelta = 0; // see wireTimesheetRescanControls' comment on this pattern
+
+      rotateBtn.addEventListener('click', () => {
+        bankStatementRotations[key] = ((bankStatementRotations[key] || 0) + 90) % 360;
+        previewDelta = (previewDelta + 90) % 360;
+        img.style.transform = `rotate(${previewDelta}deg)`;
+        statusEl.className = 'page-rescan-status';
+        statusEl.textContent = `Pending rotation: +${previewDelta}° — click "Rescan this page" to apply and re-read it.`;
+      });
+
+      rescanBtn.addEventListener('click', async () => {
+        const file = bankStatementInput.files[fileIndex];
+        if (!file) {
+          statusEl.className = 'page-rescan-status error';
+          statusEl.textContent = 'Original file no longer attached (selection changed since the scan ran) — re-upload and rescan the whole batch instead.';
+          return;
+        }
+        rescanBtn.disabled = true;
+        statusEl.className = 'page-rescan-status';
+        statusEl.textContent = 'Rescanning…';
+
+        const pageCount = bankStatementPreviewPages.filter(p => p.fileIndex === fileIndex).length;
+        const excluded = [];
+        for (let pi = 0; pi < pageCount; pi++) if (pi !== pageIndex) excluded.push(`0-${pi}`);
+
+        const formData = new FormData();
+        formData.append('statements', file);
+        formData.append('rotations', JSON.stringify({ [`0-${pageIndex}`]: bankStatementRotations[key] || 0 }));
+        formData.append('excludedPages', JSON.stringify(excluded));
+
+        try {
+          const res = await fetch('/api/bank-statement', { method: 'POST', body: formData });
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.error || `Server returned ${res.status}`);
+          const polled = await pollSinglePageJob('/api/bank-statement', data.jobId);
+          const freshPage = polled.pages && polled.pages[0];
+          if (!freshPage) {
+            throw new Error('Scan finished but returned no page — this may not look like a bank statement page after rotating; double-check the rotation and try again.');
+          }
+          applyRescannedBankPage(controls.closest('.page-review-row'), freshPage, key);
+        } catch (err) {
+          statusEl.className = 'page-rescan-status error';
+          statusEl.textContent = 'Error: ' + err.message;
+        } finally {
+          rescanBtn.disabled = false;
+        }
+      });
+    }
+
+    /** Replaces a bank-statement page card with its freshly-rescanned result and re-syncs the summary. */
+    function applyRescannedBankPage(rowEl, freshPage, key) {
+      const reviewIndex = Number(rowEl.dataset.reviewIndex);
+      const temp = document.createElement('div');
+      temp.innerHTML = renderBankPageCard(freshPage, key, reviewIndex);
+      const newRowEl = temp.firstElementChild;
+      rowEl.replaceWith(newRowEl);
+      wireBankPageCard(newRowEl);
+      newRowEl.querySelectorAll('.page-rescan-controls').forEach(wireBankRescanControls);
+      const statusEl = newRowEl.querySelector('.page-rescan-status');
+      statusEl.className = 'page-rescan-status success';
+      statusEl.textContent = 'Rescanned — transactions updated below.';
+      refreshBankSummary();
+    }
+
+    // Runs as part of the main "Extract details" submit (see form's submit listener below),
     // not its own button — optional, so it's a silent no-op if nothing's attached. Runs concurrently
     // with the main timesheet/IPA scan (Promise.allSettled in the submit handler), independent job
     // and status/results area, since a bank statement scan failing shouldn't block or be blocked by
     // the main claim scan.
+    /** Runs the full bank statement scan (all staged pages), polling to completion and updating owed-vs-paid. */
     async function runBankStatementScan() {
       const files = [...bankStatementInput.files];
       if (files.length === 0) {
@@ -3250,12 +4492,6 @@
         return;
       }
       paidIsAssumedZero = false;
-      const keywords = bankKeywordsInput.value.split(',').map(k => k.trim()).filter(Boolean);
-      if (keywords.length === 0) {
-        bankStatusEl.className = 'status error';
-        bankStatusEl.textContent = 'Enter at least one line item to look for, or remove the attached bank statement file(s).';
-        return;
-      }
 
       bankStatusEl.className = 'status';
       bankStatusEl.textContent = '';
@@ -3264,7 +4500,6 @@
 
       const formData = new FormData();
       for (const f of files) formData.append('statements', f);
-      formData.append('keywords', JSON.stringify(keywords));
       formData.append('rotations', JSON.stringify(bankStatementRotations));
       formData.append('excludedPages', JSON.stringify([...excludedBankStatementPages]));
 
@@ -3280,6 +4515,366 @@
       } catch (err) {
         bankStatusEl.className = 'status error';
         bankStatusEl.textContent = 'Error: ' + err.message;
+      }
+    }
+
+    // ===== Medical bills cross-check — unreimbursed medical costs =====
+    // Same standalone upload + multi-pass scan + editable page review pattern as the bank statement
+    // block above (see lib/medicalbills.ts / server.ts's /api/medical-bills), extracting each bill's
+    // billed date+amount rather than transactions. An employer of a Work Permit holder is generally
+    // required to bear the worker's medical costs — this checks whether that actually happened.
+    // "Reimbursed by employer" is a checkbox the caseworker sets per bill (default unchecked/
+    // unreimbursed — same worst-case-for-the-claim default as paidIsAssumedZero above) rather than
+    // something inferred from the scan. Distinct from the "Claim sick leave pay" section (s.89),
+    // which is about leave DAYS entered manually, not billed amounts.
+    const medicalBillsInput = document.getElementById('medicalBillsInput');
+    const medicalBillsFileListEl = document.getElementById('medicalBillsFileList');
+    const medicalBillsStageEl = document.getElementById('medicalBillsStage');
+    const medicalBillsStatusEl = document.getElementById('medicalBillsStatus');
+    const medicalPageReviewListEl = document.getElementById('medicalPageReviewList');
+
+    let medicalBillsRotations = {};
+    let excludedMedicalBillsPages = new Set();
+    let medicalBillsPreviewPages = []; // {fileIndex, pageIndex} in file/page order — see pdfsPreviewPages
+
+    /** Renders one staging-page thumbnail (image + rotate/delete buttons) for the medical bills upload. */
+    function renderMedicalStageTile(key, label, imageB64) {
+      const rotation = medicalBillsRotations[key] || 0;
+      return `
+    <div class="stage-tile" data-key="${key}">
+      <div class="stage-tile-img-wrap">
+        <img src="data:image/png;base64,${imageB64}" style="transform: rotate(${rotation}deg);">
+        <button type="button" class="stage-tile-rotate-btn" title="Rotate">⟳</button>
+        <button type="button" class="stage-tile-delete-btn" title="Remove this page">✕</button>
+      </div>
+      <div class="stage-tile-label">${escapeHtml(label)}</div>
+    </div>`;
+    }
+
+    /** Wires each staged medical-bill tile's rotate button to update state and the tile's live CSS transform. */
+    function wireMedicalStageRotateButtons(container) {
+      container.querySelectorAll('.stage-tile').forEach(tile => {
+        const key = tile.dataset.key;
+        const img = tile.querySelector('img');
+        tile.querySelector('.stage-tile-rotate-btn').addEventListener('click', () => {
+          const next = ((medicalBillsRotations[key] || 0) + 90) % 360;
+          medicalBillsRotations[key] = next;
+          img.style.transform = `rotate(${next}deg)`;
+        });
+      });
+    }
+
+    /** Fetches and renders staging thumbnails for every page of the selected medical bill file(s). */
+    async function refreshMedicalBillsPreview() {
+      const files = [...medicalBillsInput.files];
+      medicalBillsFileListEl.textContent = files.length === 0 ? '' : files.map(f => f.name).join(', ');
+      medicalBillsRotations = {};
+      excludedMedicalBillsPages = new Set();
+      medicalBillsPreviewPages = [];
+
+      if (files.length === 0) {
+        medicalBillsStageEl.innerHTML = '';
+        return;
+      }
+      medicalBillsStageEl.innerHTML = '<div class="stage-loading"><span class="spinner"></span>Loading previews…</div>';
+
+      const formData = new FormData();
+      for (const file of files) formData.append('medicalBills', file);
+
+      try {
+        const res = await fetch('/api/preview', { method: 'POST', body: formData });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || `Server returned ${res.status}`);
+
+        const byFile = new Map();
+        for (const p of data.medicalBillsPreview || []) {
+          if (!byFile.has(p.fileIndex)) byFile.set(p.fileIndex, { fileName: p.fileName, tiles: [] });
+          byFile.get(p.fileIndex).tiles.push(renderMedicalStageTile(`${p.fileIndex}-${p.pageIndex}`, `p${p.pageIndex + 1}`, p.image));
+          medicalBillsPreviewPages.push({ fileIndex: p.fileIndex, pageIndex: p.pageIndex });
+        }
+        medicalBillsStageEl.innerHTML = [...byFile.entries()].map(([fileIndex, { fileName, tiles }]) => `
+      <div class="stage-file-group">
+        <div class="stage-file-header"><span>${escapeHtml(fileName)}</span></div>
+        <div class="stage-file-pages">${tiles.join('')}</div>
+      </div>`).join('')
+          + (data.medicalBillsErrors || []).map(e => `<div class="stage-error">${escapeHtml(e.fileName)}: ${escapeHtml(e.error)}</div>`).join('');
+
+        wireMedicalStageRotateButtons(medicalBillsStageEl);
+        medicalBillsStageEl.querySelectorAll('.stage-tile-delete-btn').forEach(btn => {
+          btn.addEventListener('click', () => {
+            const tile = btn.closest('.stage-tile');
+            excludedMedicalBillsPages.add(tile.dataset.key);
+            const group = tile.closest('.stage-file-group');
+            tile.remove();
+            if (group && group.querySelectorAll('.stage-tile').length === 0) group.remove();
+          });
+        });
+      } catch (err) {
+        medicalBillsStageEl.innerHTML = `<div class="stage-error">Preview failed: ${escapeHtml(err.message)}</div>`;
+      }
+    }
+
+    medicalBillsInput.addEventListener('change', refreshMedicalBillsPreview);
+
+    // Date and amount are directly editable (a misread digit/date is worth fixing right here, same
+    // as the bank statement amount field); "Reimbursed by employer" is the caseworker's own call.
+    /** Renders one editable medical-bill row for the page-by-page review (scanned or manually-added). */
+    function formatMedicalEntryRow(t, manual) {
+      const descCell = manual
+        ? `<input type="text" class="mb-desc-input" placeholder="Description" value="${escapeHtml(t.description || '')}">`
+        : escapeHtml(t.description || '—');
+      return `
+    <tr class="mb-row" data-source="${escapeHtml(t.source)}" data-description="${escapeHtml(t.description || '')}" data-confirmed-seen="${t.confirmedByAttempts ? t.confirmedByAttempts.seen : ''}" data-confirmed-total="${t.confirmedByAttempts ? t.confirmedByAttempts.total : ''}">
+      <td><input type="date" class="mb-date-input" value="${escapeHtml(t.date || '')}"></td>
+      <td><input type="number" step="0.01" class="mb-amount-input" value="${t.amount ?? 0}"></td>
+      <td>${descCell}${t.confirmedByAttempts && t.confirmedByAttempts.seen < t.confirmedByAttempts.total ? `<div class="pay-total-sub">⚠ only ${t.confirmedByAttempts.seen}/${t.confirmedByAttempts.total} scan passes caught this — worth double-checking against the source page</div>` : ''}</td>
+      <td><label style="display:inline-flex;align-items:center;gap:4px;white-space:nowrap;font-weight:normal"><input type="checkbox" class="mb-reimbursed-input" ${t.reimbursed ? 'checked' : ''}> Reimbursed by employer</label></td>
+      <td><button type="button" class="row-delete-btn mb-delete-btn" title="Remove" aria-label="Remove"><svg viewBox="0 0 16 16" style="width:13px;height:13px;flex-shrink:0;" fill="currentColor" aria-hidden="true"><path d="M6 1a1 1 0 0 0-1 1v1H2.5a.5.5 0 0 0 0 1h.55l.65 9.1A1.5 1.5 0 0 0 5.2 15h5.6a1.5 1.5 0 0 0 1.5-1.4l.65-9.1h.55a.5.5 0 0 0 0-1H11V2a1 1 0 0 0-1-1H6zm0 2V2h4v1H6zM4.55 4h6.9l-.64 9h-5.62l-.64-9zM6.5 6a.5.5 0 0 1 .5.5v5a.5.5 0 0 1-1 0v-5a.5.5 0 0 1 .5-.5zm3 0a.5.5 0 0 1 .5.5v5a.5.5 0 0 1-1 0v-5a.5.5 0 0 1 .5-.5z"/></svg></button></td>
+    </tr>`;
+    }
+
+    /** Renders the editable medical-bill entries table (all rows via formatMedicalEntryRow) for a review page. */
+    function formatMedicalEntriesTableEditable(entries) {
+      const rows = entries.map(t => formatMedicalEntryRow(t, false)).join('');
+      return `<table class="pay-total-table">
+    <thead><tr><th>Date</th><th>Amount</th><th>Description</th><th>Reimbursed</th><th></th></tr></thead>
+    <tbody>${rows}</tbody>
+  </table>`;
+    }
+
+    // Same "read live DOM state, not a cached array" pattern as collectAllBankTransactions — the
+    // unreimbursed-bills claim calc reads straight off whatever's currently in these rows, so an
+    // edit here is reflected immediately, no separate sync step needed.
+    /** Reads every medical-bill row currently in the page-by-page review into a plain array. */
+    function collectAllMedicalBillEntries() {
+      return [...medicalPageReviewListEl.querySelectorAll('.mb-row')].map(tr => ({
+        date: tr.querySelector('.mb-date-input').value,
+        amount: Number(tr.querySelector('.mb-amount-input').value) || 0,
+        description: tr.dataset.description,
+        reimbursed: tr.querySelector('.mb-reimbursed-input').checked,
+        source: tr.dataset.source,
+        confirmedByAttempts: tr.dataset.confirmedSeen !== '' ? { seen: Number(tr.dataset.confirmedSeen), total: Number(tr.dataset.confirmedTotal) } : null,
+      }));
+    }
+
+    /** Wires one medical-bill row's date/amount/reimbursed/description inputs and delete button to live claim refresh. */
+    function wireMedicalRow(tr) {
+      tr.querySelectorAll('.mb-date-input, .mb-amount-input, .mb-reimbursed-input').forEach(input => {
+        input.addEventListener('input', refreshMedicalBillsClaim);
+        input.addEventListener('change', refreshMedicalBillsClaim);
+      });
+      const descInput = tr.querySelector('.mb-desc-input');
+      if (descInput) descInput.addEventListener('input', () => { tr.dataset.description = descInput.value; });
+      tr.querySelector('.mb-delete-btn').addEventListener('click', () => {
+        tr.remove();
+        refreshMedicalBillsClaim();
+      });
+    }
+
+    /** Wires one medical-bill page card's editable rows and "+ Add bill" button. */
+    function wireMedicalPageCard(card) {
+      card.querySelectorAll('.mb-row').forEach(wireMedicalRow);
+      const addBtn = card.querySelector('.mb-add-bill-btn');
+      if (!addBtn) return;
+      addBtn.addEventListener('click', () => {
+        const container = card.querySelector('.mb-table-container');
+        if (!container.querySelector('tbody')) container.innerHTML = formatMedicalEntriesTableEditable([]);
+        const row = { date: '', amount: 0, description: '', reimbursed: false, source: addBtn.dataset.source, confirmedByAttempts: null };
+        container.querySelector('tbody').insertAdjacentHTML('beforeend', formatMedicalEntryRow(row, true));
+        wireMedicalRow(container.querySelector('tbody').lastElementChild);
+        refreshMedicalBillsClaim();
+      });
+    }
+
+    // Shared by the batch live-progress render and the single-page rescan splice — same idea as
+    // renderBankPageCard.
+    /** Renders one medical-bill page-review card: source thumbnail, editable entries, optional rescan controls. */
+    function renderMedicalPageCard(p, key, reviewIndex) {
+      const rescanHtml = key !== undefined ? `
+        <div class="page-rescan-controls" data-file-index="${key.split('-')[0]}" data-page-index="${key.split('-')[1]}" data-key="${escapeHtml(key)}">
+          <button type="button" class="page-rotate-btn" title="Rotate this page before rescanning">⟳ Rotate</button>
+          <button type="button" class="page-rescan-btn">Rescan this page</button>
+        </div>
+        <div class="page-rescan-status"></div>` : '';
+      return `
+    <div class="page-review-row"${reviewIndex !== undefined ? ` data-review-index="${reviewIndex}"` : ''}>
+      <div class="page-review-image"><img src="data:image/png;base64,${p.image}" alt="${escapeHtml(p.source)}">${rescanHtml}</div>
+      <div class="page-review-details">
+        <div class="page-review-source"><span>${escapeHtml(p.source)}</span></div>
+        <div class="mb-table-container">${p.entries.length === 0
+          ? '<div class="review-hint">No billed amount found on this page.</div>'
+          : formatMedicalEntriesTableEditable(p.entries.map(t => ({ ...t, source: p.source })))}</div>
+        <div class="page-add-day">
+          <div class="review-hint">Add a bill this page's scan didn't pick up.</div>
+          <button type="button" class="add-day-btn mb-add-bill-btn" data-source="${escapeHtml(p.source)}">+ Add bill</button>
+        </div>
+      </div>
+    </div>`;
+    }
+
+    /** Renders the medical-bills page-by-page review as pages arrive during a scan (or on completion). */
+    function renderMedicalLivePages(pages, done) {
+      if (pages.length === 0) return;
+      pageReviewsEl.style.display = 'block';
+      medicalPageReviewListEl.style.display = 'block';
+      const orderedKeys = done
+        ? medicalBillsPreviewPages
+          .filter(p => !excludedMedicalBillsPages.has(`${p.fileIndex}-${p.pageIndex}`))
+          .map(p => `${p.fileIndex}-${p.pageIndex}`)
+        : [];
+      medicalPageReviewListEl.innerHTML = pages
+        .map((p, idx) => renderMedicalPageCard(p, done ? orderedKeys[idx] : undefined, done ? idx : undefined))
+        .join('');
+      medicalPageReviewListEl.querySelectorAll('.page-review-row').forEach(wireMedicalPageCard);
+      if (done) medicalPageReviewListEl.querySelectorAll('.page-rescan-controls').forEach(wireMedicalRescanControls);
+      refreshMedicalBillsClaim();
+    }
+
+    // Same rotate-then-rescan pattern as wireBankRescanControls.
+    /** Wires a medical-bill page's rotate + rescan controls, splicing the fresh single-page result back into its card. */
+    function wireMedicalRescanControls(controls) {
+      const fileIndex = Number(controls.dataset.fileIndex);
+      const pageIndex = Number(controls.dataset.pageIndex);
+      const key = controls.dataset.key;
+      const statusEl = controls.nextElementSibling;
+      const rotateBtn = controls.querySelector('.page-rotate-btn');
+      const rescanBtn = controls.querySelector('.page-rescan-btn');
+      const img = controls.parentElement.querySelector('img');
+      let previewDelta = 0; // see wireTimesheetRescanControls' comment on this pattern
+
+      rotateBtn.addEventListener('click', () => {
+        medicalBillsRotations[key] = ((medicalBillsRotations[key] || 0) + 90) % 360;
+        previewDelta = (previewDelta + 90) % 360;
+        img.style.transform = `rotate(${previewDelta}deg)`;
+        statusEl.className = 'page-rescan-status';
+        statusEl.textContent = `Pending rotation: +${previewDelta}° — click "Rescan this page" to apply and re-read it.`;
+      });
+
+      rescanBtn.addEventListener('click', async () => {
+        const file = medicalBillsInput.files[fileIndex];
+        if (!file) {
+          statusEl.className = 'page-rescan-status error';
+          statusEl.textContent = 'Original file no longer attached (selection changed since the scan ran) — re-upload and rescan the whole batch instead.';
+          return;
+        }
+        rescanBtn.disabled = true;
+        statusEl.className = 'page-rescan-status';
+        statusEl.textContent = 'Rescanning…';
+
+        const pageCount = medicalBillsPreviewPages.filter(p => p.fileIndex === fileIndex).length;
+        const excluded = [];
+        for (let pi = 0; pi < pageCount; pi++) if (pi !== pageIndex) excluded.push(`0-${pi}`);
+
+        const formData = new FormData();
+        formData.append('medicalBills', file);
+        formData.append('rotations', JSON.stringify({ [`0-${pageIndex}`]: medicalBillsRotations[key] || 0 }));
+        formData.append('excludedPages', JSON.stringify(excluded));
+
+        try {
+          const res = await fetch('/api/medical-bills', { method: 'POST', body: formData });
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.error || `Server returned ${res.status}`);
+          const polled = await pollSinglePageJob('/api/medical-bills', data.jobId);
+          const freshPage = polled.pages && polled.pages[0];
+          if (!freshPage) {
+            throw new Error('Scan finished but returned no page — this may not look like a medical bill after rotating; double-check the rotation and try again.');
+          }
+          applyRescannedMedicalPage(controls.closest('.page-review-row'), freshPage, key);
+        } catch (err) {
+          statusEl.className = 'page-rescan-status error';
+          statusEl.textContent = 'Error: ' + err.message;
+        } finally {
+          rescanBtn.disabled = false;
+        }
+      });
+    }
+
+    /** Replaces a medical-bill page card with its freshly-rescanned result and re-syncs the claim total. */
+    function applyRescannedMedicalPage(rowEl, freshPage, key) {
+      const reviewIndex = Number(rowEl.dataset.reviewIndex);
+      const temp = document.createElement('div');
+      temp.innerHTML = renderMedicalPageCard(freshPage, key, reviewIndex);
+      const newRowEl = temp.firstElementChild;
+      rowEl.replaceWith(newRowEl);
+      wireMedicalPageCard(newRowEl);
+      newRowEl.querySelectorAll('.page-rescan-controls').forEach(wireMedicalRescanControls);
+      const statusEl = newRowEl.querySelector('.page-rescan-status');
+      statusEl.className = 'page-rescan-status success';
+      statusEl.textContent = 'Rescanned — bills updated below.';
+      refreshMedicalBillsClaim();
+    }
+
+    // Independent of the timesheet/basic-salary flow — a caseworker can review medical bills before
+    // a claim breakdown even exists, so this doesn't gate on lastBreakdownForExport the way
+    // computeSickLeaveClaim etc. do. null when no bills have been reviewed yet (nothing to claim,
+    // as opposed to $0 which would mean "reviewed and confirmed nothing outstanding").
+    /** Computes the unreimbursed-bills claim (total billed, total reimbursed, owed) from live review rows, or null if none. */
+    function computeMedicalBillsClaim() {
+      const entries = collectAllMedicalBillEntries();
+      if (entries.length === 0) return null;
+      let totalBilled = 0, totalReimbursed = 0;
+      for (const entry of entries) {
+        totalBilled += entry.amount;
+        if (entry.reimbursed) totalReimbursed += entry.amount;
+      }
+      return { totalBilled, totalReimbursed, owedAmount: totalBilled - totalReimbursed };
+    }
+
+    /** Rebuilds the medical-bills claim summary box from live review rows, and cascades to owed-vs-paid. */
+    function refreshMedicalBillsClaim() {
+      const result = computeMedicalBillsClaim();
+      const el = document.getElementById('medicalBillsResults');
+      if (!result) {
+        el.style.display = 'none';
+        el.innerHTML = '';
+      } else {
+        el.style.display = 'block';
+        el.innerHTML = `<h3>Medical bills — unreimbursed amount</h3>
+    <div class="ipa-field-group"><span class="field-label">Total billed</span><strong>${formatMoney(result.totalBilled)}</strong></div>
+    <div class="ipa-field-group"><span class="field-label">Total reimbursed by employer</span><strong>${formatMoney(result.totalReimbursed)}</strong></div>
+    <div class="ipa-field-group"><span class="field-label">Unreimbursed (owed)</span><strong>${formatMoney(result.owedAmount)}</strong></div>`;
+      }
+      recomputeMonthlyPayTotals();
+      updateSummarySectionVisibility();
+    }
+
+    /** Polls a medical-bills scan job until done/error, rendering live page results along the way. */
+    async function pollMedicalJobUntilDone(jobId) {
+      for (; ;) {
+        const res = await fetch(`/api/medical-bills/${jobId}`);
+        const job = await res.json();
+        if (!res.ok) throw new Error(job.error || `Server returned ${res.status}`);
+        renderMedicalLivePages(job.pages, job.status === 'done');
+        if (job.status === 'done') return job.result;
+        if (job.status === 'error') throw new Error(job.error || 'Scan failed');
+        await new Promise(r => setTimeout(r, 2000));
+      }
+    }
+
+    // Runs alongside the main scan and the bank statement scan (three-way Promise.allSettled in the
+    // submit handler) — optional, silent no-op if nothing's attached, own status/results area.
+    /** Runs the full medical bills scan (all staged pages), polling to completion and updating the claim. */
+    async function runMedicalBillsScan() {
+      const files = [...medicalBillsInput.files];
+      if (files.length === 0) return;
+
+      medicalBillsStatusEl.className = 'status';
+      medicalBillsStatusEl.textContent = '';
+
+      const formData = new FormData();
+      for (const f of files) formData.append('medicalBills', f);
+      formData.append('rotations', JSON.stringify(medicalBillsRotations));
+      formData.append('excludedPages', JSON.stringify([...excludedMedicalBillsPages]));
+
+      try {
+        const res = await fetch('/api/medical-bills', { method: 'POST', body: formData });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || `Server returned ${res.status}`);
+        const result = await pollMedicalJobUntilDone(data.jobId);
+        return result.costUsd;
+      } catch (err) {
+        medicalBillsStatusEl.className = 'status error';
+        medicalBillsStatusEl.textContent = 'Error: ' + err.message;
       }
     }
   </script>
