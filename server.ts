@@ -45,7 +45,7 @@ process.on("uncaughtException", (err) => {
 });
 
 const CAMANS_LOGIN_URL = "https://camans.twc2.org.sg/login";
-const CLAIMS_BASE_URL = "https://claims.twc2.org.sg";
+const CLAIMS_BASE_URL = "https://cuba.twc2.org.sg";
 const SSO_COOKIE_DOMAIN = process.env.NODE_ENV === "production" ? ".twc2.org.sg" : undefined;
 
 const app = express();
