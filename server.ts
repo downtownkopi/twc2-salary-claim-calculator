@@ -10,7 +10,18 @@ import { uploadFlaggedPage, type FlaggedPageEntry } from "./lib/feedback";
 import { buildWorkerPersonalDetailsDocx } from "./lib/workerDetailsDocx";
 import { buildWorkerPersonalDetailsPdf } from "./lib/workerDetailsPdf";
 import type { WorkerDetailsExportPayload } from "./lib/workerDetailsShared";
-import { upload, loadPagesForFile, SUPPORTED_YEARS, enforceTotalUploadSize, MAX_TOTAL_UPLOAD_BYTES } from "./lib/jobs/shared";
+import {
+    upload,
+    loadPagesForFile,
+    SUPPORTED_YEARS,
+    enforceTotalUploadSize,
+    MAX_TOTAL_UPLOAD_BYTES,
+    MAX_PAGES_PER_JOB,
+    acquireJobSlot,
+    releaseJobSlot,
+    jobPagesDir,
+    cleanupJobDir,
+} from "./lib/jobs/shared";
 import { processJobs, runProcessJob, scheduleJobCleanup, type RotationMap } from "./lib/jobs/timesheetJob";
 import { bankJobs, runBankStatementJob, scheduleBankJobCleanup } from "./lib/jobs/bankStatementJob";
 import { medicalJobs, runMedicalBillsJob, scheduleMedicalJobCleanup } from "./lib/jobs/medicalBillsJob";
@@ -96,66 +107,74 @@ app.post(
         const bankStatementFiles = uploadedFields?.bankStatement ?? [];
         const medicalBillsFiles = uploadedFields?.medicalBills ?? [];
 
-        const pdfsPreview: { fileIndex: number; pageIndex: number; fileName: string; image: string }[] = [];
-        const pdfsErrors: { fileName: string; error: string }[] = [];
-        for (let fi = 0; fi < files.length; fi++) {
-            const file = files[fi];
-            try {
-                const images = await loadPagesForFile(file);
-                for (let pi = 0; pi < images.length; pi++) {
-                    pdfsPreview.push({ fileIndex: fi, pageIndex: pi, fileName: file.originalname, image: await resizeForDisplay(images[pi], 400) });
+        // Preview is a one-shot request/response (not a background job), so its rendered pages get
+        // their own short-lived temp dir instead of a job id — cleaned up in the `finally` below as
+        // soon as the response is built, rather than waiting on any job's TTL.
+        const previewDir = jobPagesDir(randomUUID());
+        try {
+            const pdfsPreview: { fileIndex: number; pageIndex: number; fileName: string; image: string }[] = [];
+            const pdfsErrors: { fileName: string; error: string }[] = [];
+            for (let fi = 0; fi < files.length; fi++) {
+                const file = files[fi];
+                try {
+                    const images = await loadPagesForFile(file, path.join(previewDir, `pdfs-${fi}`), MAX_PAGES_PER_JOB);
+                    for (let pi = 0; pi < images.length; pi++) {
+                        pdfsPreview.push({ fileIndex: fi, pageIndex: pi, fileName: file.originalname, image: await resizeForDisplay(await images.get(pi), 400) });
+                    }
+                } catch (e: any) {
+                    pdfsErrors.push({ fileName: file.originalname, error: e.message });
                 }
-            } catch (e: any) {
-                pdfsErrors.push({ fileName: file.originalname, error: e.message });
             }
-        }
 
-        let ipaPreview: string | null = null;
-        let ipaError: string | null = null;
-        if (ipaFile) {
-            try {
-                const images = await loadPagesForFile(ipaFile);
-                // Only the first page is ever sent to extractIpaFields (lib/ipa.ts) — previewing
-                // later pages would invite rotating a page that isn't actually used.
-                if (images.length > 0) ipaPreview = await resizeForDisplay(images[0], 400);
-            } catch (e: any) {
-                ipaError = e.message;
-            }
-        }
-
-        // Same staging idea as pdfs above — a bank statement is just as likely to be a phone
-        // photo as a clean digital export, so it gets the same rotate/exclude-before-scan step.
-        const bankStatementPreview: { fileIndex: number; pageIndex: number; fileName: string; image: string }[] = [];
-        const bankStatementErrors: { fileName: string; error: string }[] = [];
-        for (let fi = 0; fi < bankStatementFiles.length; fi++) {
-            const file = bankStatementFiles[fi];
-            try {
-                const images = await loadPagesForFile(file);
-                for (let pi = 0; pi < images.length; pi++) {
-                    bankStatementPreview.push({ fileIndex: fi, pageIndex: pi, fileName: file.originalname, image: await resizeForDisplay(images[pi], 400) });
+            let ipaPreview: string | null = null;
+            let ipaError: string | null = null;
+            if (ipaFile) {
+                try {
+                    const images = await loadPagesForFile(ipaFile, path.join(previewDir, "ipa"), MAX_PAGES_PER_JOB);
+                    // Only the first page is ever sent to extractIpaFields (lib/ipa.ts) — previewing
+                    // later pages would invite rotating a page that isn't actually used.
+                    if (images.length > 0) ipaPreview = await resizeForDisplay(await images.get(0), 400);
+                } catch (e: any) {
+                    ipaError = e.message;
                 }
-            } catch (e: any) {
-                bankStatementErrors.push({ fileName: file.originalname, error: e.message });
             }
-        }
 
-        // Same staging idea as bankStatement above — an MC/hospital bill is just as likely to be a
-        // phone photo as a clean printout.
-        const medicalBillsPreview: { fileIndex: number; pageIndex: number; fileName: string; image: string }[] = [];
-        const medicalBillsErrors: { fileName: string; error: string }[] = [];
-        for (let fi = 0; fi < medicalBillsFiles.length; fi++) {
-            const file = medicalBillsFiles[fi];
-            try {
-                const images = await loadPagesForFile(file);
-                for (let pi = 0; pi < images.length; pi++) {
-                    medicalBillsPreview.push({ fileIndex: fi, pageIndex: pi, fileName: file.originalname, image: await resizeForDisplay(images[pi], 400) });
+            // Same staging idea as pdfs above — a bank statement is just as likely to be a phone
+            // photo as a clean digital export, so it gets the same rotate/exclude-before-scan step.
+            const bankStatementPreview: { fileIndex: number; pageIndex: number; fileName: string; image: string }[] = [];
+            const bankStatementErrors: { fileName: string; error: string }[] = [];
+            for (let fi = 0; fi < bankStatementFiles.length; fi++) {
+                const file = bankStatementFiles[fi];
+                try {
+                    const images = await loadPagesForFile(file, path.join(previewDir, `bankStatement-${fi}`), MAX_PAGES_PER_JOB);
+                    for (let pi = 0; pi < images.length; pi++) {
+                        bankStatementPreview.push({ fileIndex: fi, pageIndex: pi, fileName: file.originalname, image: await resizeForDisplay(await images.get(pi), 400) });
+                    }
+                } catch (e: any) {
+                    bankStatementErrors.push({ fileName: file.originalname, error: e.message });
                 }
-            } catch (e: any) {
-                medicalBillsErrors.push({ fileName: file.originalname, error: e.message });
             }
-        }
 
-        res.json({ pdfsPreview, pdfsErrors, ipaPreview, ipaError, bankStatementPreview, bankStatementErrors, medicalBillsPreview, medicalBillsErrors });
+            // Same staging idea as bankStatement above — an MC/hospital bill is just as likely to be a
+            // phone photo as a clean printout.
+            const medicalBillsPreview: { fileIndex: number; pageIndex: number; fileName: string; image: string }[] = [];
+            const medicalBillsErrors: { fileName: string; error: string }[] = [];
+            for (let fi = 0; fi < medicalBillsFiles.length; fi++) {
+                const file = medicalBillsFiles[fi];
+                try {
+                    const images = await loadPagesForFile(file, path.join(previewDir, `medicalBills-${fi}`), MAX_PAGES_PER_JOB);
+                    for (let pi = 0; pi < images.length; pi++) {
+                        medicalBillsPreview.push({ fileIndex: fi, pageIndex: pi, fileName: file.originalname, image: await resizeForDisplay(await images.get(pi), 400) });
+                    }
+                } catch (e: any) {
+                    medicalBillsErrors.push({ fileName: file.originalname, error: e.message });
+                }
+            }
+
+            res.json({ pdfsPreview, pdfsErrors, ipaPreview, ipaError, bankStatementPreview, bankStatementErrors, medicalBillsPreview, medicalBillsErrors });
+        } finally {
+            await cleanupJobDir(previewDir);
+        }
     }
 );
 
@@ -225,12 +244,20 @@ app.post(
         // than waiting for the entire batch.
         const jobId = randomUUID();
         processJobs.set(jobId, { status: "running", pages: [], result: null, error: null });
-        runProcessJob(jobId, files, ipaFile, rotations, excludedPages, standardBreakHours, fallbackYear)
+        // Cloud Run would just add instances under load; a fixed VPS can't — acquireJobSlot queues
+        // this job's actual work (not the response below, which returns immediately either way)
+        // until a concurrency slot is free, so peak memory/CPU stays bounded to MAX_CONCURRENT_JOBS
+        // regardless of how many caseworkers upload at the same moment.
+        acquireJobSlot()
+            .then(() => runProcessJob(jobId, files, ipaFile, rotations, excludedPages, standardBreakHours, fallbackYear))
             .catch(e => {
                 const job = processJobs.get(jobId);
                 if (job) { job.status = "error"; job.error = e.message; }
             })
-            .finally(() => scheduleJobCleanup(jobId));
+            .finally(() => {
+                releaseJobSlot();
+                scheduleJobCleanup(jobId);
+            });
 
         res.json({ jobId });
     }
@@ -295,12 +322,16 @@ app.post(
 
         const jobId = randomUUID();
         bankJobs.set(jobId, { status: "running", pages: [], result: null, error: null });
-        runBankStatementJob(jobId, files, rotations, excludedPages)
+        acquireJobSlot()
+            .then(() => runBankStatementJob(jobId, files, rotations, excludedPages))
             .catch(e => {
                 const job = bankJobs.get(jobId);
                 if (job) { job.status = "error"; job.error = e.message; }
             })
-            .finally(() => scheduleBankJobCleanup(jobId));
+            .finally(() => {
+                releaseJobSlot();
+                scheduleBankJobCleanup(jobId);
+            });
 
         res.json({ jobId });
     }
@@ -359,12 +390,16 @@ app.post(
 
         const jobId = randomUUID();
         medicalJobs.set(jobId, { status: "running", pages: [], result: null, error: null });
-        runMedicalBillsJob(jobId, files, rotations, excludedPages)
+        acquireJobSlot()
+            .then(() => runMedicalBillsJob(jobId, files, rotations, excludedPages))
             .catch(e => {
                 const job = medicalJobs.get(jobId);
                 if (job) { job.status = "error"; job.error = e.message; }
             })
-            .finally(() => scheduleMedicalJobCleanup(jobId));
+            .finally(() => {
+                releaseJobSlot();
+                scheduleMedicalJobCleanup(jobId);
+            });
 
         res.json({ jobId });
     }

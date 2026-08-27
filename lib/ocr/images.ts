@@ -1,5 +1,9 @@
 import { pdf } from "pdf-to-img";
 import sharp from "sharp";
+import { writeFile } from "fs/promises";
+import { PagedImages, ensurePagedImagesDir } from "./pagedImages";
+
+export { PagedImages } from "./pagedImages";
 
 // Contrast boost for genuinely low-contrast pages (faint pen, washed-out photocopies) — centered
 // on the page's own measured brightness (mean) rather than a hard min/max stretch. Tested against
@@ -28,26 +32,41 @@ async function boostFaintContrast(png: Buffer): Promise<Buffer> {
     return sharp(png).linear(CONTRAST_BOOST_FACTOR, offset).png().toBuffer();
 }
 
-// Convert a PDF (path or in-memory buffer) into an array of base64 PNG images, one per page
+// Convert a PDF (path or in-memory buffer) into per-page PNG files on disk, one per page. Pages
+// used to be collected into one in-memory base64 array — for a large multi-page upload (e.g.
+// ~159 pages), that held every rendered page's bytes in RAM at once for the whole job. Writing
+// each page to disk as it's rendered, and returning a PagedImages that reads a page's bytes back
+// only when a caller actually needs them, bounds peak RAM to however many pages are in flight
+// rather than the total page count.
 /**
- * Renders every page of a PDF to a base64 PNG image.
+ * Renders every page of a PDF to a PNG file on disk.
  *
  * @param input - The PDF, as a file path or an in-memory buffer.
- * @returns One base64 PNG string per page, in page order.
+ * @param destDir - Directory to write each page's PNG into; created if missing.
+ * @param maxPages - If given, rejects (before rendering any page) a PDF whose own page count
+ * already exceeds this, instead of spending time/disk rendering pages that would just be discarded
+ * once the job-wide page cap is hit anyway.
+ * @returns A {@link PagedImages} over the rendered pages, in page order.
  */
-export async function pdfToImages(input: string | Buffer): Promise<string[]> {
-    const images: string[] = [];
+export async function pdfToImages(input: string | Buffer, destDir: string, maxPages?: number): Promise<PagedImages> {
+    await ensurePagedImagesDir(destDir);
     // Bumped from 2.0 after a systematic (unanimous-across-attempts) misread of dense, small
     // handwritten digits — the failure wasn't inconsistency between attempts (which the
     // multi-attempt reconciliation in lib/reconcile.ts is designed to catch), it was the same
     // legibility limit hit every time. Higher scale trades more tokens/latency per page for
     // clearer source pixels.
     const document = await pdf(input, { scale: 3.0 });
+    if (maxPages !== undefined && document.length > maxPages) {
+        await document.destroy();
+        throw new Error(`this file has ${document.length} pages, over the ${maxPages}-page limit per scan — please split it into smaller uploads`);
+    }
+    let count = 0;
     for await (const pageBuffer of document) {
         const boosted = await boostFaintContrast(pageBuffer);
-        images.push(boosted.toString("base64"));
+        await writeFile(PagedImages.pagePath(destDir, count), boosted);
+        count++;
     }
-    return images;
+    return new PagedImages(destDir, count);
 }
 
 // A single photographed/scanned timesheet (jpg/png/etc, common in real-world uploads — phone
@@ -63,20 +82,23 @@ export async function pdfToImages(input: string | Buffer): Promise<string[]> {
 // to roughly the same resolution pdfToImages produces for a rendered PDF page (~1800-2500px) —
 // already proven legible for OCR there, and comfortably under the provider's limit.
 /**
- * Normalizes a single photographed/scanned image (jpg/png/etc.) into the same
- * one-page-per-array-entry shape {@link pdfToImages} returns.
+ * Normalizes a single photographed/scanned image (jpg/png/etc.) into the same one-page-per-file
+ * shape {@link pdfToImages} writes.
  *
  * @param input - The raw image bytes.
- * @returns A single-element array containing the normalized page as a base64 PNG.
+ * @param destDir - Directory to write the normalized page's PNG into; created if missing.
+ * @returns A single-page {@link PagedImages} over the normalized page.
  */
-export async function imageToPages(input: Buffer): Promise<string[]> {
+export async function imageToPages(input: string | Buffer, destDir: string): Promise<PagedImages> {
+    await ensurePagedImagesDir(destDir);
     const png = await sharp(input)
         .rotate()
         .resize({ width: 2500, height: 2500, fit: "inside", withoutEnlargement: true })
         .png()
         .toBuffer();
     const boosted = await boostFaintContrast(png);
-    return [boosted.toString("base64")];
+    await writeFile(PagedImages.pagePath(destDir, 0), boosted);
+    return new PagedImages(destDir, 1);
 }
 
 // Splits one page image into vertically overlapping bands (top/bottom by default). A single

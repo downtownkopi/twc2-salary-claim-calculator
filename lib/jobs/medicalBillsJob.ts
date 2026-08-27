@@ -1,6 +1,16 @@
-import { resizeForDisplay, rotateImage } from "../ocr";
+import * as path from "path";
+import { resizeForDisplay, rotateImage, type PagedImages } from "../ocr";
 import { extractMedicalBillEntries, mergeMedicalBillEntries, type MedicalBillEntry } from "../medicalbills";
-import { loadPagesForFile, SCAN_TEMPERATURES, JOB_TTL_MS } from "./shared";
+import {
+    loadPagesForFile,
+    SCAN_TEMPERATURES,
+    JOB_TTL_MS,
+    MAX_PAGES_PER_JOB,
+    MAX_PAGE_CONCURRENCY,
+    checkPageCount,
+    cleanupJobDir,
+    jobPagesDir,
+} from "./shared";
 
 // Same standalone-job shape as the bank statement job (see ./bankStatementJob) — a medical bills
 // scan checks for unreimbursed costs and is its own independent cross-check, not part of the
@@ -13,8 +23,9 @@ export type MedicalBillsJob = {
     error: string | null;
 };
 export const medicalJobs = new Map<string, MedicalBillsJob>();
-/** Schedules a medical-bills job's entry to be evicted from {@link medicalJobs} after {@link JOB_TTL_MS}. */
+/** Schedules a medical-bills job's entry to be evicted from {@link medicalJobs} after {@link JOB_TTL_MS}, and reclaims its temp page dir immediately. */
 export function scheduleMedicalJobCleanup(jobId: string) {
+    cleanupJobDir(jobPagesDir(jobId));
     setTimeout(() => medicalJobs.delete(jobId), JOB_TTL_MS);
 }
 
@@ -39,38 +50,50 @@ export async function runMedicalBillsJob(
     const startedAt = Date.now();
     let totalCostUsd = 0;
 
-    const imagesByFile: string[][] = [];
+    const imagesByFile: (PagedImages | undefined)[] = [];
     for (let fi = 0; fi < files.length; fi++) {
         try {
-            imagesByFile[fi] = await loadPagesForFile(files[fi]);
+            imagesByFile[fi] = await loadPagesForFile(files[fi], path.join(jobPagesDir(jobId), `file-${fi}`), MAX_PAGES_PER_JOB);
         } catch (e: any) {
             console.error(`failed to load pages for ${files[fi].originalname}:`, e);
-            imagesByFile[fi] = [];
         }
+    }
+
+    try {
+        checkPageCount(imagesByFile.reduce((sum, p) => sum + (p?.length ?? 0), 0));
+    } catch (e: any) {
+        job.status = "error";
+        job.error = e.message;
+        return;
     }
 
     const pageTasks: { fi: number; pi: number }[] = [];
     for (let fi = 0; fi < files.length; fi++) {
-        for (let pi = 0; pi < imagesByFile[fi].length; pi++) {
+        const pageCount = imagesByFile[fi]?.length ?? 0;
+        for (let pi = 0; pi < pageCount; pi++) {
             if (excludedPages.has(`${fi}-${pi}`)) continue;
             pageTasks.push({ fi, pi });
         }
     }
-    let pageConcurrencyLimit = Math.max(1, pageTasks.length);
+    // Capped at MAX_PAGE_CONCURRENCY pages in flight at once (see shared.ts), ratcheting down
+    // (never back up) if a page's scan fails — same adaptive-concurrency pattern as the timesheet
+    // and bank-statement job runners.
+    let pageConcurrencyLimit = Math.min(MAX_PAGE_CONCURRENCY, Math.max(1, pageTasks.length));
     const pages: (MedicalBillsPageResult | undefined)[] = new Array(pageTasks.length);
     job.pages.length = pageTasks.length;
 
     async function processMedicalPage(fi: number, pi: number, orderIndex: number): Promise<void> {
         const file = files[fi];
-        const images = imagesByFile[fi];
+        const images = imagesByFile[fi]!;
         const key = `${fi}-${pi}`;
         const rotation = rotations[key] || 0;
-        if (rotation) images[pi] = await rotateImage(images[pi], rotation);
+        if (rotation) await images.set(pi, await rotateImage(await images.get(pi), rotation));
+        const pageImage = await images.get(pi);
 
         const source = `${file.originalname} p${pi + 1}`;
-        const page: MedicalBillsPageResult = { source, image: await resizeForDisplay(images[pi], 500), entries: [] };
+        const page: MedicalBillsPageResult = { source, image: await resizeForDisplay(pageImage, 500), entries: [] };
         const results = await Promise.allSettled(
-            SCAN_TEMPERATURES.map(({ temperature, seed }) => extractMedicalBillEntries(images[pi], temperature, seed))
+            SCAN_TEMPERATURES.map(({ temperature, seed }) => extractMedicalBillEntries(pageImage, temperature, seed))
         );
         const attempts: MedicalBillEntry[][] = [];
         let failedCount = 0;

@@ -1,6 +1,16 @@
-import { resizeForDisplay, rotateImage } from "../ocr";
+import * as path from "path";
+import { resizeForDisplay, rotateImage, type PagedImages } from "../ocr";
 import { extractMatchingTransactions, mergeTransactionAttempts, type BankTransaction } from "../bankstatement";
-import { loadPagesForFile, SCAN_TEMPERATURES, JOB_TTL_MS } from "./shared";
+import {
+    loadPagesForFile,
+    SCAN_TEMPERATURES,
+    JOB_TTL_MS,
+    MAX_PAGES_PER_JOB,
+    MAX_PAGE_CONCURRENCY,
+    checkPageCount,
+    cleanupJobDir,
+    jobPagesDir,
+} from "./shared";
 
 // Separate job type/store from the timesheet job (see ./timesheetJob) — a bank-statement scan is a
 // standalone cross-check against a worker's own claimed payments, not part of the timesheet/IPA
@@ -14,8 +24,9 @@ export type BankStatementJob = {
     error: string | null;
 };
 export const bankJobs = new Map<string, BankStatementJob>();
-/** Schedules a bank-statement job's entry to be evicted from {@link bankJobs} after {@link JOB_TTL_MS}. */
+/** Schedules a bank-statement job's entry to be evicted from {@link bankJobs} after {@link JOB_TTL_MS}, and reclaims its temp page dir immediately. */
 export function scheduleBankJobCleanup(jobId: string) {
+    cleanupJobDir(jobPagesDir(jobId));
     setTimeout(() => bankJobs.delete(jobId), JOB_TTL_MS);
 }
 
@@ -40,47 +51,57 @@ export async function runBankStatementJob(
     const startedAt = Date.now();
     let totalCostUsd = 0;
 
-    const imagesByFile: string[][] = [];
+    const imagesByFile: (PagedImages | undefined)[] = [];
     for (let fi = 0; fi < files.length; fi++) {
         try {
-            imagesByFile[fi] = await loadPagesForFile(files[fi]);
+            imagesByFile[fi] = await loadPagesForFile(files[fi], path.join(jobPagesDir(jobId), `file-${fi}`), MAX_PAGES_PER_JOB);
         } catch (e: any) {
             console.error(`failed to load pages for ${files[fi].originalname}:`, e);
-            imagesByFile[fi] = [];
         }
     }
 
-    // Same adaptive-concurrency pattern as the timesheet pipeline (runProcessJob) — every page
-    // starts at once by default, pageConcurrencyLimit only ever ratchets down (never back up) if a
-    // page's scan comes back failed, treating that as a signal of provider distress. pages/job.pages
+    try {
+        checkPageCount(imagesByFile.reduce((sum, p) => sum + (p?.length ?? 0), 0));
+    } catch (e: any) {
+        job.status = "error";
+        job.error = e.message;
+        return;
+    }
+
+    // Same adaptive-concurrency pattern as the timesheet pipeline (runProcessJob) — capped at
+    // MAX_PAGE_CONCURRENCY pages in flight at once (see shared.ts), and pageConcurrencyLimit only
+    // ever ratchets down from there (never back up) if a page's scan comes back failed, treating
+    // that as a signal of provider distress. pages/job.pages
     // are pre-sized and written by index (upload-order position) rather than pushed, since pages now
     // finish in whatever order they complete, not the order they were uploaded in.
     const pageTasks: { fi: number; pi: number }[] = [];
     for (let fi = 0; fi < files.length; fi++) {
-        for (let pi = 0; pi < imagesByFile[fi].length; pi++) {
+        const pageCount = imagesByFile[fi]?.length ?? 0;
+        for (let pi = 0; pi < pageCount; pi++) {
             if (excludedPages.has(`${fi}-${pi}`)) continue;
             pageTasks.push({ fi, pi });
         }
     }
-    let pageConcurrencyLimit = Math.max(1, pageTasks.length);
+    let pageConcurrencyLimit = Math.min(MAX_PAGE_CONCURRENCY, Math.max(1, pageTasks.length));
     const pages: (BankStatementPageResult | undefined)[] = new Array(pageTasks.length);
     job.pages.length = pageTasks.length;
 
     async function processBankPage(fi: number, pi: number, orderIndex: number): Promise<void> {
         const file = files[fi];
-        const images = imagesByFile[fi];
+        const images = imagesByFile[fi]!;
         const key = `${fi}-${pi}`;
         const rotation = rotations[key] || 0;
-        if (rotation) images[pi] = await rotateImage(images[pi], rotation);
+        if (rotation) await images.set(pi, await rotateImage(await images.get(pi), rotation));
+        const pageImage = await images.get(pi);
 
         const source = `${file.originalname} p${pi + 1}`;
-        const page: BankStatementPageResult = { source, image: await resizeForDisplay(images[pi], 500), transactions: [] };
+        const page: BankStatementPageResult = { source, image: await resizeForDisplay(pageImage, 500), transactions: [] };
         // Same SCAN_TEMPERATURES multi-attempt pattern as timesheet scanning — a single pass here
         // can genuinely miss a page's transaction entirely (the bug this was added to fix: one
         // deterministic attempt skipped 2 of 3 real payments on a page, understating what the
         // worker was actually paid). mergeTransactionAttempts unions whatever each attempt caught.
         const results = await Promise.allSettled(
-            SCAN_TEMPERATURES.map(({ temperature, seed }) => extractMatchingTransactions(images[pi], temperature, seed))
+            SCAN_TEMPERATURES.map(({ temperature, seed }) => extractMatchingTransactions(pageImage, temperature, seed))
         );
         const attempts: BankTransaction[][] = [];
         let failedCount = 0;

@@ -1,3 +1,4 @@
+import * as path from "path";
 import {
     scanPageImage,
     extractJsonBlock,
@@ -9,6 +10,7 @@ import {
     PRIMARY_VISION_MODEL,
     FALLBACK_VISION_MODEL,
     type PageDataModel,
+    type PagedImages,
 } from "../ocr";
 import { buildReviewRows, MONTH_ABBR, type TimeEntry, type FillWarning, type RestDay } from "../xlsx";
 import { reconcileAttempts, reconcileRosterAttempts, type ParsedEntry, type RosterPageAttempt, type RosterRow } from "../reconcile";
@@ -16,7 +18,18 @@ import { extractIpaFields, type IpaFields } from "../ipa";
 import { buildPrompt } from "../timesheetPrompt";
 import { buildRosterPrompt } from "../rosterPrompt";
 import type { WorkerMatchConfidence } from "../workerMatch";
-import { loadPagesForFile, SUPPORTED_YEARS, SCAN_TEMPERATURES, BANDS_PER_PAGE, JOB_TTL_MS } from "./shared";
+import {
+    loadPagesForFile,
+    SUPPORTED_YEARS,
+    SCAN_TEMPERATURES,
+    BANDS_PER_PAGE,
+    JOB_TTL_MS,
+    MAX_PAGES_PER_JOB,
+    MAX_PAGE_CONCURRENCY,
+    checkPageCount,
+    cleanupJobDir,
+    jobPagesDir,
+} from "./shared";
 
 // Rotation degrees a human confirmed in the pre-scan staging step (public/index.html), keyed so
 // /api/process can look up which page they apply to. pdfs are keyed "<fileIndex>-<pageIndex>"
@@ -59,8 +72,14 @@ export type ProcessJob = {
 // Named processJobs, not jobs — the per-page scan loop below already uses a local variable
 // called `jobs` for its band x temperature attempt list, and shadowing that would be a landmine.
 export const processJobs = new Map<string, ProcessJob>();
-/** Schedules a process job's entry to be evicted from {@link processJobs} after {@link JOB_TTL_MS}. */
+// Called once runProcessJob's promise settles (success or error — see server.ts's
+// `.finally(() => scheduleJobCleanup(jobId))`), so this is the single point every exit path funnels
+// through. The rendered-page temp dir is reclaimed right away (disk, not worth holding for the full
+// TTL); the small in-memory job entry itself still waits out JOB_TTL_MS, so a client polling
+// GET /api/process/:jobId a bit late still gets the final result.
+/** Schedules a process job's entry to be evicted from {@link processJobs} after {@link JOB_TTL_MS}, and reclaims its temp page dir immediately. */
 export function scheduleJobCleanup(jobId: string) {
+    cleanupJobDir(jobPagesDir(jobId));
     setTimeout(() => processJobs.delete(jobId), JOB_TTL_MS);
 }
 
@@ -205,12 +224,13 @@ export async function runProcessJob(
     const ipaPromise: Promise<IpaFields | null> = ipaFile
         ? (async () => {
             try {
-                const images = await loadPagesForFile(ipaFile);
+                const images = await loadPagesForFile(ipaFile, path.join(jobPagesDir(jobId), "ipa"), MAX_PAGES_PER_JOB);
                 if (images.length === 0) {
                     ipaWarning = "IPA file had no readable pages";
                     return null;
                 }
-                const image = rotations.ipa ? await rotateImage(images[0], rotations.ipa) : images[0];
+                const page0 = await images.get(0);
+                const image = rotations.ipa ? await rotateImage(page0, rotations.ipa) : page0;
                 ipaImage = await resizeForDisplay(image, 500);
                 const { fields, cost } = await extractIpaFields(image);
                 addCost(PRIMARY_VISION_MODEL, cost);
@@ -236,26 +256,25 @@ export async function runProcessJob(
     // own correct "Month Year" header), and a single job-wide vote would let the more numerous
     // year silently overwrite the genuinely different year on the minority pages, mislabeling
     // real, correctly-scanned data. Each page keeps its own resolved year instead.
-    const imagesByFile: string[][] = [];
+    const imagesByFile: PagedImages[] = [];
     const fileLoadErrors = new Map<number, string>();
     const pageContextCache = new Map<string, { context: string; isTimesheet: boolean; dataModel: PageDataModel; year: number | null }>();
     for (let fi = 0; fi < files.length; fi++) {
         const file = files[fi];
         try {
-            imagesByFile[fi] = await loadPagesForFile(file);
+            imagesByFile[fi] = await loadPagesForFile(file, path.join(jobPagesDir(jobId), `pdf-${fi}`), MAX_PAGES_PER_JOB);
         } catch (e: any) {
             const isImage = file.mimetype.startsWith("image/");
             fileLoadErrors.set(fi, `could not read ${isImage ? "image" : "PDF"}: ${e.message}`);
-            imagesByFile[fi] = [];
             continue;
         }
         for (let i = 0; i < imagesByFile[fi].length; i++) {
             if (excludedPages.has(`${fi}-${i}`)) continue;
             const pageRotation = rotations.pdfs?.[`${fi}-${i}`];
-            if (pageRotation) imagesByFile[fi][i] = await rotateImage(imagesByFile[fi][i], pageRotation);
+            if (pageRotation) await imagesByFile[fi].set(i, await rotateImage(await imagesByFile[fi].get(i), pageRotation));
             const source = `${file.originalname} p${i + 1}`;
             try {
-                const result = await extractPageContext(imagesByFile[fi][i], timesheetModel);
+                const result = await extractPageContext(await imagesByFile[fi].get(i), timesheetModel);
                 const validYear = result.year !== null && SUPPORTED_YEARS.includes(result.year) ? result.year : null;
                 pageContextCache.set(source, { context: result.context, isTimesheet: result.isTimesheet, dataModel: result.dataModel, year: validYear });
                 addCost(timesheetModel, result.cost);
@@ -265,6 +284,17 @@ export async function runProcessJob(
                 // reports the failure there, same as it always has.
             }
         }
+    }
+
+    // Bounds vision-model cost/latency across the whole job (not memory — pdfToImages already
+    // rejected any single over-limit PDF before rendering it, see loadPagesForFile above; this
+    // catches several smaller files that only add up to too many pages combined).
+    try {
+        checkPageCount(imagesByFile.reduce((sum, p) => sum + (p?.length ?? 0), 0));
+    } catch (e: any) {
+        const job = processJobs.get(jobId);
+        if (job) { job.status = "error"; job.error = e.message; }
+        return;
     }
 
     // Fill in pages that had no year label of their own (common — a header is often only printed
@@ -277,7 +307,7 @@ export async function runProcessJob(
     for (let fi = 0; fi < files.length; fi++) {
         const images = imagesByFile[fi];
         if (!images) continue;
-        const sources = images.map((_, i) => `${files[fi].originalname} p${i + 1}`).filter(s => pageContextCache.has(s));
+        const sources = Array.from({ length: images.length }, (_, i) => `${files[fi].originalname} p${i + 1}`).filter(s => pageContextCache.has(s));
         let lastKnown: number | null = null;
         for (const source of sources) {
             const y = pageContextCache.get(source)!.year;
@@ -308,15 +338,16 @@ export async function runProcessJob(
         if (loadError) warnings.push({ source: files[fi].originalname, reason: loadError, category: "system" });
     }
 
-    // Adaptive page concurrency: every page in this upload is queued to run at once (uncapped —
-    // the theory being most real uploads are small enough that "try everything simultaneously" is
-    // strictly faster with no downside), and pageConcurrencyLimit only ever ratchets DOWN, never
-    // back up. A page's scan attempts failing (sendVisionRequest already retried 429s internally
-    // before giving up on any single attempt, so a failure surfacing here means the provider was
-    // already pushed hard) halves the limit for every page that hasn't started yet. Never scales
-    // back up mid-job — we can't distinguish "the provider recovered" from "we just got lucky this
-    // batch" from in here, and erring toward the safer, more sequential side for the rest of THIS
-    // job costs little; a fresh job starts optimistic again regardless.
+    // Adaptive page concurrency: capped at MAX_PAGE_CONCURRENCY pages in flight at once (see
+    // shared.ts — a large upload firing every page's own render-read + vision calls simultaneously
+    // would spike both RAM and outbound request volume with no bound), and pageConcurrencyLimit
+    // only ever ratchets DOWN from there, never back up. A page's scan attempts failing
+    // (sendVisionRequest already retried 429s internally before giving up on any single attempt, so
+    // a failure surfacing here means the provider was already pushed hard) halves the limit for
+    // every page that hasn't started yet. Never scales back up mid-job — we can't distinguish "the
+    // provider recovered" from "we just got lucky this batch" from in here, and erring toward the
+    // safer, more sequential side for the rest of THIS job costs little; a fresh job starts
+    // optimistic again regardless.
     const pageTasks: { fi: number; i: number }[] = [];
     for (let fi = 0; fi < files.length; fi++) {
         if (fileLoadErrors.has(fi)) continue;
@@ -326,7 +357,7 @@ export async function runProcessJob(
             pageTasks.push({ fi, i });
         }
     }
-    let pageConcurrencyLimit = Math.max(1, pageTasks.length);
+    let pageConcurrencyLimit = Math.min(MAX_PAGE_CONCURRENCY, Math.max(1, pageTasks.length));
     // Index into this array (rather than push) is each task's position here — i.e. upload order.
     pageImages.length = pageTasks.length;
     // Same fix applied to the LIVE progress array clients poll mid-job (see the GET handler, which
@@ -348,11 +379,13 @@ export async function runProcessJob(
             // attempt failed. A page the user is watching "process" should never just disappear
             // without ever being accounted for in the live view.
             try {
-                // Rotation was already applied in the prescan pass above (images[i] here is the same
-                // mutated array), so this is just building the display copy — everything downstream
-                // sees the human-confirmed upright orientation from the /api/preview staging step,
+                // Read once from disk (see PagedImages, lib/ocr/pagedImages.ts) and reused for the
+                // rest of this page's processing below, instead of re-reading on every use — rotation
+                // was already applied and persisted to disk in the prescan pass above, so this is
+                // already the human-confirmed upright orientation from the /api/preview staging step,
                 // not the raw (possibly sideways) render.
-                displayImage = await resizeForDisplay(images[i]);
+                const pageImage = await images.get(i);
+                displayImage = await resizeForDisplay(pageImage);
                 pageImages[orderIndex] = { source, image: displayImage };
 
                 // Page-level context (e.g. a month header) + timesheet/data-model classification —
@@ -361,7 +394,7 @@ export async function runProcessJob(
                 let cached = pageContextCache.get(source);
                 if (!cached) {
                     try {
-                        const result = await extractPageContext(images[i], timesheetModel);
+                        const result = await extractPageContext(pageImage, timesheetModel);
                         const validYear = result.year !== null && SUPPORTED_YEARS.includes(result.year) ? result.year : null;
                         cached = { context: result.context, isTimesheet: result.isTimesheet, dataModel: result.dataModel, year: validYear };
                         addCost(timesheetModel, result.cost);
@@ -421,7 +454,7 @@ export async function runProcessJob(
 
                     const rosterPrompt = buildRosterPrompt();
                     const rosterResults = await Promise.allSettled(
-                        SCAN_TEMPERATURES.map(({ temperature, seed }) => scanPageImage(images[i], rosterPrompt, temperature, seed, timesheetModel))
+                        SCAN_TEMPERATURES.map(({ temperature, seed }) => scanPageImage(pageImage, rosterPrompt, temperature, seed, timesheetModel))
                     );
 
                     const rosterAttempts: RosterPageAttempt[] = [];
@@ -526,7 +559,7 @@ export async function runProcessJob(
 
                 const prompt = buildPrompt(pageYear, pageContext, dataModel);
 
-                const bands = await cropIntoBands(images[i], BANDS_PER_PAGE);
+                const bands = await cropIntoBands(pageImage, BANDS_PER_PAGE);
 
                 // flatten band x temperature into one parallel batch for max concurrency — all
                 // bands' attempts fire together rather than band-by-band, so wall-clock time stays
@@ -639,7 +672,7 @@ export async function runProcessJob(
                     .map(e => ({ day: e.day, month: e.month }));
                 if (candidates.length > 0) {
                     try {
-                        const { confirmed, cost } = await verifyDatesOnPage(images[i], candidates, timesheetModel);
+                        const { confirmed, cost } = await verifyDatesOnPage(pageImage, candidates, timesheetModel);
                         addCost(timesheetModel, cost);
                         markModelUsed(source, timesheetModel);
                         parsed = reconciled.filter(e => {
@@ -680,7 +713,7 @@ export async function runProcessJob(
                 );
                 if (disputedDates.size > 0) {
                     try {
-                        const { content: fallbackContent, cost: fallbackCost } = await scanPageImage(images[i], prompt, 0, 42, FALLBACK_VISION_MODEL);
+                        const { content: fallbackContent, cost: fallbackCost } = await scanPageImage(pageImage, prompt, 0, 42, FALLBACK_VISION_MODEL);
                         addCost(FALLBACK_VISION_MODEL, fallbackCost);
                         markModelUsed(source, FALLBACK_VISION_MODEL);
                         const fallbackParsed = JSON.parse(extractJsonBlock(fallbackContent)) as ParsedEntry[];
