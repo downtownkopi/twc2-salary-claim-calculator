@@ -715,7 +715,8 @@
     .inline-review-row.rest-day-flag,
     .inline-review-row.cap-flag,
     .inline-review-row.ph-flag,
-    .inline-review-row.break-flag {
+    .inline-review-row.break-flag,
+    .inline-review-row.mc-cert-flag {
       background: rgba(240, 185, 85, 0.08);
     }
 
@@ -797,6 +798,10 @@
       flex-basis: 100%;
       font-size: 11px;
       color: var(--warn-text);
+    }
+
+    .inline-review-row .row-notes.mc-cert-ok {
+      color: var(--ok);
     }
 
     .inline-review-row .rest-day-work-block {
@@ -1129,6 +1134,11 @@
             <td>All 3 independent scan passes caught this transaction</td>
             <td>Fewer than 3 passes caught it — flagged, worth double-checking against the source page</td>
           </tr>
+          <tr>
+            <td>MC / medical leave</td>
+            <td>A medical certificate covering this date was uploaded and reviewed</td>
+            <td>No medical certificate on file covers this date — unpaid unless one is provided</td>
+          </tr>
         </tbody>
       </table>
       <div class="rules-summary-note">Flags only — nothing here is auto-corrected or written to the spreadsheet; every
@@ -1353,6 +1363,17 @@
       </div>
 
       <div class="field">
+        <h4 for="medicalCertificatesInput">Medical certificates (optional — PDF or photo)</h4>
+        <input type="file" id="medicalCertificatesInput" accept=".pdf,image/*" multiple>
+        <div class="file-list" id="medicalCertificatesFileList"></div>
+        <div class="stage-grid" id="medicalCertificatesStage"></div>
+        <div class="file-list">A timesheet day marked "MC" is only treated as backed by evidence if a matching
+          medical certificate (MC) is on file here — a distinct document from a medical bill/invoice below, since an
+          MC often has no billed amount printed on it at all. Every certificate is scanned for its granted leave
+          period; a timesheet MC day with no matching leave period on file gets flagged in the review below.</div>
+      </div>
+
+      <div class="field">
         <h4 for="medicalBillsInput">Medical bills (optional — PDF or photo)</h4>
         <input type="file" id="medicalBillsInput" accept=".pdf,image/*" multiple>
         <div class="file-list" id="medicalBillsFileList"></div>
@@ -1370,6 +1391,7 @@
       <div class="status" id="status"></div>
       <div class="status" id="bankStatus"></div>
       <div class="status" id="medicalBillsStatus"></div>
+      <div class="status" id="medicalCertificatesStatus"></div>
       <ul class="month-summary" id="otCapWarnings" style="display:none"></ul>
     </form>
   </div>
@@ -1385,6 +1407,7 @@
     <div id="pageReviewList"></div>
     <div id="bankPageReviewList" style="display:none"></div>
     <div id="medicalPageReviewList" style="display:none"></div>
+    <div id="medicalCertPageReviewList" style="display:none"></div>
 
     <div class="extra-days-body-width">
       <div class="extra-days-claim-width">
@@ -1976,11 +1999,12 @@
         }
       })();
 
-      const [mainResult, bankResult, medicalResult] = await Promise.allSettled([mainScan, runBankStatementScan(), runMedicalBillsScan()]);
+      const [mainResult, bankResult, medicalResult, medicalCertResult] = await Promise.allSettled([mainScan, runBankStatementScan(), runMedicalBillsScan(), runMedicalCertificatesScan()]);
       if (!mainErrored) {
         const mainCost = mainResult.status === 'fulfilled' && typeof mainResult.value === 'number' ? mainResult.value : 0;
         const bankCost = bankResult.status === 'fulfilled' && typeof bankResult.value === 'number' ? bankResult.value : 0;
         const medicalCost = medicalResult.status === 'fulfilled' && typeof medicalResult.value === 'number' ? medicalResult.value : 0;
+        const medicalCertCost = medicalCertResult.status === 'fulfilled' && typeof medicalCertResult.value === 'number' ? medicalCertResult.value : 0;
         statusEl.className = 'status success';
         // currentYear is server-detected now (no manual picker — see renderFinalResult) — surfaced
         // here so a caseworker has some visible confirmation of what got auto-detected, since
@@ -1995,7 +2019,7 @@
         const modelBreakdown = currentCostByModel && Object.keys(currentCostByModel).length > 0
           ? ' (' + Object.entries(currentCostByModel).map(([model, cost]) => `${model}: $${cost.toFixed(4)}`).join(', ') + ')'
           : '';
-        statusEl.textContent = `Scan done in ${formatDuration(Date.now() - submitStartedAt)}${formatCost(mainCost + bankCost + medicalCost)}${modelBreakdown}${yearNote}`;
+        statusEl.textContent = `Scan done in ${formatDuration(Date.now() - submitStartedAt)}${formatCost(mainCost + bankCost + medicalCost + medicalCertCost)}${modelBreakdown}${yearNote}`;
       }
       submitBtn.disabled = false;
     });
@@ -2518,6 +2542,7 @@
       <div class="rest-day-pay-note review-hint"></div>
     </div>
     <div class="row-notes ph-work-note" style="display:none"></div>
+    <div class="row-notes mc-cert-note" style="display:none"></div>
   `;
       const dateInput = li.querySelector('.f-date');
       const weekdayLabel = li.querySelector('.weekday-label');
@@ -2992,6 +3017,16 @@
     // input (salary, work week, declared rest day) that the underlying formulas depend on changes.
     // ===== Row guardrails and monthly pay totals =====
     /** Re-evaluates one row's 12h/day cap, rest-day-worked, and public-holiday-worked guardrails. */
+    // Matches the medical-leave markers the OCR extraction prompt is told to transcribe verbatim
+    // into a rest-day row's notes (lib/timesheetPrompt.ts, "REST DAYS, LEAVE, AND NON-WORKED
+    // MARKINGS" section: "MC", "medical leave") — deliberately narrow so it doesn't also catch
+    // other leave types the same section lists (AL/annual leave, EL/emergency leave, unpaid leave),
+    // which this feature has no opinion on.
+    /** True if a rest-day row's notes indicate medical leave (MC), per the OCR extraction's known markers. */
+    function isMedicalLeaveNote(notes) {
+      return !!notes && /\bmc\b|medical\s*(leave|certificate)|\bsick\s*leave\b/i.test(notes);
+    }
+
     function recomputeRowGuardrails(li) {
       const dateVal = li.querySelector('.f-date').value;
       const isRestDay = li.dataset.restDay === '1';
@@ -3036,6 +3071,28 @@
         phNote.style.display = 'none';
       }
       li.classList.toggle('ph-flag', showPhNote);
+
+      // Advisory only, same as the guardrails above — never changes what fillTimesheetFromRows
+      // writes (rest days are already skipped there). Just surfaces to the caseworker, at review
+      // time, that an MC day falls outside every uploaded medical certificate's leave range, since
+      // this app has no link between a timesheet job and a medical-certificates job to check
+      // automatically server-side. Checked against Medical certificates (leaveFrom/leaveTo), NOT
+      // Medical bills — a bill's invoice date is a different, unrelated fact (see
+      // lib/medicalCertificates.ts's comment on why these are separate uploads).
+      const mcNote = li.querySelector('.mc-cert-note');
+      const isMcRow = isRestDay && isMedicalLeaveNote(li.dataset.notes);
+      if (!isMcRow) {
+        mcNote.style.display = 'none';
+        li.classList.remove('mc-cert-flag');
+      } else {
+        const hasCert = dateVal && collectAllMedicalCertEntries().some(e => e.leaveFrom && e.leaveTo && dateVal >= e.leaveFrom && dateVal <= e.leaveTo);
+        mcNote.className = 'row-notes mc-cert-note' + (hasCert ? ' mc-cert-ok' : '');
+        mcNote.textContent = hasCert
+          ? '✓ Medical certificate on file covering this date.'
+          : '⚠ Marked MC/medical leave but no medical certificate on file covers this date — unpaid unless one is provided.';
+        mcNote.style.display = 'block';
+        li.classList.toggle('mc-cert-flag', !hasCert);
+      }
     }
 
     // s.38(5): overtime must not exceed 72 hours in a calendar month. OT is hours beyond
@@ -3116,18 +3173,30 @@
       const otRate = getEffectiveOtRate();
       const restDayOfWeek = getDeclaredRestDayOfWeek();
       const totals = new Map(); // monthKey -> { netHours, otHours, restDayPay, phPay }
-      const claimedDatesByMonth = new Map(); // monthKey -> Set of dateVal, every row regardless of rest-day/netHours
+      const claimedDatesByMonth = new Map(); // monthKey -> Set of dateVal, every row EXCEPT an unproven MC day (see below)
       const restDayWorkedDatesByMonth = new Map(); // monthKey -> array of dateVal actually paid rest-day-worked pay
       const phWorkedDatesByMonth = new Map(); // monthKey -> array of dateVal actually paid public-holiday-worked pay
+      const certEntries = collectAllMedicalCertEntries(); // read once, reused per row below
 
       document.querySelectorAll('.review-row').forEach(li => {
         const dateVal = li.querySelector('.f-date').value;
         if (!dateVal) return;
         const monthKey = dateVal.slice(0, 7);
-        if (!claimedDatesByMonth.has(monthKey)) claimedDatesByMonth.set(monthKey, new Set());
-        claimedDatesByMonth.get(monthKey).add(dateVal);
 
         const isRestDayChecked = li.dataset.restDay === '1';
+        // A full month's basic salary can only be claimed if every non-rest work day was actually
+        // worked (or excused with proof) — a genuinely blank/missing day still counts (auto-filled
+        // in as worked elsewhere, see the Missing-day auto-insert section), but a day explicitly
+        // marked MC with no matching certificate on file can't be verified as excused, so it must
+        // NOT count toward "days claimed" here — same as if the worker had simply not worked that
+        // day. A certified MC day (proof on file) still counts, same as any other claimed day.
+        const isUnprovenMc = isRestDayChecked && isMedicalLeaveNote(li.dataset.notes) &&
+          !certEntries.some(e => e.leaveFrom && e.leaveTo && dateVal >= e.leaveFrom && dateVal <= e.leaveTo);
+        if (!isUnprovenMc) {
+          if (!claimedDatesByMonth.has(monthKey)) claimedDatesByMonth.set(monthKey, new Set());
+          claimedDatesByMonth.get(monthKey).add(dateVal);
+        }
+
         const netHours = rowNetHours(li);
         if (netHours === null) return;
 
@@ -4104,16 +4173,21 @@
     // renderPageReview for.
     /** Builds the IPA letter's page-review card HTML (thumbnail + rescan controls + editable fields). */
     function renderIpaCard(ipaImage, ipa, ipaWarning) {
+      // Rotate/Rescan sits below the image, inside .page-review-image — same layout as every other
+      // page card (renderPageReview, renderBankPageCard, renderMedicalPageCard,
+      // renderMedicalCertPageCard), not in the details column.
       return `
       <div class="page-review-row">
-        ${ipaImage ? `<div class="page-review-image"><img src="data:image/png;base64,${ipaImage}" alt="IPA letter"></div>` : ''}
-        <div class="page-review-details">
-          <div class="page-review-source"><span>IPA letter</span></div>
+        ${ipaImage ? `<div class="page-review-image">
+          <img src="data:image/png;base64,${ipaImage}" alt="IPA letter">
           <div class="page-rescan-controls">
             <button type="button" class="page-rotate-btn" title="Rotate this page before rescanning">⟳ Rotate</button>
             <button type="button" class="page-rescan-btn">Rescan IPA</button>
           </div>
           <div class="page-rescan-status"></div>
+        </div>` : ''}
+        <div class="page-review-details">
+          <div class="page-review-source"><span>IPA letter</span></div>
           ${ipa ? renderIpaFieldsEditable(ipa) : ''}
           ${ipaWarning ? `<div class="row-notes">${escapeHtml(ipaWarning)}</div>` : ''}
           ${ipa?.notes ? `<div class="row-notes">${escapeHtml(ipa.notes)}</div>` : ''}
@@ -5147,6 +5221,347 @@
       } catch (err) {
         medicalBillsStatusEl.className = 'status error';
         medicalBillsStatusEl.textContent = 'Error: ' + err.message;
+      }
+    }
+
+    // ===== Medical certificates — proof of MC leave (distinct from Medical bills above) =====
+    // A medical bill/invoice tracks a billed dollar amount for reimbursement; a medical certificate
+    // (MC) is a doctor's leave certificate, often with no dollar amount on it at all. Same
+    // standalone upload + multi-pass scan + editable page review pattern as the other three uploads
+    // above (see lib/medicalCertificates.ts / server.ts's /api/medical-certificates), but its own
+    // separate document type and upload field per explicit request — not folded into Medical bills.
+    const medicalCertificatesInput = document.getElementById('medicalCertificatesInput');
+    const medicalCertificatesFileListEl = document.getElementById('medicalCertificatesFileList');
+    const medicalCertificatesStageEl = document.getElementById('medicalCertificatesStage');
+    const medicalCertificatesStatusEl = document.getElementById('medicalCertificatesStatus');
+    const medicalCertPageReviewListEl = document.getElementById('medicalCertPageReviewList');
+
+    let medicalCertificatesRotations = {};
+    let excludedMedicalCertificatesPages = new Set();
+    let medicalCertificatesPreviewPages = []; // {fileIndex, pageIndex} in file/page order — see pdfsPreviewPages
+
+    /** Renders one staging-page thumbnail (image + rotate/delete buttons) for the medical certificates upload. */
+    function renderMedicalCertStageTile(key, label, imageB64) {
+      const rotation = medicalCertificatesRotations[key] || 0;
+      return `
+    <div class="stage-tile" data-key="${key}">
+      <div class="stage-tile-img-wrap">
+        <img src="data:image/png;base64,${imageB64}" style="transform: rotate(${rotation}deg);">
+        <button type="button" class="stage-tile-rotate-btn" title="Rotate">⟳</button>
+        <button type="button" class="stage-tile-delete-btn" title="Remove this page">✕</button>
+      </div>
+      <div class="stage-tile-label">${escapeHtml(label)}</div>
+    </div>`;
+    }
+
+    /** Wires each staged medical-certificate tile's rotate button to update state and the tile's live CSS transform. */
+    function wireMedicalCertStageRotateButtons(container) {
+      container.querySelectorAll('.stage-tile').forEach(tile => {
+        const key = tile.dataset.key;
+        const img = tile.querySelector('img');
+        tile.querySelector('.stage-tile-rotate-btn').addEventListener('click', () => {
+          const next = ((medicalCertificatesRotations[key] || 0) + 90) % 360;
+          medicalCertificatesRotations[key] = next;
+          img.style.transform = `rotate(${next}deg)`;
+        });
+      });
+    }
+
+    /** Fetches and renders staging thumbnails for every page of the selected medical certificate file(s). */
+    async function refreshMedicalCertificatesPreview() {
+      const files = [...medicalCertificatesInput.files];
+      medicalCertificatesFileListEl.textContent = files.length === 0 ? '' : files.map(f => f.name).join(', ');
+      medicalCertificatesRotations = {};
+      excludedMedicalCertificatesPages = new Set();
+      medicalCertificatesPreviewPages = [];
+
+      if (files.length === 0) {
+        medicalCertificatesStageEl.innerHTML = '';
+        return;
+      }
+      medicalCertificatesStageEl.innerHTML = '<div class="stage-loading"><span class="spinner"></span>Loading previews…</div>';
+
+      const formData = new FormData();
+      for (const file of files) formData.append('medicalCertificates', file);
+
+      try {
+        const res = await fetch('/api/preview', { method: 'POST', body: formData });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || `Server returned ${res.status}`);
+
+        const byFile = new Map();
+        for (const p of data.medicalCertificatesPreview || []) {
+          if (!byFile.has(p.fileIndex)) byFile.set(p.fileIndex, { fileName: p.fileName, tiles: [] });
+          byFile.get(p.fileIndex).tiles.push(renderMedicalCertStageTile(`${p.fileIndex}-${p.pageIndex}`, `p${p.pageIndex + 1}`, p.image));
+          medicalCertificatesPreviewPages.push({ fileIndex: p.fileIndex, pageIndex: p.pageIndex });
+        }
+        medicalCertificatesStageEl.innerHTML = [...byFile.entries()].map(([fileIndex, { fileName, tiles }]) => `
+      <div class="stage-file-group">
+        <div class="stage-file-header"><span>${escapeHtml(fileName)}</span></div>
+        <div class="stage-file-pages">${tiles.join('')}</div>
+      </div>`).join('')
+          + (data.medicalCertificatesErrors || []).map(e => `<div class="stage-error">${escapeHtml(e.fileName)}: ${escapeHtml(e.error)}</div>`).join('');
+
+        wireMedicalCertStageRotateButtons(medicalCertificatesStageEl);
+        medicalCertificatesStageEl.querySelectorAll('.stage-tile-delete-btn').forEach(btn => {
+          btn.addEventListener('click', () => {
+            const tile = btn.closest('.stage-tile');
+            excludedMedicalCertificatesPages.add(tile.dataset.key);
+            const group = tile.closest('.stage-file-group');
+            tile.remove();
+            if (group && group.querySelectorAll('.stage-tile').length === 0) group.remove();
+          });
+        });
+      } catch (err) {
+        medicalCertificatesStageEl.innerHTML = `<div class="stage-error">Preview failed: ${escapeHtml(err.message)}</div>`;
+      }
+    }
+
+    medicalCertificatesInput.addEventListener('change', refreshMedicalCertificatesPreview);
+
+    // Leave-from/leave-to are directly editable (a misread digit is worth fixing right here, same
+    // as the medical bill date field) — no amount/reimbursed columns, since a certificate carries
+    // no billed dollar amount.
+    /** Renders one editable medical-certificate row for the page-by-page review (scanned or manually-added). */
+    function formatMedicalCertEntryRow(t, manual) {
+      const descCell = manual
+        ? `<input type="text" class="mc-desc-input" placeholder="Diagnosis / reason" value="${escapeHtml(t.description || '')}">`
+        : escapeHtml(t.description || '—');
+      return `
+    <tr class="mc-row" data-source="${escapeHtml(t.source)}" data-description="${escapeHtml(t.description || '')}" data-confirmed-seen="${t.confirmedByAttempts ? t.confirmedByAttempts.seen : ''}" data-confirmed-total="${t.confirmedByAttempts ? t.confirmedByAttempts.total : ''}">
+      <td><input type="date" class="mc-leave-from-input" value="${escapeHtml(t.leaveFrom || '')}"></td>
+      <td><input type="date" class="mc-leave-to-input" value="${escapeHtml(t.leaveTo || '')}"></td>
+      <td>${descCell}${t.confirmedByAttempts && t.confirmedByAttempts.seen < t.confirmedByAttempts.total ? `<div class="pay-total-sub">⚠ only ${t.confirmedByAttempts.seen}/${t.confirmedByAttempts.total} scan passes caught this — worth double-checking against the source page</div>` : ''}</td>
+      <td><button type="button" class="row-delete-btn mc-delete-btn" title="Remove" aria-label="Remove"><svg viewBox="0 0 16 16" style="width:13px;height:13px;flex-shrink:0;" fill="currentColor" aria-hidden="true"><path d="M6 1a1 1 0 0 0-1 1v1H2.5a.5.5 0 0 0 0 1h.55l.65 9.1A1.5 1.5 0 0 0 5.2 15h5.6a1.5 1.5 0 0 0 1.5-1.4l.65-9.1h.55a.5.5 0 0 0 0-1H11V2a1 1 0 0 0-1-1H6zm0 2V2h4v1H6zM4.55 4h6.9l-.64 9h-5.62l-.64-9zM6.5 6a.5.5 0 0 1 .5.5v5a.5.5 0 0 1-1 0v-5a.5.5 0 0 1 .5-.5zm3 0a.5.5 0 0 1 .5.5v5a.5.5 0 0 1-1 0v-5a.5.5 0 0 1 .5-.5z"/></svg></button></td>
+    </tr>`;
+    }
+
+    /** Renders the editable medical-certificate entries table (all rows via formatMedicalCertEntryRow) for a review page. */
+    function formatMedicalCertEntriesTableEditable(entries) {
+      const rows = entries.map(t => formatMedicalCertEntryRow(t, false)).join('');
+      return `<table class="pay-total-table">
+    <thead><tr><th>Leave from</th><th>Leave to</th><th>Description</th><th></th></tr></thead>
+    <tbody>${rows}</tbody>
+  </table>`;
+    }
+
+    // Same "read live DOM state, not a cached array" pattern as collectAllMedicalBillEntries — the
+    // mc-cert-note guardrail (recomputeRowGuardrails) reads straight off whatever's currently in
+    // these rows, so an edit here is reflected immediately, no separate sync step needed.
+    /** Reads every medical-certificate row currently in the page-by-page review into a plain array. */
+    function collectAllMedicalCertEntries() {
+      return [...medicalCertPageReviewListEl.querySelectorAll('.mc-row')].map(tr => ({
+        leaveFrom: tr.querySelector('.mc-leave-from-input').value,
+        leaveTo: tr.querySelector('.mc-leave-to-input').value,
+        description: tr.dataset.description,
+        source: tr.dataset.source,
+        confirmedByAttempts: tr.dataset.confirmedSeen !== '' ? { seen: Number(tr.dataset.confirmedSeen), total: Number(tr.dataset.confirmedTotal) } : null,
+      }));
+    }
+
+    // A certificate's leave range is what MC-day timesheet rows are matched against (see
+    // recomputeRowGuardrails' mc-cert-note) — re-check every row whenever a certificate row changes
+    // (added/edited/deleted/rescanned), same reasoning as refreshMedicalBillsClaim's sweep.
+    /** Re-runs every timesheet row's guardrails after a medical-certificate row changes. */
+    function refreshMedicalCertGuardrails() {
+      document.querySelectorAll('.review-row').forEach(recomputeRowGuardrails);
+    }
+
+    /** Wires one medical-certificate row's leave-from/leave-to/description inputs and delete button to live guardrail refresh. */
+    function wireMedicalCertRow(tr) {
+      tr.querySelectorAll('.mc-leave-from-input, .mc-leave-to-input').forEach(input => {
+        input.addEventListener('input', refreshMedicalCertGuardrails);
+        input.addEventListener('change', refreshMedicalCertGuardrails);
+      });
+      const descInput = tr.querySelector('.mc-desc-input');
+      if (descInput) descInput.addEventListener('input', () => { tr.dataset.description = descInput.value; });
+      tr.querySelector('.mc-delete-btn').addEventListener('click', () => {
+        tr.remove();
+        refreshMedicalCertGuardrails();
+      });
+    }
+
+    /** Wires one medical-certificate page card's editable rows and "+ Add certificate" button. */
+    function wireMedicalCertPageCard(card) {
+      card.querySelectorAll('.mc-row').forEach(wireMedicalCertRow);
+      const addBtn = card.querySelector('.mc-add-cert-btn');
+      if (!addBtn) return;
+      addBtn.addEventListener('click', () => {
+        const container = card.querySelector('.mc-table-container');
+        if (!container.querySelector('tbody')) container.innerHTML = formatMedicalCertEntriesTableEditable([]);
+        const row = { leaveFrom: '', leaveTo: '', description: '', source: addBtn.dataset.source, confirmedByAttempts: null };
+        container.querySelector('tbody').insertAdjacentHTML('beforeend', formatMedicalCertEntryRow(row, true));
+        wireMedicalCertRow(container.querySelector('tbody').lastElementChild);
+        refreshMedicalCertGuardrails();
+      });
+    }
+
+    // Shared by the batch live-progress render and the single-page rescan splice — same idea as
+    // renderMedicalPageCard.
+    /** Renders one medical-certificate page-review card: source thumbnail, editable entries, optional rescan controls. */
+    function renderMedicalCertPageCard(p, key, reviewIndex) {
+      const rescanHtml = key !== undefined ? `
+        <div class="page-rescan-controls" data-file-index="${key.split('-')[0]}" data-page-index="${key.split('-')[1]}" data-key="${escapeHtml(key)}">
+          <button type="button" class="page-rotate-btn" title="Rotate this page before rescanning">⟳ Rotate</button>
+          <button type="button" class="page-rescan-btn">Rescan this page</button>
+        </div>
+        <div class="page-rescan-status"></div>` : '';
+      return `
+    <div class="page-review-row"${reviewIndex !== undefined ? ` data-review-index="${reviewIndex}"` : ''}>
+      <div class="page-review-image"><img src="data:image/png;base64,${p.image}" alt="${escapeHtml(p.source)}">${rescanHtml}</div>
+      <div class="page-review-details">
+        <div class="page-review-source"><span>${escapeHtml(p.source)}</span></div>
+        <div class="mc-table-container">${p.entries.length === 0
+          ? '<div class="review-hint">No medical leave period found on this page.</div>'
+          : formatMedicalCertEntriesTableEditable(p.entries.map(t => ({ ...t, source: p.source })))}</div>
+        <div class="page-add-day">
+          <div class="review-hint">Add a certificate this page's scan didn't pick up.</div>
+          <button type="button" class="add-day-btn mc-add-cert-btn" data-source="${escapeHtml(p.source)}">+ Add certificate</button>
+        </div>
+      </div>
+    </div>`;
+    }
+
+    /** Renders the medical-certificates page-by-page review as pages arrive during a scan (or on completion). */
+    function renderMedicalCertLivePages(pages, done) {
+      if (pages.length === 0) return;
+      pageReviewsEl.style.display = 'block';
+      medicalCertPageReviewListEl.style.display = 'block';
+      const orderedKeys = done
+        ? medicalCertificatesPreviewPages
+          .filter(p => !excludedMedicalCertificatesPages.has(`${p.fileIndex}-${p.pageIndex}`))
+          .map(p => `${p.fileIndex}-${p.pageIndex}`)
+        : [];
+      medicalCertPageReviewListEl.innerHTML = pages
+        .map((p, idx) => renderMedicalCertPageCard(p, done ? orderedKeys[idx] : undefined, done ? idx : undefined))
+        .join('');
+      medicalCertPageReviewListEl.querySelectorAll('.page-review-row').forEach(wireMedicalCertPageCard);
+      if (done) medicalCertPageReviewListEl.querySelectorAll('.page-rescan-controls').forEach(wireMedicalCertRescanControls);
+      refreshMedicalCertGuardrails();
+    }
+
+    // Same rotate-then-rescan pattern as wireMedicalRescanControls.
+    /** Wires a medical-certificate page's rotate + rescan controls, splicing the fresh single-page result back into its card. */
+    function wireMedicalCertRescanControls(controls) {
+      const fileIndex = Number(controls.dataset.fileIndex);
+      const pageIndex = Number(controls.dataset.pageIndex);
+      const key = controls.dataset.key;
+      const statusEl = controls.nextElementSibling;
+      const rotateBtn = controls.querySelector('.page-rotate-btn');
+      const rescanBtn = controls.querySelector('.page-rescan-btn');
+      const img = controls.parentElement.querySelector('img');
+      let previewDelta = 0; // see wireTimesheetRescanControls' comment on this pattern
+
+      rotateBtn.addEventListener('click', () => {
+        medicalCertificatesRotations[key] = ((medicalCertificatesRotations[key] || 0) + 90) % 360;
+        previewDelta = (previewDelta + 90) % 360;
+        img.style.transform = `rotate(${previewDelta}deg)`;
+        statusEl.className = 'page-rescan-status';
+        statusEl.textContent = `Pending rotation: +${previewDelta}° — click "Rescan this page" to apply and re-read it.`;
+      });
+
+      rescanBtn.addEventListener('click', async () => {
+        const file = medicalCertificatesInput.files[fileIndex];
+        if (!file) {
+          statusEl.className = 'page-rescan-status error';
+          statusEl.textContent = 'Original file no longer attached (selection changed since the scan ran) — re-upload and rescan the whole batch instead.';
+          return;
+        }
+        rescanBtn.disabled = true;
+        statusEl.className = 'page-rescan-status';
+        statusEl.textContent = 'Rescanning…';
+
+        const pageCount = medicalCertificatesPreviewPages.filter(p => p.fileIndex === fileIndex).length;
+        const excluded = [];
+        for (let pi = 0; pi < pageCount; pi++) if (pi !== pageIndex) excluded.push(`0-${pi}`);
+
+        const formData = new FormData();
+        formData.append('medicalCertificates', file);
+        formData.append('rotations', JSON.stringify({ [`0-${pageIndex}`]: medicalCertificatesRotations[key] || 0 }));
+        formData.append('excludedPages', JSON.stringify(excluded));
+
+        try {
+          const res = await fetch('/api/medical-certificates', { method: 'POST', body: formData });
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.error || `Server returned ${res.status}`);
+          const polled = await pollSinglePageJob('/api/medical-certificates', data.jobId);
+          const freshPage = polled.pages && polled.pages[0];
+          if (!freshPage) {
+            throw new Error('Scan finished but returned no page — this may not look like a medical certificate after rotating; double-check the rotation and try again.');
+          }
+          applyRescannedMedicalCertPage(controls.closest('.page-review-row'), freshPage, key);
+        } catch (err) {
+          statusEl.className = 'page-rescan-status error';
+          statusEl.textContent = 'Error: ' + err.message;
+        } finally {
+          rescanBtn.disabled = false;
+        }
+      });
+    }
+
+    /** Replaces a medical-certificate page card with its freshly-rescanned result and re-syncs the guardrails. */
+    function applyRescannedMedicalCertPage(rowEl, freshPage, key) {
+      const reviewIndex = Number(rowEl.dataset.reviewIndex);
+      const temp = document.createElement('div');
+      temp.innerHTML = renderMedicalCertPageCard(freshPage, key, reviewIndex);
+      const newRowEl = temp.firstElementChild;
+      rowEl.replaceWith(newRowEl);
+      wireMedicalCertPageCard(newRowEl);
+      newRowEl.querySelectorAll('.page-rescan-controls').forEach(wireMedicalCertRescanControls);
+      const statusEl = newRowEl.querySelector('.page-rescan-status');
+      statusEl.className = 'page-rescan-status success';
+      statusEl.textContent = 'Rescanned — certificates updated below.';
+      refreshMedicalCertGuardrails();
+    }
+
+    /** Polls a medical-certificates scan job until done/error, rendering live page results along the way. */
+    async function pollMedicalCertJobUntilDone(jobId) {
+      let consecutiveFailures = 0;
+      for (; ;) {
+        let res, job;
+        try {
+          res = await fetch(`/api/medical-certificates/${jobId}`);
+          job = await res.json();
+        } catch (err) {
+          consecutiveFailures++;
+          if (consecutiveFailures > MAX_CONSECUTIVE_POLL_FAILURES) throw err;
+          await new Promise(r => setTimeout(r, 2000));
+          continue;
+        }
+        consecutiveFailures = 0;
+        if (!res.ok) throw new Error(job.error || `Server returned ${res.status}`);
+        renderMedicalCertLivePages(job.pages, job.status === 'done');
+        if (job.status === 'done') return job.result;
+        if (job.status === 'error') throw new Error(job.error || 'Scan failed');
+        await new Promise(r => setTimeout(r, 2000));
+      }
+    }
+
+    // Runs alongside the main scan, the bank statement scan, and the medical bills scan (four-way
+    // Promise.allSettled in the submit handler) — optional, silent no-op if nothing's attached, own
+    // status area (no results/claim area — a certificate carries no dollar amount to total).
+    /** Runs the full medical certificates scan (all staged pages), polling to completion. */
+    async function runMedicalCertificatesScan() {
+      const files = [...medicalCertificatesInput.files];
+      if (files.length === 0) return;
+
+      medicalCertificatesStatusEl.className = 'status';
+      medicalCertificatesStatusEl.textContent = '';
+
+      const formData = new FormData();
+      for (const f of files) formData.append('medicalCertificates', f);
+      formData.append('rotations', JSON.stringify(medicalCertificatesRotations));
+      formData.append('excludedPages', JSON.stringify([...excludedMedicalCertificatesPages]));
+
+      try {
+        const res = await fetch('/api/medical-certificates', { method: 'POST', body: formData });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || `Server returned ${res.status}`);
+        const result = await pollMedicalCertJobUntilDone(data.jobId);
+        return result.costUsd;
+      } catch (err) {
+        medicalCertificatesStatusEl.className = 'status error';
+        medicalCertificatesStatusEl.textContent = 'Error: ' + err.message;
       }
     }
   </script>
