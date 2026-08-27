@@ -2012,16 +2012,32 @@
      * @param {string} jobId - The job id returned by `/api/process`.
      * @returns {Promise<number>} The scan's total cost in USD once done.
      */
+    const MAX_CONSECUTIVE_POLL_FAILURES = 5;
+
     function pollJobUntilDone(jobId) {
       return new Promise((resolve, reject) => {
+        let consecutiveFailures = 0;
         const tick = async () => {
-          let data;
+          let res, data;
           try {
-            const res = await fetch(`/api/process/${jobId}`);
+            res = await fetch(`/api/process/${jobId}`);
             data = await res.json();
-            if (!res.ok) throw new Error(data.error || `Server returned ${res.status}`);
           } catch (err) {
-            reject(err);
+            // A dropped connection or a proxy error page instead of JSON (e.g. a brief 502) is
+            // transient — the job itself keeps running server-side regardless, so retry a few
+            // times before giving up on tracking it.
+            consecutiveFailures++;
+            if (consecutiveFailures > MAX_CONSECUTIVE_POLL_FAILURES) {
+              reject(err);
+              return;
+            }
+            setTimeout(tick, POLL_INTERVAL_MS);
+            return;
+          }
+          consecutiveFailures = 0;
+
+          if (!res.ok) {
+            reject(new Error(data.error || `Server returned ${res.status}`));
             return;
           }
 
@@ -3928,9 +3944,21 @@
      * @returns {Promise<object>} The full polled response (not just `.result` — see caller for why).
      */
     async function pollSinglePageJob(statusEndpoint, jobId) {
+      let consecutiveFailures = 0;
       for (; ;) {
-        const res = await fetch(`${statusEndpoint}/${jobId}`);
-        const data = await res.json();
+        let res, data;
+        try {
+          res = await fetch(`${statusEndpoint}/${jobId}`);
+          data = await res.json();
+        } catch (err) {
+          // Transient network/proxy blip — the job keeps running server-side, so retry a few
+          // times before giving up (see pollJobUntilDone for the same reasoning).
+          consecutiveFailures++;
+          if (consecutiveFailures > MAX_CONSECUTIVE_POLL_FAILURES) throw err;
+          await new Promise(r => setTimeout(r, 1500));
+          continue;
+        }
+        consecutiveFailures = 0;
         if (!res.ok) throw new Error(data.error || `Server returned ${res.status}`);
         if (data.status === 'done') return data;
         if (data.status === 'error') throw new Error(data.error || 'Scan failed');
@@ -4609,9 +4637,19 @@
 
     /** Polls a bank-statement scan job until done/error, rendering live page results along the way. */
     async function pollBankJobUntilDone(jobId) {
+      let consecutiveFailures = 0;
       for (; ;) {
-        const res = await fetch(`/api/bank-statement/${jobId}`);
-        const job = await res.json();
+        let res, job;
+        try {
+          res = await fetch(`/api/bank-statement/${jobId}`);
+          job = await res.json();
+        } catch (err) {
+          consecutiveFailures++;
+          if (consecutiveFailures > MAX_CONSECUTIVE_POLL_FAILURES) throw err;
+          await new Promise(r => setTimeout(r, 2000));
+          continue;
+        }
+        consecutiveFailures = 0;
         if (!res.ok) throw new Error(job.error || `Server returned ${res.status}`);
         renderBankLivePages(job.pages, job.status === 'done');
         if (job.status === 'done') return job.result;
@@ -5064,9 +5102,19 @@
 
     /** Polls a medical-bills scan job until done/error, rendering live page results along the way. */
     async function pollMedicalJobUntilDone(jobId) {
+      let consecutiveFailures = 0;
       for (; ;) {
-        const res = await fetch(`/api/medical-bills/${jobId}`);
-        const job = await res.json();
+        let res, job;
+        try {
+          res = await fetch(`/api/medical-bills/${jobId}`);
+          job = await res.json();
+        } catch (err) {
+          consecutiveFailures++;
+          if (consecutiveFailures > MAX_CONSECUTIVE_POLL_FAILURES) throw err;
+          await new Promise(r => setTimeout(r, 2000));
+          continue;
+        }
+        consecutiveFailures = 0;
         if (!res.ok) throw new Error(job.error || `Server returned ${res.status}`);
         renderMedicalLivePages(job.pages, job.status === 'done');
         if (job.status === 'done') return job.result;
