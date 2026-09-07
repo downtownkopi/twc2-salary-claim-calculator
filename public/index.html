@@ -1074,9 +1074,11 @@
             <li>Work week (5.5/6-day) and half-day, for 5.5-day weeks</li>
             <li>Standard break</li>
             <li>Default shift timing — used to fill in days with no timesheet entry</li>
-            <li>Claim period start/end dates (optional) — keeps auto-filled days inside the actual employment period
-            </li>
+            <li>Claim period start/end dates (optional, but the only thing rows can be auto-filled from if no
+              timesheet is attached) — keeps auto-filled days inside the actual employment period</li>
             <li>Bank statement line item(s) to look for (optional)</li>
+            <li>Payslip upload (optional) — an alternate source for a month's overtime hours when no daily
+              timesheet is available; per-month choice of timesheet-derived vs payslip-stated once both exist</li>
           </ul>
         </div>
         <div>
@@ -1222,6 +1224,12 @@
         <div class="file-list">Stops the app from inventing work days before the worker started or after they left —
           e.g. if they started on a Wednesday, Monday/Tuesday that same week won't be auto-filled even if the rest of
           the month otherwise falls short.</div>
+        <div class="file-list stage-error" id="claimPeriodPayslipWarning" style="display:none">⚠ No timesheet files
+          attached and a payslip has OT figures on file — without a claim period start/end here, the app assumes a
+          full month worked for every month the payslip covers (no day-level detail to go on otherwise), and there
+          are no individual timesheet review rows to check things like rest-day-worked pay, public holiday pay, or
+          medical-certificate-backed MC days against. Set both dates above for day-level detail instead, if you have
+          it.</div>
       </div>
 
       <div class="field">
@@ -1345,8 +1353,8 @@
       </div>
 
       <div class="field">
-        <h4 for="pdfs">Timesheet files (PDF or photo)</h4>
-        <input type="file" id="pdfs" name="pdfs" accept="application/pdf,image/*" multiple required>
+        <h4 for="pdfs">Timesheet files (optional if a payslip covers overtime — PDF or photo)</h4>
+        <input type="file" id="pdfs" name="pdfs" accept="application/pdf,image/*" multiple>
         <div class="file-list" id="fileList"></div>
         <div class="stage-grid" id="pdfsStage"></div>
       </div>
@@ -1384,6 +1392,17 @@
           employer, and the app totals the unreimbursed amount for you.</div>
       </div>
 
+      <div class="field">
+        <h4 for="payslipsInput">Payslip (optional — PDF or photo)</h4>
+        <input type="file" id="payslipsInput" accept=".pdf,image/*" multiple>
+        <div class="file-list" id="payslipsFileList"></div>
+        <div class="stage-grid" id="payslipsStage"></div>
+        <div class="file-list">Use this when overtime hours aren't available day-by-day from a timesheet — a payslip
+          states OT hours already worked out by the employer, at whatever breakdown it happens to show (per day, per
+          week, or per month). Each month's Overtime Breakdown below lets you pick whether to use the timesheet-derived
+          figure or this payslip's stated figure once both are available.</div>
+      </div>
+
       <hr />
 
       <button type="submit" id="submitBtn">Extract details</button>
@@ -1392,6 +1411,7 @@
       <div class="status" id="bankStatus"></div>
       <div class="status" id="medicalBillsStatus"></div>
       <div class="status" id="medicalCertificatesStatus"></div>
+      <div class="status" id="payslipsStatus"></div>
       <ul class="month-summary" id="otCapWarnings" style="display:none"></ul>
     </form>
   </div>
@@ -1408,6 +1428,7 @@
     <div id="bankPageReviewList" style="display:none"></div>
     <div id="medicalPageReviewList" style="display:none"></div>
     <div id="medicalCertPageReviewList" style="display:none"></div>
+    <div id="payslipPageReviewList" style="display:none"></div>
 
     <div class="extra-days-body-width">
       <div class="extra-days-claim-width">
@@ -1419,6 +1440,7 @@
           <div class="ipa-review" id="overtimeBreakdown" style="display:none; margin-top: 20px;"></div>
           <div class="ipa-review" id="restBreakdown" style="display:none; margin-top: 20px;"></div>
           <div class="ipa-review" id="publicHolidayBreakdown" style="display:none; margin-top: 20px;"></div>
+          <div class="ipa-review" id="payslipBreakdown" style="display:none; margin-top: 20px;"></div>
           <div class="ipa-review" id="bankResults" style="display:none; margin-top: 20px;"></div>
           <div class="ipa-review" id="medicalBillsResults" style="display:none; margin-top: 20px;"></div>
         </div>
@@ -1495,7 +1517,7 @@
     // recomputeMonthlyPayTotals, runBankStatementScan).
     /** Shows the Summary section once at least one of its boxes has something to display. */
     function updateSummarySectionVisibility() {
-      const anyVisible = ['ipaReview', 'monthlyPayTotals', 'allowancesBreakdown', 'overtimeBreakdown', 'restBreakdown', 'bankResults', 'medicalBillsResults']
+      const anyVisible = ['ipaReview', 'monthlyPayTotals', 'allowancesBreakdown', 'overtimeBreakdown', 'restBreakdown', 'publicHolidayBreakdown', 'payslipBreakdown', 'bankResults', 'medicalBillsResults']
         .some(id => document.getElementById(id).style.display !== 'none');
       summarySectionEl.style.display = anyVisible ? 'block' : 'none';
     }
@@ -1577,6 +1599,28 @@
     // recomputing anything itself, so the docx can never disagree with what's on screen. null
     // until a full breakdown (salary + at least one claimed month) exists.
     let lastBreakdownForExport = null;
+    // Per-month caseworker choice of OT source, monthKey -> 'timesheet' | 'payslip' — absent means
+    // 'timesheet' (the default, least-surprising behavior: a payslip figure only takes over once
+    // explicitly picked in the Overtime Breakdown table). Plain object, not DOM-derived, so it
+    // survives every table re-render triggered by recomputeMonthlyPayTotals.
+    let otSourceByMonth = {};
+    // Caseworker choice of OT RATE source, 'ipa' | 'payslip' — a completely separate axis from
+    // otSourceByMonth above (that one picks which HOURS figure to use, per month; this one picks
+    // which RATE the whole claim multiplies by). A single global choice, not per-month — set once
+    // in the IPA summary card, next to "OT rate (computed)" (see renderIpaSummaryText) — since a rate
+    // mismatch is a one-off fact about which figure is correct for this worker, not something that
+    // plausibly varies month to month the way hours worked does. Defaults to 'computed'
+    // (getEffectiveOtRate() — always 1.5× the statutory hourly basic rate derived from salary), the
+    // legally-correct rate and the existing default behavior. Flips to 'payslip' when the
+    // caseworker decides the worker's own payslip rate — which could be higher OR lower than the
+    // computed one — is the one to actually claim against; never auto-picked toward whichever is more
+    // or less favorable.
+    let otRateSource = 'computed';
+    // Snapshot of the `totals` Map recomputeMonthlyPayTotals just built (after the payslip OT-source
+    // override is applied) — recomputeMonthlyOtCap reads this directly instead of re-deriving OT
+    // hours from rows itself, so the 72h/month cap warning always agrees with whichever OT source is
+    // actually active for the claim.
+    let lastMonthlyTotals = null;
     // True only when totalPaidCache was set to 0 because no bank statement was attached at all (see
     // runBankStatementScan), as opposed to a real scan that genuinely found $0 in matching payments —
     // updateOwedVsPaidBox uses this to label the figure as an assumption rather than a confirmed read.
@@ -1765,8 +1809,26 @@
     pdfsInput.addEventListener('change', () => {
       updateFileListLabel();
       refreshPdfsPreview();
+      updateClaimPeriodPayslipWarning();
     });
     ipaInput.addEventListener('change', refreshIpaPreview);
+
+    // Flag-only, same "flag, don't auto-correct" philosophy as every other guardrail — without a
+    // timesheet, detectAndInsertMissingDays() has nothing but the claim period to anchor an
+    // auto-filled day on. The claim itself still computes (recomputeMonthlyPayTotals assumes a full
+    // month worked for any month the payslip covers when there's no timesheet at all — see there),
+    // this just flags that there's no day-level detail to check rest-day/PH/MC-day specifics against
+    // without one.
+    /** Shows/hides the warning that a payslip-only claim without a claim period has no day-level timesheet rows. */
+    function updateClaimPeriodPayslipWarning() {
+      const el = document.getElementById('claimPeriodPayslipWarning');
+      const hasTimesheet = pdfsInput.files.length > 0;
+      const hasPayslipEntries = typeof collectAllPayslipEntries === 'function' && collectAllPayslipEntries().length > 0;
+      const hasClaimPeriod = document.getElementById('contractStartDate').value && document.getElementById('contractEndDate').value;
+      el.style.display = (!hasTimesheet && hasPayslipEntries && !hasClaimPeriod) ? 'block' : 'none';
+    }
+    document.getElementById('contractStartDate').addEventListener('change', updateClaimPeriodPayslipWarning);
+    document.getElementById('contractEndDate').addEventListener('change', updateClaimPeriodPayslipWarning);
 
     // Changing the declared standard re-evaluates every row already on screen, not just new ones —
     // otherwise a reviewer who adjusts this after the scan already ran would see stale warnings.
@@ -1942,6 +2004,39 @@
 
     form.addEventListener('submit', async (e) => {
       e.preventDefault();
+      // With zero timesheet files there's no printed date header anywhere for runProcessJob's
+      // year detection to read (see the fallbackYear derivation below) — without a claim period
+      // start date either, the whole scan is guaranteed to fail server-side after several seconds
+      // (and real API cost) with a generic "could not detect a claim year" error. Before giving up,
+      // try pulling a year out of the payslip's own dates instead — either already-scanned entries
+      // sitting in the review area (a resubmit after an earlier failed attempt: the payslip scan
+      // runs independently in the Promise.allSettled below and isn't blocked by mainScan erroring),
+      // or, if nothing's been scanned yet this session, running the payslip scan right now, up
+      // front, before the main request is even built. That promise is reused (not re-fired) in the
+      // Promise.allSettled further down, so the payslip is never scanned twice.
+      let payslipsScanPromise = null;
+      let derivedPayslipYear = null;
+      if (pdfsInput.files.length === 0 && !document.getElementById('contractStartDate').value) {
+        derivedPayslipYear = earliestPayslipYear(collectAllPayslipEntries());
+        if (derivedPayslipYear === null && payslipsInput.files.length > 0) {
+          submitBtn.disabled = true;
+          statusEl.className = 'status loading';
+          statusEl.innerHTML = '<span class="spinner"></span>No claim period set — reading the payslip first to figure out which year this claim covers…';
+          payslipsScanPromise = runPayslipsScan();
+          await payslipsScanPromise;
+          derivedPayslipYear = earliestPayslipYear(collectAllPayslipEntries());
+        }
+        if (derivedPayslipYear === null) {
+          updateClaimPeriodPayslipWarning();
+          document.getElementById('claimPeriodPayslipWarning').style.display = 'block';
+          statusEl.className = 'status error';
+          statusEl.textContent = 'Error: No timesheet files attached, no Claim period start date set, and no usable date found on the payslip either — set the Claim period above (scroll up) so the app knows which year this claim covers, then submit again.';
+          document.getElementById('contractStartDate').scrollIntoView({ behavior: 'smooth', block: 'center' });
+          document.getElementById('contractStartDate').focus();
+          submitBtn.disabled = false;
+          return;
+        }
+      }
       if (typeof Notification !== 'undefined' && Notification.permission === 'default') {
         Notification.requestPermission();
       }
@@ -1960,6 +2055,18 @@
       // actually observed to contradict it there) instead of a hardcoded assumption, so it agrees by
       // construction with checkBreakMismatch's later comparison for those rows.
       formData.append('standardBreakHours', getStandardBreakHours());
+      // Year detection (runProcessJob) reads printed date headers off timesheet pages — with no
+      // timesheet attached (a payslip-only claim) there's nothing for it to read at all, so it
+      // always fails without this. Claim period start date is the first-choice source; the payslip
+      // scan above (derivedPayslipYear) only ran/mattered when that was blank — harmless to send
+      // either way, since it's only consulted as a fallback when no page-printed year was found.
+      const claimPeriodStartVal = document.getElementById('contractStartDate').value;
+      if (claimPeriodStartVal) {
+        const claimPeriodYear = Number(claimPeriodStartVal.slice(0, 4));
+        if (Number.isFinite(claimPeriodYear)) formData.append('fallbackYear', claimPeriodYear);
+      } else if (derivedPayslipYear !== null) {
+        formData.append('fallbackYear', derivedPayslipYear);
+      }
       ipaReviewEl.style.display = 'none';
       ipaReviewEl.innerHTML = '';
       ipaPageReviewEl.style.display = 'none';
@@ -1999,12 +2106,16 @@
         }
       })();
 
-      const [mainResult, bankResult, medicalResult, medicalCertResult] = await Promise.allSettled([mainScan, runBankStatementScan(), runMedicalBillsScan(), runMedicalCertificatesScan()]);
+      // Reuses the pre-fired payslipsScanPromise from the year-detection fallback above if there is
+      // one (already resolved by this point — Promise.allSettled just picks up its settled value,
+      // no re-scan) — otherwise this is a completely normal submit and runs fresh, same as before.
+      const [mainResult, bankResult, medicalResult, medicalCertResult, payslipsResult] = await Promise.allSettled([mainScan, runBankStatementScan(), runMedicalBillsScan(), runMedicalCertificatesScan(), payslipsScanPromise || runPayslipsScan()]);
       if (!mainErrored) {
         const mainCost = mainResult.status === 'fulfilled' && typeof mainResult.value === 'number' ? mainResult.value : 0;
         const bankCost = bankResult.status === 'fulfilled' && typeof bankResult.value === 'number' ? bankResult.value : 0;
         const medicalCost = medicalResult.status === 'fulfilled' && typeof medicalResult.value === 'number' ? medicalResult.value : 0;
         const medicalCertCost = medicalCertResult.status === 'fulfilled' && typeof medicalCertResult.value === 'number' ? medicalCertResult.value : 0;
+        const payslipsCost = payslipsResult.status === 'fulfilled' && typeof payslipsResult.value === 'number' ? payslipsResult.value : 0;
         statusEl.className = 'status success';
         // currentYear is server-detected now (no manual picker — see renderFinalResult) — surfaced
         // here so a caseworker has some visible confirmation of what got auto-detected, since
@@ -2019,7 +2130,7 @@
         const modelBreakdown = currentCostByModel && Object.keys(currentCostByModel).length > 0
           ? ' (' + Object.entries(currentCostByModel).map(([model, cost]) => `${model}: $${cost.toFixed(4)}`).join(', ') + ')'
           : '';
-        statusEl.textContent = `Scan done in ${formatDuration(Date.now() - submitStartedAt)}${formatCost(mainCost + bankCost + medicalCost + medicalCertCost)}${modelBreakdown}${yearNote}`;
+        statusEl.textContent = `Scan done in ${formatDuration(Date.now() - submitStartedAt)}${formatCost(mainCost + bankCost + medicalCost + medicalCertCost + payslipsCost)}${modelBreakdown}${yearNote}`;
       }
       submitBtn.disabled = false;
     });
@@ -2255,6 +2366,15 @@
         detectAndInsertMissingDays();
       }
 
+      // Unconditional (outside the pageReviews>0 block above) — a payslip-only claim has zero
+      // timesheet pages, so that whole block (and detectAndInsertMissingDays with it) never runs at
+      // all, and nothing else here was actually triggering the first monthly-totals computation:
+      // appendReviewRow only wires recomputeMonthlyOtCap to fire on a row's own later edits, never on
+      // insertion itself. Without this, the Basic Salary/Overtime Breakdown tables stayed blank until
+      // the caseworker happened to touch something (a row edit, a rescan) that incidentally
+      // triggered a recompute — this makes it happen right away instead, the same as every other
+      // path (bank statement scan, medical bills scan, etc.) that ends with its own recompute call.
+      recomputeMonthlyOtCap();
       return data.costUsd;
     }
 
@@ -2310,14 +2430,14 @@
      */
     function buildExportPayload() {
       if (!lastBreakdownForExport) return { error: 'No claim breakdown yet — set a basic salary and add at least one claimed day first.' };
-      const { monthKeys, totals, otRate, allocated, restDayWorkedDatesByMonth, phWorkedDatesByMonth, basicSalary, basicFullAmountByMonth, allowancesFullAmountByMonth, noticeClaim, leaveClaim, sickClaim, medicalBillsClaim } = lastBreakdownForExport;
+      const { monthKeys, totals, allocated, restDayWorkedDatesByMonth, phWorkedDatesByMonth, basicSalary, basicFullAmountByMonth, allowancesFullAmountByMonth, noticeClaim, leaveClaim, sickClaim, medicalBillsClaim } = lastBreakdownForExport;
 
       /** Builds one export category's per-month rows and totals. */
       function category(getFullAmount, getBucketKey, getDaysOrHours) {
         const rows = [];
         let totalDaysOrHours = 0, totalEarned = 0, totalPaid = 0, totalOwed = 0;
         for (const month of monthKeys) {
-          const t = totals.get(month) || { netHours: 0, otHours: 0, restDayPay: 0, phPay: 0 };
+          const t = totals.get(month) || { netHours: 0, otHours: 0, otRate: 0, restDayPay: 0, phPay: 0 };
           const earned = getFullAmount(month, t);
           const paid = allocated.get(month)[getBucketKey];
           const owed = paid - earned; // negative = shortfall, matches template's parens convention
@@ -2333,7 +2453,7 @@
 
       const basic = category(month => basicFullAmountByMonth.get(month) || 0, 'basic', () => null);
       const allowances = category(month => allowancesFullAmountByMonth.get(month) || 0, 'allowances', () => null);
-      const overtime = category((month, t) => otRate * t.otHours, 'ot', (month, t) => t.otHours);
+      const overtime = category((month, t) => t.otRate * t.otHours, 'ot', (month, t) => t.otHours);
       const restDays = category((month, t) => t.restDayPay, 'rest', month => (restDayWorkedDatesByMonth.get(month) || []).length);
       const publicHolidays = category((month, t) => t.phPay, 'ph', month => (phWorkedDatesByMonth.get(month) || []).length);
 
@@ -2599,16 +2719,6 @@
       const v = Number(el.value);
       return Number.isFinite(v) ? v : 0;
     }
-    // Declared hourly OT rate straight off the IPA (lib/ipa.ts otRate) — null if the scan didn't
-    // find one printed/written on the document. Distinct from getHourlyBasicRate: that's a rate
-    // computed by us from salary; this is a rate MOM already has on record for this worker.
-    /** Reads the IPA's declared hourly OT rate, or `null` if not printed on the document. */
-    function getOtRate() {
-      const el = document.querySelector('#ipaPageReview input[data-field="otRate"]');
-      if (!el || el.value === '') return null;
-      const v = Number(el.value);
-      return Number.isFinite(v) ? v : null;
-    }
     // Declared daily basic rate straight off the IPA (lib/ipa.ts dailyBasicRate) — null if the scan
     // didn't find one printed/written on the document. Distinct from getComputedDailyBasicRate:
     // that's a rate computed by us from salary; this is a rate MOM already has on record.
@@ -2630,24 +2740,22 @@
       return checked ? Number(checked.value) : 0;
     }
     // Fourth Schedule item 1 (s.38(6)) — fixed 52×44 divisor, NOT the declared work week (that's a
-    // different, Third Schedule rate — see getDailyBasicRate below). Statutory-minimum hourly rate;
-    // only used directly as the fallback inside getEffectiveOtRate below when the IPA didn't
-    // declare an OT rate of its own.
-    /** Computes the statutory-minimum hourly rate (Fourth Schedule item 1, s.38(6), fixed 52×44 divisor). */
+    // different, Third Schedule rate — see getDailyBasicRate below). Feeds getEffectiveOtRate below.
+    /** Computes the statutory hourly basic rate (Fourth Schedule item 1, s.38(6), fixed 52×44 divisor). */
     function getHourlyBasicRate() {
       const salary = getBasicMonthlySalary();
       return salary === null ? null : (salary * 12) / (52 * 44);
     }
     // The rate used for every excess/overtime hour — OT proper (s.38), and the excess-hours portion
-    // of rest-day-worked pay (s.37) — uses whatever rate MOM actually has on record for this worker
-    // (the IPA's own declared otRate) rather than a statutory-minimum figure we derive from salary.
-    // Only falls back to 1.5× hourly basic rate when the IPA scan didn't turn up a declared otRate
-    // at all. Public-holiday (s.88) pay is untouched by this — it has no excess-hours component,
-    // just daily gross + daily basic, so it keeps calling getDailyGrossRate()/getDailyBasicRate().
-    /** Returns the IPA-declared OT rate if present, else 1.5× the statutory hourly basic rate. */
+    // of rest-day-worked pay (s.37). Always DERIVED from basic salary (Fourth Schedule/s.38(6)), never
+    // taken from an IPA-printed figure — an employer's declared rate on the IPA is what they say they
+    // pay, not necessarily the statutory floor a claim is computed against, so this app doesn't extract
+    // or offer it as an alternative at all. Kept as full float precision (no rounding here) — only the
+    // final OT AMOUNT (rate × hours) gets rounded to 2dp, at display time via formatMoney. Public-
+    // holiday (s.88) pay is untouched by this — it has no excess-hours component, just daily gross +
+    // daily basic, so it keeps calling getDailyGrossRate()/getDailyBasicRate().
+    /** Returns 1.5× the statutory hourly basic rate (Fourth Schedule/s.38(6)), full float precision. */
     function getEffectiveOtRate() {
-      const declared = getOtRate();
-      if (declared !== null) return declared;
       const hourly = getHourlyBasicRate();
       return hourly === null ? null : 1.5 * hourly;
     }
@@ -2752,6 +2860,20 @@
       if (!y || !m || !d) return null;
       return new Date(y, m - 1, d).getDay();
     }
+    // MOM's incomplete-month formula (s.42) prorates over WORKING days, not calendar days — a rest
+    // day is never a working day, whether or not it falls inside the worker's employment window that
+    // month. Counted across the WHOLE calendar month (not clipped to the employment period), matching
+    // MOM's own worked examples (e.g. a mid-month resignation still divides by the full month's
+    // working-day count, not just the days up to resignation).
+    /** Counts a whole calendar month's working days — every date not landing on the declared weekly rest day. */
+    function countWorkingDaysInMonth(year, month0, restDayOfWeek) {
+      const daysInMonth = new Date(year, month0 + 1, 0).getDate();
+      let count = 0;
+      for (let day = 1; day <= daysInMonth; day++) {
+        if (new Date(year, month0, day).getDay() !== restDayOfWeek) count++;
+      }
+      return count;
+    }
     /** Converts a bare HHMM integer to minutes since midnight. */
     function toMinutesClient(hhmm) { return Math.trunc(hhmm / 100) * 60 + (hhmm % 100); }
     /** Computes a shift's duration in hours, handling an overnight wrap. */
@@ -2783,10 +2905,12 @@
      * Computes rest-day-worked pay (s.37) and a human-readable formula string.
      * @param {number} netHours - Hours actually worked that day.
      * @param {'worker'|'employer'} initiator - Who asked for the work — pay differs by 2×.
+     * @param {number} otRate - The hourly OT rate to apply to any excess hours — the caller resolves
+     * this per the row's own month (see getEffectiveOtRateForMonth), not computed internally here,
+     * so this function stays agnostic to which rate source (IPA vs payslip) is active.
      * @returns {{pay: number|null, formula: string|null}}
      */
-    function computeRestDayPay(netHours, initiator) {
-      const otRate = getEffectiveOtRate();
+    function computeRestDayPay(netHours, initiator, otRate) {
       const dailyBasic = getDailyBasicRate();
       if (otRate === null || dailyBasic === null) return { pay: null, formula: null };
       const half = NORMAL_HOURS_PER_DAY / 2;
@@ -3053,7 +3177,7 @@
       if (showRestBlock) {
         const initiatorInput = restBlock.querySelector('input[type="radio"]:checked');
         const initiator = initiatorInput ? initiatorInput.value : 'employer';
-        const { pay, formula } = computeRestDayPay(netHours, initiator);
+        const { pay, formula } = computeRestDayPay(netHours, initiator, dateVal ? getEffectiveOtRateForMonth(dateVal.slice(0, 7)) : getEffectiveOtRate());
         restBlock.querySelector('.rest-day-pay-note').textContent =
           `🛏️ Rest-day pay owed — pay = ${formula} = ${formatMoney(pay)}`;
       }
@@ -3095,22 +3219,19 @@
       }
     }
 
-    // s.38(5): overtime must not exceed 72 hours in a calendar month. OT is hours beyond
-    // NORMAL_HOURS_PER_DAY, summed per month across every worked row currently on screen.
+    // s.38(5): overtime must not exceed 72 hours in a calendar month. Reads lastMonthlyTotals
+    // (populated by the recomputeMonthlyPayTotals() call right below, including its per-month
+    // OT-source override) rather than re-deriving OT hours from rows itself — that used to be a
+    // second, independent row-walk that duplicated recomputeMonthlyPayTotals' own logic AND ignored
+    // the payslip override, so a caseworker could see this cap warning contradict the actual
+    // claimed OT figure. Single source of truth now.
     /** Recomputes monthly pay totals and flags any month exceeding the 72h/month OT cap (s.38(5)). */
     function recomputeMonthlyOtCap() {
       recomputeMonthlyPayTotals();
       const otByMonth = new Map();
-      document.querySelectorAll('.review-row').forEach(li => {
-        const dateVal = li.querySelector('.f-date').value;
-        if (!dateVal) return;
-        const netHours = rowNetHours(li);
-        if (netHours === null) return;
-        const ot = Math.max(0, netHours - NORMAL_HOURS_PER_DAY);
-        if (ot <= 0) return;
-        const monthKey = dateVal.slice(0, 7);
-        otByMonth.set(monthKey, (otByMonth.get(monthKey) || 0) + ot);
-      });
+      for (const [monthKey, t] of lastMonthlyTotals || []) {
+        if (t.otHours > 0) otByMonth.set(monthKey, t.otHours);
+      }
       const el = document.getElementById('otCapWarnings');
       const overCap = [...otByMonth.entries()].filter(([, hrs]) => hrs > 72).sort();
       if (overCap.length === 0) {
@@ -3139,15 +3260,15 @@
      * Splits each month's actual bank-matched payment across the five pay categories in priority order.
      * @returns {Map<string, {basic: number, allowances: number, ot: number, rest: number, ph: number}>}
      */
-    function allocatePaymentsWaterfall(monthKeys, basicFullAmountByMonth, allowancesFullAmountByMonth, otRate, totals, paidByMonth) {
+    function allocatePaymentsWaterfall(monthKeys, basicFullAmountByMonth, allowancesFullAmountByMonth, totals, paidByMonth) {
       const allocated = new Map();
       let carryover = 0;
       for (const month of monthKeys) {
-        const t = totals.get(month) || { otHours: 0, restDayPay: 0, phPay: 0 };
+        const t = totals.get(month) || { otHours: 0, otRate: 0, restDayPay: 0, phPay: 0 };
         const fullAmounts = {
           basic: basicFullAmountByMonth.get(month) || 0,
           allowances: allowancesFullAmountByMonth.get(month) || 0,
-          ot: otRate * t.otHours,
+          ot: t.otRate * t.otHours,
           rest: t.restDayPay,
           ph: t.phPay,
         };
@@ -3177,6 +3298,7 @@
       const restDayWorkedDatesByMonth = new Map(); // monthKey -> array of dateVal actually paid rest-day-worked pay
       const phWorkedDatesByMonth = new Map(); // monthKey -> array of dateVal actually paid public-holiday-worked pay
       const certEntries = collectAllMedicalCertEntries(); // read once, reused per row below
+      const monthsWithTimesheetRows = new Set(); // monthKey -> at least one real .review-row contributed netHours here (see the OT-source default below)
 
       document.querySelectorAll('.review-row').forEach(li => {
         const dateVal = li.querySelector('.f-date').value;
@@ -3184,6 +3306,7 @@
         const monthKey = dateVal.slice(0, 7);
 
         const isRestDayChecked = li.dataset.restDay === '1';
+        const isDeclaredRestDay = weekdayIndex(dateVal) === restDayOfWeek;
         // A full month's basic salary can only be claimed if every non-rest work day was actually
         // worked (or excused with proof) — a genuinely blank/missing day still counts (auto-filled
         // in as worked elsewhere, see the Missing-day auto-insert section), but a day explicitly
@@ -3192,7 +3315,13 @@
         // day. A certified MC day (proof on file) still counts, same as any other claimed day.
         const isUnprovenMc = isRestDayChecked && isMedicalLeaveNote(li.dataset.notes) &&
           !certEntries.some(e => e.leaveFrom && e.leaveTo && dateVal >= e.leaveFrom && dateVal <= e.leaveTo);
-        if (!isUnprovenMc) {
+        // A date landing on the declared weekly rest day is never a "working day" (see
+        // countWorkingDaysInMonth above, which drives the denominator this numerator is divided
+        // by) — excluded here regardless of whether it was worked. An UNWORKED rest day needs no
+        // separate pay at all (that's the whole point of using working-days-only as the
+        // denominator); a WORKED rest day is paid in full separately via the s.37 rest-day-worked
+        // formula below (t.restDayPay), so counting it here too would double-pay that date.
+        if (!isUnprovenMc && !isDeclaredRestDay) {
           if (!claimedDatesByMonth.has(monthKey)) claimedDatesByMonth.set(monthKey, new Set());
           claimedDatesByMonth.get(monthKey).add(dateVal);
         }
@@ -3201,15 +3330,15 @@
         if (netHours === null) return;
 
         if (!totals.has(monthKey)) totals.set(monthKey, { netHours: 0, otHours: 0, restDayPay: 0, phPay: 0 });
+        monthsWithTimesheetRows.add(monthKey);
         const t = totals.get(monthKey);
         t.netHours += netHours;
         t.otHours += Math.max(0, netHours - NORMAL_HOURS_PER_DAY);
 
-        const isDeclaredRestDay = weekdayIndex(dateVal) === restDayOfWeek;
         if (isDeclaredRestDay && !isRestDayChecked) {
           const initiatorInput = li.querySelector('.rest-init-group input[type="radio"]:checked');
           const initiator = initiatorInput ? initiatorInput.value : 'employer';
-          const { pay } = computeRestDayPay(netHours, initiator);
+          const { pay } = computeRestDayPay(netHours, initiator, getEffectiveOtRateForMonth(monthKey));
           if (pay !== null) {
             t.restDayPay += pay;
             if (!restDayWorkedDatesByMonth.has(monthKey)) restDayWorkedDatesByMonth.set(monthKey, []);
@@ -3225,6 +3354,79 @@
           }
         }
       });
+
+      // With no timesheet attached at all, there's no day-level evidence to prorate basic salary
+      // against — assume a full month worked for any month the payslip itself covers, rather than
+      // leaving daysClaimed at 0 (which would otherwise zero out the Basic Salary Breakdown entirely
+      // for a payslip-only claim). Only kicks in when a month has genuinely nothing claimed yet, and
+      // never applies at all once even one timesheet file is attached — a real (even partial)
+      // timesheet's actual coverage is never overridden by an assumption.
+      //
+      // Still clamped against the declared claim period, same as detectAndInsertMissingDays does for
+      // the timesheet case (day-level, not that function's week-boundary-aware version — there's no
+      // "leave the partial week for the caseworker" nuance to preserve here, this whole branch is
+      // already a blanket assumption). E.g. a claim period starting 2025-09-03 must not count
+      // 2025-09-01/02 toward September's days claimed, even though the payslip's own period covers
+      // the whole month — the caseworker's declared employment start is the more specific fact.
+      if (pdfsInput.files.length === 0) {
+        const contractStartVal = document.getElementById('contractStartDate').value;
+        const contractEndVal = document.getElementById('contractEndDate').value;
+        for (const monthKey of getPayslipCoveredMonths()) {
+          if (claimedDatesByMonth.has(monthKey)) continue;
+          const [fy, fm] = monthKey.split('-').map(Number);
+          const daysInMonth = new Date(fy, fm, 0).getDate();
+          const fullMonthDates = new Set();
+          for (let day = 1; day <= daysInMonth; day++) {
+            const dateStr = `${monthKey}-${String(day).padStart(2, '0')}`;
+            if (contractStartVal && dateStr < contractStartVal) continue;
+            if (contractEndVal && dateStr > contractEndVal) continue;
+            // Same working-days-only rule as the timesheet path above — a payslip-only claim
+            // shouldn't count declared rest days as "days claimed" either, or it'd be prorated
+            // against a different (looser) definition than a timesheet-backed claim.
+            if (weekdayIndex(dateStr) === restDayOfWeek) continue;
+            fullMonthDates.add(dateStr);
+          }
+          if (fullMonthDates.size > 0) claimedDatesByMonth.set(monthKey, fullMonthDates);
+        }
+      }
+
+      // Per-month OT-source override: a payslip's stated OT hours (see getPayslipOtHoursByMonth)
+      // can stand in for whatever was just summed from timesheet rows above, once the caseworker
+      // picks "Payslip" for that month in the Overtime Breakdown table (or it's the default — see
+      // below). Both figures are kept on the totals entry (timesheetOtHours/payslipOtHours) so the
+      // table can show both side by side — only otHours itself (the one every downstream consumer
+      // reads) becomes the active pick. Months with a payslip figure but zero timesheet rows at all
+      // (a payslip-only claim, no matching auto-inserted placeholder because the claim period
+      // wasn't set) still need a totals entry to show up in the breakdown at all, so they're
+      // backfilled here too.
+      const payslipOtByMonth = getPayslipOtHoursByMonth();
+      // A completely independent axis from the hours override above — see otRateSource's own
+      // comment. Computed once here (not per-row) since it doesn't depend on anything the row loop
+      // produced, only on the payslip data and the caseworker's global toggle pick.
+      const payslipRateByMonth = getPayslipRateByMonth();
+      for (const monthKey of new Set([...payslipOtByMonth.keys(), ...payslipRateByMonth.keys()])) {
+        if (!totals.has(monthKey)) totals.set(monthKey, { netHours: 0, otHours: 0, restDayPay: 0, phPay: 0 });
+      }
+      for (const [monthKey, t] of totals) {
+        t.timesheetOtHours = t.otHours;
+        t.payslipOtHours = payslipOtByMonth.has(monthKey) ? payslipOtByMonth.get(monthKey) : null;
+        // Defaulting to "timesheet" only makes sense when there IS a timesheet for this month — a
+        // month with a payslip figure and zero real timesheet rows (not "worked 0 OT", genuinely no
+        // timesheet data at all for that month) would otherwise silently show $0 OT until the
+        // caseworker happens to notice and flip the toggle. Every OTHER case (a real, if
+        // zero-OT, timesheet month; a month with both sources present) still defaults to timesheet,
+        // unchanged — the caseworker opts into the payslip figure there, same as before.
+        t.defaultOtSource = monthsWithTimesheetRows.has(monthKey) ? 'timesheet' : 'payslip';
+        const activeSource = otSourceByMonth[monthKey] || t.defaultOtSource;
+        t.otHours = (activeSource === 'payslip' && t.payslipOtHours != null) ? t.payslipOtHours : t.timesheetOtHours;
+
+        // Rate override — unlike hours, this always defaults to 'ipa' regardless of what's
+        // available (the IPA rate is always computable once a basic salary exists, so there's no
+        // "nothing to default to" case the way a timesheet-less month has for hours).
+        t.payslipRate = payslipRateByMonth.has(monthKey) ? payslipRateByMonth.get(monthKey) : null;
+        t.otRate = getEffectiveOtRateForMonth(monthKey);
+      }
+      lastMonthlyTotals = totals;
 
       const el = document.getElementById('monthlyPayTotals');
       // Union of both maps — a month made up entirely of rest days (no valid netHours row at all)
@@ -3263,11 +3465,13 @@
       const monthlyAllowances = getMonthlyAllowances();
       const basicFullAmountByMonth = new Map();
       const allowancesFullAmountByMonth = new Map();
+      const workingDaysInMonthByMonth = new Map();
       for (const month of monthKeys) {
-        const [fy, fm] = month.split('-');
-        const daysInMonth = new Date(Number(fy), Number(fm), 0).getDate();
+        const [fy, fm] = month.split('-').map(Number);
+        const workingDaysInMonth = countWorkingDaysInMonth(fy, fm - 1, restDayOfWeek);
+        workingDaysInMonthByMonth.set(month, workingDaysInMonth);
         const daysClaimed = claimedDatesByMonth.get(month)?.size || 0;
-        const proration = daysClaimed / daysInMonth;
+        const proration = workingDaysInMonth > 0 ? daysClaimed / workingDaysInMonth : 0;
         basicFullAmountByMonth.set(month, proration * basicSalary);
         allowancesFullAmountByMonth.set(month, proration * monthlyAllowances);
       }
@@ -3290,7 +3494,7 @@
         const monthKey = `${earnedForMonth.getFullYear()}-${String(earnedForMonth.getMonth() + 1).padStart(2, '0')}`;
         paidByMonth.set(monthKey, (paidByMonth.get(monthKey) || 0) + t.amount);
       });
-      const allocated = allocatePaymentsWaterfall(monthKeys, basicFullAmountByMonth, allowancesFullAmountByMonth, otRate, totals, paidByMonth);
+      const allocated = allocatePaymentsWaterfall(monthKeys, basicFullAmountByMonth, allowancesFullAmountByMonth, totals, paidByMonth);
 
       // Grand total across every month, added as a bottom Total row — each month's own row is a
       // sub-amount, this is the figure the caseworker actually wants to hand to the worker.
@@ -3300,9 +3504,9 @@
         const t = totals.get(month) || { netHours: 0, otHours: 0, restDayPay: 0, phPay: 0 };
 
         const [yearStr, monthNumStr] = month.split('-');
-        const daysInMonth = new Date(Number(yearStr), Number(monthNumStr), 0).getDate();
+        const workingDaysInMonth = workingDaysInMonthByMonth.get(month) || 0;
         const daysClaimed = claimedDatesByMonth.get(month)?.size || 0;
-        const isFullMonth = daysClaimed === daysInMonth;
+        const isFullMonth = daysClaimed === workingDaysInMonth;
 
         // Basic salary's gross rate of pay, prorated by days claimed — OT, rest-day-worked, and
         // public-holiday-worked pay each already have their own dedicated breakdown table
@@ -3319,7 +3523,7 @@
       <td>${yearStr}</td>
       <td>${MONTH_ABBR[Number(monthNumStr) - 1]}</td>
       <td>${isFullMonth ? 'Yes' : 'No'}</td>
-      <td>${daysClaimed}</td>
+      <td>${daysClaimed} / ${workingDaysInMonth}</td>
       <td>${formatMoney(fullAmount)}</td>
       <td>${formatMoney(paymentReceived)}</td>
       <td>${formatMoney(computedClaim)}</td>
@@ -3342,8 +3546,8 @@
       // so feeding it an already-discounted number here would double-subtract.
       let grossOwed = sumTotal;
       for (const month of monthKeys) {
-        const t = totals.get(month) || { otHours: 0, restDayPay: 0, phPay: 0 };
-        grossOwed += otRate * t.otHours + t.restDayPay + t.phPay;
+        const t = totals.get(month) || { otHours: 0, otRate: 0, restDayPay: 0, phPay: 0 };
+        grossOwed += t.otRate * t.otHours + t.restDayPay + t.phPay;
       }
       for (const month of monthKeys) {
         grossOwed += allowancesFullAmountByMonth.get(month) || 0;
@@ -3357,11 +3561,14 @@
       const medicalBillsClaim = computeMedicalBillsClaim();
       if (medicalBillsClaim) grossOwed += medicalBillsClaim.owedAmount;
       totalOwedCache = grossOwed;
-      lastBreakdownForExport = { monthKeys, totals, otRate, allocated, restDayWorkedDatesByMonth, phWorkedDatesByMonth, basicSalary, basicFullAmountByMonth, allowancesFullAmountByMonth, noticeClaim, leaveClaim, sickClaim, medicalBillsClaim };
+      // otRate is no longer a single flat figure (see the per-month t.otRate override above) — every
+      // consumer of this snapshot reads it off `totals` per month instead, so it's not duplicated
+      // here as its own field.
+      lastBreakdownForExport = { monthKeys, totals, allocated, restDayWorkedDatesByMonth, phWorkedDatesByMonth, basicSalary, basicFullAmountByMonth, allowancesFullAmountByMonth, noticeClaim, leaveClaim, sickClaim, medicalBillsClaim };
       document.getElementById('exportDocxBtn').style.display = '';
       document.getElementById('exportPdfBtn').style.display = '';
       renderAllowancesBreakdown(monthKeys, allowancesFullAmountByMonth, allocated);
-      renderOvertimeBreakdown(monthKeys, totals, otRate, allocated);
+      renderOvertimeBreakdown(monthKeys, totals, allocated);
       renderRestBreakdown(monthKeys, totals, restDayWorkedDatesByMonth, allocated);
       renderPublicHolidayBreakdown(monthKeys, totals, phWorkedDatesByMonth, allocated);
       updateSummarySectionVisibility();
@@ -3412,34 +3619,60 @@
     // figure. Payment received comes from allocatePaymentsWaterfall — the portion of that month's
     // actual bank-matched payment allocated to OT after basic salary was filled first.
     /** Renders the Overtime Breakdown table. */
-    function renderOvertimeBreakdown(monthKeys, totals, otRate, allocated) {
+    function renderOvertimeBreakdown(monthKeys, totals, allocated) {
       const el = document.getElementById('overtimeBreakdown');
       el.style.display = 'block';
       let sumTotal = 0;
       const rows = monthKeys.map(month => {
-        const t = totals.get(month) || { otHours: 0 };
-        const fullAmount = otRate * t.otHours;
+        const t = totals.get(month) || { otHours: 0, otRate: 0 };
+        const fullAmount = t.otRate * t.otHours;
         const paymentReceived = allocated.get(month).ot;
         const computedClaim = fullAmount - paymentReceived;
         sumTotal += computedClaim;
         const [yearStr, monthNumStr] = month.split('-');
+        // Toggle only appears for a month that actually has a payslip figure — the common
+        // no-payslip case stays exactly as it was. The main cell always shows whichever figure is
+        // currently active (t.otHours, already resolved by recomputeMonthlyPayTotals' override,
+        // including its per-month default — payslip when that month had no real timesheet rows at
+        // all, timesheet otherwise); the radios underneath let the caseworker flip which source
+        // drives it either way.
+        const activeHoursSource = otSourceByMonth[month] || t.defaultOtSource;
+        const hoursSourceToggle = t.payslipOtHours != null ? `
+      <div class="pay-total-sub">
+        <label><input type="radio" name="ot-source-${month}" value="timesheet"${activeHoursSource === 'timesheet' ? ' checked' : ''}> Timesheet: ${t.timesheetOtHours.toFixed(1)}h</label>
+        <label><input type="radio" name="ot-source-${month}" value="payslip"${activeHoursSource === 'payslip' ? ' checked' : ''}> Payslip: ${t.payslipOtHours.toFixed(1)}h</label>
+      </div>` : '';
+        // Rate has no per-month toggle here — it's a single global pick (otRateSource, set in the
+        // IPA summary card next to "Declared OT rate") already baked into t.otRate by
+        // recomputeMonthlyPayTotals. This column just displays the result.
         return `<tr>
       <td>${yearStr}</td>
       <td>${MONTH_ABBR[Number(monthNumStr) - 1]}</td>
-      <td>${t.otHours.toFixed(1)}</td>
+      <td>${t.otHours.toFixed(1)}${hoursSourceToggle}</td>
+      <td>${formatMoney(t.otRate)}</td>
       <td>${formatMoney(fullAmount)}</td>
       <td>${formatMoney(paymentReceived)}</td>
       <td>${formatMoney(computedClaim)}</td>
     </tr>`;
       }).join('');
       const totalRow = `<tr class="pay-total-row">
-      <td colspan="5">Total</td>
+      <td colspan="6">Total</td>
       <td><strong>${formatMoney(sumTotal)}</strong></td>
     </tr>`;
       el.innerHTML = `<h3>Overtime Breakdown</h3><table class="pay-total-table">
-    <thead><tr><th>Year</th><th>Month</th><th>Overtime hours</th><th>Full amount</th><th>Payment received</th><th>Computed claim</th></tr></thead>
+    <thead><tr><th>Year</th><th>Month</th><th>Overtime hours</th><th>Rate</th><th>Full amount</th><th>Payment received</th><th>Computed claim</th></tr></thead>
     <tbody>${rows}${totalRow}</tbody>
   </table>`;
+      // refreshPayslipDerivedTotals (not a bare recomputeMonthlyPayTotals) — the Payslip breakdown
+      // table's own Amount column also depends on the current otRateSource, so a hours-source toggle
+      // here still needs that table re-rendered too, not just this one.
+      el.querySelectorAll('input[type="radio"][name^="ot-source-"]').forEach(input => {
+        input.addEventListener('change', () => {
+          const month = input.name.slice('ot-source-'.length);
+          otSourceByMonth[month] = input.value;
+          refreshPayslipDerivedTotals();
+        });
+      });
     }
 
     // Same idea as renderOvertimeBreakdown — a dedicated view of the rest-day-worked pay already
@@ -4197,9 +4430,9 @@
 
     // A transient extraction failure (e.g. the truncated-JSON case this button exists for) shouldn't
     // require re-uploading and rescanning the entire batch just to retry ONE document — reuses the
-    // same /api/process endpoint the "Rescan this page" timesheet flow already relies on: it always
-    // requires at least one pdfs page, so this attaches the first already-uploaded timesheet file but
-    // excludes every one of its pages, meaning only the IPA actually gets (re-)scanned.
+    // same /api/process endpoint the "Rescan this page" timesheet flow already relies on, sending no
+    // pdfs at all (timesheet files are optional server-side — see server.ts) so only the IPA gets
+    // (re-)scanned.
     /** Wires the IPA card's Rotate/Rescan controls. */
     function wireIpaRescanControls(controls) {
       const statusEl = controls.nextElementSibling;
@@ -4225,31 +4458,24 @@
           statusEl.textContent = 'IPA letter no longer attached (selection changed since the scan ran) — re-attach it before rescanning.';
           return;
         }
-        const file = pdfsInput.files[0];
-        if (!file) {
-          statusEl.className = 'page-rescan-status error';
-          statusEl.textContent = 'No timesheet file attached — /api/process requires at least one, even though only the IPA is being rescanned here.';
-          return;
-        }
         rescanBtn.disabled = true;
         statusEl.className = 'page-rescan-status';
         statusEl.textContent = 'Rescanning IPA…';
 
-        const pageCount = pdfsPreviewPages.filter(p => p.fileIndex === 0).length;
-        const excluded = [];
-        for (let pi = 0; pi < pageCount; pi++) excluded.push(`0-${pi}`);
-
+        // No timesheet file is sent at all — /api/process no longer requires one (see server.ts;
+        // a claim can run on a payslip's OT hours alone), so there's nothing left to attach-and-
+        // exclude here the way this used to work. Only the IPA itself gets scanned.
         const formData = new FormData();
-        formData.append('pdfs', file);
         formData.append('ipa', ipaFile);
         formData.append('rotations', JSON.stringify({ pdfs: {}, ipa: ipaRotationDeg }));
-        formData.append('excludedPages', JSON.stringify(excluded));
         formData.append('standardBreakHours', getStandardBreakHours());
-        // Every timesheet page is excluded, so there's no page left to infer a claim year from —
-        // /api/process still requires SOME year to avoid erroring out before it ever reaches IPA
-        // extraction, even though the IPA itself doesn't need one. The original scan's own detected
-        // year is the best available value here.
-        if (currentYear && currentYear.length > 0) formData.append('fallbackYear', currentYear[0]);
+        // With no timesheet page in this request there's nothing for /api/process to infer a claim
+        // year from — it still needs SOME year to avoid erroring out before it ever reaches IPA
+        // extraction, even though the IPA itself doesn't need one. Same 3-tier fallback chain as the
+        // main submit handler: the original scan's own detected year, else the declared claim
+        // period, else the earliest date already scanned off an attached payslip.
+        const fallbackYear = resolveFallbackYear();
+        if (fallbackYear !== null) formData.append('fallbackYear', fallbackYear);
 
         try {
           const res = await fetch('/api/process', { method: 'POST', body: formData });
@@ -4284,10 +4510,22 @@
         renderIpaSummaryText();
         renderComputedRates();
       }
+      // Was unconditionally "success" even when result.ipa came back null (extraction genuinely
+      // failed that pass — e.g. a bad rotation) — the fields on the right render as blank in that
+      // case (renderIpaCard only calls renderIpaFieldsEditable when ipa is truthy), so a caseworker
+      // seeing "Rescanned — fields updated above." next to empty boxes had no clue anything had gone
+      // wrong. Surface the actual outcome instead.
       const statusEl = ipaPageReviewEl.querySelector('.page-rescan-status');
       if (statusEl) {
-        statusEl.className = 'page-rescan-status success';
-        statusEl.textContent = 'Rescanned — fields updated above.';
+        if (result.ipa) {
+          statusEl.className = 'page-rescan-status success';
+          statusEl.textContent = 'Rescanned — fields updated above.';
+        } else {
+          statusEl.className = 'page-rescan-status error';
+          statusEl.textContent = result.ipaWarning
+            ? `Rescanned, but no fields could be extracted: ${result.ipaWarning}`
+            : 'Rescanned, but no fields could be extracted from this page — double-check the rotation and try again.';
+        }
       }
       updateSummarySectionVisibility();
       recomputeAllGuardrails();
@@ -4320,7 +4558,6 @@
     ${ipaFieldText('employerName', 'Name of employer', f.employerName)}
     ${ipaField('basicMonthlySalary', 'Basic monthly salary ($)', f.basicMonthlySalary)}
     ${ipaField('fixedMonthlyAllowances', 'Fixed monthly allowances ($)', allowanceTotal)}
-    ${ipaField('otRate', 'Declared OT rate ($/hr)', f.otRate)}
     ${ipaField('dailyBasicRate', 'Declared daily basic rate ($)', f.dailyBasicRate)}
   </div>`;
     }
@@ -4335,28 +4572,47 @@
     function renderIpaSummaryText() {
       const salaryEl = document.querySelector('#ipaPageReview input[data-field="basicMonthlySalary"]');
       const allowEl = document.querySelector('#ipaPageReview input[data-field="fixedMonthlyAllowances"]');
-      const otRateEl = document.querySelector('#ipaPageReview input[data-field="otRate"]');
       const dailyBasicEl = document.querySelector('#ipaPageReview input[data-field="dailyBasicRate"]');
       const salary = salaryEl && salaryEl.value !== '' ? Number(salaryEl.value) : null;
       const allowances = allowEl && allowEl.value !== '' ? Number(allowEl.value) : null;
-      const otRate = otRateEl && otRateEl.value !== '' ? Number(otRateEl.value) : null;
       const dailyBasic = dailyBasicEl && dailyBasicEl.value !== '' ? Number(dailyBasicEl.value) : null;
+      // Whether a payslip rate is available at all to offer as the alternative — and, since
+      // otRateSource is a single global pick (not per month), what to actually label that option
+      // as: the one shared figure if every payslip entry agrees, otherwise "varies by month" so the
+      // caseworker isn't misled into thinking there's one fixed number behind the choice.
+      const payslipRates = typeof getPayslipRateByMonth === 'function' ? [...getPayslipRateByMonth().values()] : [];
+      const distinctPayslipRates = [...new Set(payslipRates)];
+      const payslipRateLabel = distinctPayslipRates.length === 1 ? `${formatMoney(distinctPayslipRates[0])}/hr` : distinctPayslipRates.length > 1 ? 'varies by month' : null;
+      const computedRate = getEffectiveOtRate();
+      const rateSourceToggle = payslipRateLabel !== null ? `
+      <div class="pay-total-sub">
+        <label><input type="radio" name="ot-rate-source" value="computed"${otRateSource !== 'payslip' ? ' checked' : ''}> Use computed rate (${computedRate === null ? '—' : `${formatMoney(computedRate)}/hr`}) for the claim</label>
+        <label><input type="radio" name="ot-rate-source" value="payslip"${otRateSource === 'payslip' ? ' checked' : ''}> Use payslip rate (${payslipRateLabel}) for the claim</label>
+      </div>` : '';
       ipaReviewEl.innerHTML = `
     <h3>IPA — declared employment terms</h3>
     <div class="ipa-field-grid">
       <div class="ipa-field-group"><span class="field-label">Basic monthly salary</span><strong>${formatMoney(salary)}</strong></div>
       <div class="ipa-field-group"><span class="field-label">Fixed monthly allowances</span><strong>${formatMoney(allowances)}</strong></div>
-      <div class="ipa-field-group"><span class="field-label">Declared OT rate</span><strong>${otRate === null ? '—' : `${formatMoney(otRate)}/hr`}</strong></div>
+      <div class="ipa-field-group"><span class="field-label">OT rate (computed)</span><strong>${computedRate === null ? '—' : `${formatMoney(computedRate)}/hr`}</strong>${rateSourceToggle}</div>
       <div class="ipa-field-group"><span class="field-label">Declared daily basic rate</span><strong>${dailyBasic === null ? '—' : `${formatMoney(dailyBasic)}/day`}</strong></div>
     </div>
     <div class="review-hint" id="ipaComputedRates"></div>`;
+      const toggleEl = ipaReviewEl.querySelector('input[name="ot-rate-source"]');
+      if (toggleEl) {
+        ipaReviewEl.querySelectorAll('input[name="ot-rate-source"]').forEach(input => {
+          input.addEventListener('change', () => {
+            otRateSource = input.value;
+            refreshPayslipDerivedTotals();
+          });
+        });
+      }
     }
 
-    // Fourth Schedule item 1 (s.38(6)) — hourly basic rate, shown mainly as the OT fallback's own
-    // input (see getEffectiveOtRate) since OT/rest-day excess pay use the declared/effective OT
-    // rate directly rather than this multiplied by 1.5 inline. Fixed 52×44 divisor regardless of
-    // the declared work week — do NOT substitute getWorkDaysPerWeek() here, that's a different
-    // (Third Schedule) rate below.
+    // Fourth Schedule item 1 (s.38(6)) — hourly basic rate, the base OT/rest-day excess pay is always
+    // derived from (see getEffectiveOtRate) rather than this multiplied by 1.5 inline. Fixed 52×44
+    // divisor regardless of the declared work week — do NOT substitute getWorkDaysPerWeek() here,
+    // that's a different (Third Schedule) rate below.
     /** Renders the derived-rate formula bullets (hourly/OT/daily basic/daily gross) under the IPA summary. */
     function renderComputedRates() {
       const el = document.getElementById('ipaComputedRates');
@@ -4370,10 +4626,7 @@
       const dailyBasic = getDailyBasicRate();
       const dailyGross = getDailyGrossRate();
       const sal = formatMoney(salary);
-      const declaredOtRate = getOtRate();
-      const otRateLine = declaredOtRate !== null
-        ? `<li>OT rate: <span class="ipa-formula">as declared on the IPA</span> <strong>${formatMoney(declaredOtRate)}/hr</strong></li>`
-        : `<li>OT rate: <span class="ipa-formula">not declared on the IPA — falling back to 1.5× hourly basic rate (1.5 × ${formatMoney(hourly)}) =</span> <strong>${formatMoney(1.5 * hourly)}/hr</strong></li>`;
+      const otRateLine = `<li>OT rate: <span class="ipa-formula">1.5× hourly basic rate (1.5 × ${formatMoney(hourly)}) =</span> <strong>${formatMoney(1.5 * hourly)}/hr</strong></li>`;
       const declaredDailyBasic = getDeclaredDailyBasicRate();
       const dailyBasicLine = declaredDailyBasic !== null
         ? `<li>Daily basic rate: <span class="ipa-formula">as declared on the IPA</span> <strong>${formatMoney(declaredDailyBasic)}/day</strong></li>`
@@ -5562,6 +5815,612 @@
       } catch (err) {
         medicalCertificatesStatusEl.className = 'status error';
         medicalCertificatesStatusEl.textContent = 'Error: ' + err.message;
+      }
+    }
+
+    // ===== Payslip upload (day/week/month OT-hours source) =====
+    // Same standalone upload + multi-pass scan + editable page review pattern as the other four
+    // uploads above (see lib/payslips.ts / server.ts's /api/payslips), but the entries here feed
+    // directly into recomputeMonthlyPayTotals' per-month OT-source override rather than just being
+    // a display-only cross-check.
+    const payslipsInput = document.getElementById('payslipsInput');
+    const payslipsFileListEl = document.getElementById('payslipsFileList');
+    const payslipsStageEl = document.getElementById('payslipsStage');
+    const payslipsStatusEl = document.getElementById('payslipsStatus');
+    const payslipPageReviewListEl = document.getElementById('payslipPageReviewList');
+
+    let payslipsRotations = {};
+    let excludedPayslipsPages = new Set();
+    let payslipsPreviewPages = []; // {fileIndex, pageIndex} in file/page order — see pdfsPreviewPages
+
+    /** Renders one staging-page thumbnail (image + rotate/delete buttons) for the payslip upload. */
+    function renderPayslipStageTile(key, label, imageB64) {
+      const rotation = payslipsRotations[key] || 0;
+      return `
+    <div class="stage-tile" data-key="${key}">
+      <div class="stage-tile-img-wrap">
+        <img src="data:image/png;base64,${imageB64}" style="transform: rotate(${rotation}deg);">
+        <button type="button" class="stage-tile-rotate-btn" title="Rotate">⟳</button>
+        <button type="button" class="stage-tile-delete-btn" title="Remove this page">✕</button>
+      </div>
+      <div class="stage-tile-label">${escapeHtml(label)}</div>
+    </div>`;
+    }
+
+    /** Wires each staged payslip tile's rotate button to update state and the tile's live CSS transform. */
+    function wirePayslipStageRotateButtons(container) {
+      container.querySelectorAll('.stage-tile').forEach(tile => {
+        const key = tile.dataset.key;
+        const img = tile.querySelector('img');
+        tile.querySelector('.stage-tile-rotate-btn').addEventListener('click', () => {
+          const next = ((payslipsRotations[key] || 0) + 90) % 360;
+          payslipsRotations[key] = next;
+          img.style.transform = `rotate(${next}deg)`;
+        });
+      });
+    }
+
+    /** Fetches and renders staging thumbnails for every page of the selected payslip file(s). */
+    async function refreshPayslipsPreview() {
+      const files = [...payslipsInput.files];
+      payslipsFileListEl.textContent = files.length === 0 ? '' : files.map(f => f.name).join(', ');
+      payslipsRotations = {};
+      excludedPayslipsPages = new Set();
+      payslipsPreviewPages = [];
+
+      if (files.length === 0) {
+        payslipsStageEl.innerHTML = '';
+        return;
+      }
+      payslipsStageEl.innerHTML = '<div class="stage-loading"><span class="spinner"></span>Loading previews…</div>';
+
+      const formData = new FormData();
+      for (const file of files) formData.append('payslips', file);
+
+      try {
+        const res = await fetch('/api/preview', { method: 'POST', body: formData });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || `Server returned ${res.status}`);
+
+        const byFile = new Map();
+        for (const p of data.payslipsPreview || []) {
+          if (!byFile.has(p.fileIndex)) byFile.set(p.fileIndex, { fileName: p.fileName, tiles: [] });
+          byFile.get(p.fileIndex).tiles.push(renderPayslipStageTile(`${p.fileIndex}-${p.pageIndex}`, `p${p.pageIndex + 1}`, p.image));
+          payslipsPreviewPages.push({ fileIndex: p.fileIndex, pageIndex: p.pageIndex });
+        }
+        payslipsStageEl.innerHTML = [...byFile.entries()].map(([fileIndex, { fileName, tiles }]) => `
+      <div class="stage-file-group">
+        <div class="stage-file-header"><span>${escapeHtml(fileName)}</span></div>
+        <div class="stage-file-pages">${tiles.join('')}</div>
+      </div>`).join('')
+          + (data.payslipsErrors || []).map(e => `<div class="stage-error">${escapeHtml(e.fileName)}: ${escapeHtml(e.error)}</div>`).join('');
+
+        wirePayslipStageRotateButtons(payslipsStageEl);
+        payslipsStageEl.querySelectorAll('.stage-tile-delete-btn').forEach(btn => {
+          btn.addEventListener('click', () => {
+            const tile = btn.closest('.stage-tile');
+            excludedPayslipsPages.add(tile.dataset.key);
+            const group = tile.closest('.stage-file-group');
+            tile.remove();
+            if (group && group.querySelectorAll('.stage-tile').length === 0) group.remove();
+          });
+        });
+      } catch (err) {
+        payslipsStageEl.innerHTML = `<div class="stage-error">Preview failed: ${escapeHtml(err.message)}</div>`;
+      }
+    }
+
+    payslipsInput.addEventListener('change', refreshPayslipsPreview);
+
+    // Granularity, date(s), and overtime hours are all directly editable (unlike the medical
+    // certificate row, nothing here is a free-text description worth leaving as static display —
+    // every field is a fact the OT-source override depends on getting right). Only the period-input
+    // group matching the row's current granularity is shown; switching the granularity select
+    // toggles which group is visible via wirePayslipRow below.
+    /** Renders one editable payslip row for the page-by-page review (scanned or manually-added). */
+    function formatPayslipEntryRow(t, manual) {
+      return `
+    <tr class="payslip-row" data-source="${escapeHtml(t.source)}" data-confirmed-seen="${t.confirmedByAttempts ? t.confirmedByAttempts.seen : ''}" data-confirmed-total="${t.confirmedByAttempts ? t.confirmedByAttempts.total : ''}">
+      <td>
+        <select class="payslip-granularity-select">
+          <option value="day"${t.granularity === 'day' ? ' selected' : ''}>Day</option>
+          <option value="week"${t.granularity === 'week' ? ' selected' : ''}>Week</option>
+          <option value="month"${!t.granularity || t.granularity === 'month' ? ' selected' : ''}>Month</option>
+        </select>
+      </td>
+      <td>
+        <div class="payslip-period-day" style="display:${t.granularity === 'day' ? '' : 'none'}">
+          <input type="date" class="payslip-date-input" value="${escapeHtml(t.date || '')}">
+        </div>
+        <div class="payslip-period-week" style="display:${t.granularity === 'week' ? '' : 'none'}">
+          <input type="date" class="payslip-week-start-input" value="${escapeHtml(t.weekStart || '')}" style="width:130px">
+          <span> to </span>
+          <input type="date" class="payslip-week-end-input" value="${escapeHtml(t.weekEnd || '')}" style="width:130px">
+        </div>
+        <div class="payslip-period-month" style="display:${!t.granularity || t.granularity === 'month' ? '' : 'none'}">
+          <input type="month" class="payslip-month-input" value="${escapeHtml(t.yearMonth || '')}">
+        </div>
+      </td>
+      <td><input type="number" step="0.1" min="0" class="payslip-hours-input" value="${Number.isFinite(t.overtimeHours) ? t.overtimeHours : 0}" style="width:70px"></td>
+      <td><input type="number" step="0.01" min="0" class="payslip-rate-input" value="${Number.isFinite(t.hourlyRate) ? t.hourlyRate : ''}" placeholder="—" style="width:70px"></td>
+      <td>${t.confirmedByAttempts && t.confirmedByAttempts.seen < t.confirmedByAttempts.total ? `<div class="pay-total-sub">⚠ only ${t.confirmedByAttempts.seen}/${t.confirmedByAttempts.total} scan passes caught this — worth double-checking against the source page</div>` : ''}</td>
+      <td><button type="button" class="row-delete-btn payslip-delete-btn" title="Remove" aria-label="Remove"><svg viewBox="0 0 16 16" style="width:13px;height:13px;flex-shrink:0;" fill="currentColor" aria-hidden="true"><path d="M6 1a1 1 0 0 0-1 1v1H2.5a.5.5 0 0 0 0 1h.55l.65 9.1A1.5 1.5 0 0 0 5.2 15h5.6a1.5 1.5 0 0 0 1.5-1.4l.65-9.1h.55a.5.5 0 0 0 0-1H11V2a1 1 0 0 0-1-1H6zm0 2V2h4v1H6zM4.55 4h6.9l-.64 9h-5.62l-.64-9zM6.5 6a.5.5 0 0 1 .5.5v5a.5.5 0 0 1-1 0v-5a.5.5 0 0 1 .5-.5zm3 0a.5.5 0 0 1 .5.5v5a.5.5 0 0 1-1 0v-5a.5.5 0 0 1 .5-.5z"/></svg></button></td>
+    </tr>`;
+    }
+
+    /** Renders the editable payslip entries table (all rows via formatPayslipEntryRow) for a review page. */
+    function formatPayslipEntriesTableEditable(entries) {
+      const rows = entries.map(t => formatPayslipEntryRow(t, false)).join('');
+      return `<table class="pay-total-table">
+    <thead><tr><th>Period</th><th>Date(s)</th><th>OT hours</th><th>Hourly rate</th><th></th></tr></thead>
+    <tbody>${rows}</tbody>
+  </table>`;
+    }
+
+    // Same "read live DOM state, not a cached array" pattern as collectAllMedicalCertEntries — the
+    // per-month OT-source override (recomputeMonthlyPayTotals) reads straight off whatever's
+    // currently in these rows, so an edit here is reflected on the next recompute, no separate sync
+    // step needed.
+    /** Reads every payslip row currently in the page-by-page review into a plain array. */
+    function collectAllPayslipEntries() {
+      return [...payslipPageReviewListEl.querySelectorAll('.payslip-row')].map(tr => ({
+        granularity: tr.querySelector('.payslip-granularity-select').value,
+        date: tr.querySelector('.payslip-date-input').value || null,
+        weekStart: tr.querySelector('.payslip-week-start-input').value || null,
+        weekEnd: tr.querySelector('.payslip-week-end-input').value || null,
+        yearMonth: tr.querySelector('.payslip-month-input').value || null,
+        overtimeHours: Number(tr.querySelector('.payslip-hours-input').value) || 0,
+        hourlyRate: tr.querySelector('.payslip-rate-input').value !== '' ? Number(tr.querySelector('.payslip-rate-input').value) : null,
+        source: tr.dataset.source,
+        confirmedByAttempts: tr.dataset.confirmedSeen !== '' ? { seen: Number(tr.dataset.confirmedSeen), total: Number(tr.dataset.confirmedTotal) } : null,
+      }));
+    }
+
+    /** Formats a Date as YYYY-MM-DD in local time (no timezone shifting via toISOString). */
+    function formatDateYMD(d) {
+      return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    }
+
+    // Mirrors lib/payslips.ts's periodRange() exactly — deliberately not trusting the scan to do
+    // date math (leap years, month lengths), computed client-side the same deterministic way.
+    /** Computes the actual YYYY-MM-DD start/end date range a payslip entry's OT hours cover. */
+    function payslipPeriodRange(entry) {
+      if (entry.granularity === 'day' && entry.date) return { start: entry.date, end: entry.date };
+      if (entry.granularity === 'week' && entry.weekStart && entry.weekEnd) return { start: entry.weekStart, end: entry.weekEnd };
+      if (entry.granularity === 'month' && entry.yearMonth) {
+        const [y, m] = entry.yearMonth.split('-').map(Number);
+        if (!Number.isFinite(y) || !Number.isFinite(m)) return null;
+        return { start: formatDateYMD(new Date(y, m - 1, 1)), end: formatDateYMD(new Date(y, m, 0)) };
+      }
+      return null;
+    }
+
+    // Used by the submit handler's year-detection fallback (no timesheet, no claim period set) —
+    // the earliest date across every payslip entry currently scanned, purely to get a year out of
+    // it for runProcessJob's fallbackYear. Not a claim-period substitute: the caseworker still sets
+    // that explicitly if they want auto-filled rows: this only unblocks the year check itself.
+    /** Returns the year of the earliest date across all given payslip entries, or `null` if none resolve to a real date. */
+    function earliestPayslipYear(entries) {
+      let earliest = null;
+      for (const entry of entries) {
+        const range = payslipPeriodRange(entry);
+        if (!range) continue;
+        if (earliest === null || range.start < earliest) earliest = range.start;
+      }
+      if (earliest === null) return null;
+      const year = Number(earliest.slice(0, 4));
+      return Number.isFinite(year) ? year : null;
+    }
+
+    // Shared by every single-page/IPA-only rescan flow that isolates its request down to a page or
+    // two with no printed date of its own — same 3-tier chain the main submit handler works through
+    // when it hits the same problem, just synchronous (no pre-scan step): reuse what the original
+    // full scan already detected, else the declared claim period, else whatever date's already sitting
+    // on an attached-and-scanned payslip. Returns `null` if none of the three have anything.
+    /** Resolves a best-effort fallbackYear for a request with no dated page of its own. */
+    function resolveFallbackYear() {
+      if (currentYear && currentYear.length > 0) return currentYear[0];
+      const claimPeriodStartVal = document.getElementById('contractStartDate').value;
+      if (claimPeriodStartVal) {
+        const y = Number(claimPeriodStartVal.slice(0, 4));
+        if (Number.isFinite(y)) return y;
+      }
+      return earliestPayslipYear(collectAllPayslipEntries());
+    }
+
+    // A day entry's whole figure belongs to its one month; a month entry's whole figure belongs to
+    // its one month; a week entry can straddle a month boundary, so its figure is split
+    // proportionally by how many of its days fall in each month (day-weighted, same proration
+    // philosophy as the days-claimed/days-in-month split used for basic salary elsewhere in this
+    // file). This is what recomputeMonthlyPayTotals' per-month OT-source override reads from.
+    /** Aggregates every payslip entry's overtime hours into a monthKey -> hours Map, prorating across month boundaries where needed. */
+    function getPayslipOtHoursByMonth() {
+      const byMonth = new Map();
+      for (const entry of collectAllPayslipEntries()) {
+        const range = payslipPeriodRange(entry);
+        if (!range || !Number.isFinite(entry.overtimeHours) || entry.overtimeHours <= 0) continue;
+        const start = new Date(range.start);
+        const end = new Date(range.end);
+        if (isNaN(start) || isNaN(end) || end < start) continue;
+
+        const dayMonthKeys = [];
+        for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+          dayMonthKeys.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`);
+        }
+        if (dayMonthKeys.length === 0) continue;
+        const hoursPerDay = entry.overtimeHours / dayMonthKeys.length;
+        for (const monthKey of dayMonthKeys) {
+          byMonth.set(monthKey, (byMonth.get(monthKey) || 0) + hoursPerDay);
+        }
+      }
+      return byMonth;
+    }
+
+    // Unlike hours, a rate doesn't get diluted/split when an entry's period straddles a month
+    // boundary — the same $/hr applies to every day in the period, so each month the entry touches
+    // just takes that one rate as-is. Entries with no hourlyRate on file (see lib/payslips.ts)
+    // contribute nothing here — a month simply has no payslip rate available in that case, falling
+    // back to the IPA rate same as if no payslip were attached at all. If more than one entry
+    // touches the same month with different rates (unusual — a real slip's rate is normally constant
+    // across the period it covers), the later entry in scan/edit order wins; genuine conflicts are
+    // rare enough that a caseworker reviewing the Payslip breakdown table above will notice.
+    /** Maps every calendar month touched by a payslip entry to that entry's hourly rate, where one was scanned/entered. */
+    function getPayslipRateByMonth() {
+      const byMonth = new Map();
+      for (const entry of collectAllPayslipEntries()) {
+        if (!Number.isFinite(entry.hourlyRate)) continue;
+        const range = payslipPeriodRange(entry);
+        if (!range) continue;
+        const start = new Date(range.start);
+        const end = new Date(range.end);
+        if (isNaN(start) || isNaN(end) || end < start) continue;
+        for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+          const monthKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+          byMonth.set(monthKey, entry.hourlyRate);
+        }
+      }
+      return byMonth;
+    }
+
+    // Every calendar month touched by ANY payslip entry, regardless of hours/rate value — used to
+    // decide which months get the "assume a full month worked" fallback in recomputeMonthlyPayTotals
+    // when there's no timesheet at all. Deliberately broader than getPayslipOtHoursByMonth (which
+    // skips zero-hour entries) — a month with $0 OT reported is still a month the worker was
+    // employed and paid for, so it still counts as "covered" here.
+    /** Returns every calendar month any current payslip entry's period touches, as a Set of "YYYY-MM" keys. */
+    function getPayslipCoveredMonths() {
+      const months = new Set();
+      for (const entry of collectAllPayslipEntries()) {
+        const range = payslipPeriodRange(entry);
+        if (!range) continue;
+        const start = new Date(range.start);
+        const end = new Date(range.end);
+        if (isNaN(start) || isNaN(end) || end < start) continue;
+        for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+          months.add(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`);
+        }
+      }
+      return months;
+    }
+
+    // The rate every excess/overtime-hour computation for a given month should actually use — the
+    // caseworker's global pick (otRateSource, set in the IPA summary card) between the
+    // IPA-declared/statutory rate (getEffectiveOtRate(), the existing default) and this month's own
+    // payslip-stated rate, if one was scanned. The SOURCE choice is global, but the dollar figure it
+    // resolves to still varies month to month when 'payslip' is picked — each month uses its own
+    // payslip entry's rate, not a single fixed number. Falls back to the IPA rate if 'payslip' is
+    // picked but no payslip rate actually covers this particular month.
+    /** Resolves the active hourly OT rate for one calendar month, respecting the caseworker's global IPA-vs-payslip pick. */
+    function getEffectiveOtRateForMonth(monthKey) {
+      const baseRate = getEffectiveOtRate();
+      if (baseRate === null) return null;
+      if (otRateSource !== 'payslip') return baseRate;
+      const payslipRate = getPayslipRateByMonth().get(monthKey);
+      return payslipRate != null ? payslipRate : baseRate;
+    }
+
+    // A read-only rollup of every payslip entry currently in the page-by-page review, shown in the
+    // Summary section alongside the other breakdown tables — lets a caseworker see everything that
+    // was scanned off the payslip in one place. Both "Hourly rate" and "Amount" reflect whichever
+    // rate is actually ACTIVE right now (the global otRateSource pick — see "Declared OT rate" in
+    // the IPA summary card) — so this table always agrees with what's actually being claimed, not
+    // the payslip's own raw figure when the two disagree. A mismatch note under Hourly rate still
+    // surfaces the OTHER (unselected) rate for reference, so the disagreement itself stays visible.
+    /** Renders the "Payslip — scanned overtime figures" summary table from every current payslip entry. */
+    function renderPayslipBreakdown() {
+      const el = document.getElementById('payslipBreakdown');
+      const entries = collectAllPayslipEntries();
+      if (entries.length === 0) {
+        el.style.display = 'none';
+        el.innerHTML = '';
+        return;
+      }
+      el.style.display = 'block';
+      const ipaRate = getEffectiveOtRate();
+      const withRange = entries.map(t => ({ t, range: payslipPeriodRange(t) }));
+      withRange.sort((a, b) => (a.range?.start || '').localeCompare(b.range?.start || ''));
+      let missingRateCount = 0;
+      const rows = withRange.map(({ t, range }) => {
+        const periodLabel = t.granularity === 'day' ? formatDateDMY(t.date)
+          : t.granularity === 'week' ? `${formatDateDMY(t.weekStart)} – ${formatDateDMY(t.weekEnd)}`
+            : t.yearMonth ? formatMonthLabel(t.yearMonth) : '—';
+        const hours = Number.isFinite(t.overtimeHours) ? t.overtimeHours : 0;
+        const hasOwnRate = Number.isFinite(t.hourlyRate);
+        // Representative month for this entry — exact for day/month granularity; for a week
+        // straddling a month boundary this picks the week's first month (the actual claim math
+        // still prorates hours correctly per calendar month regardless — see getPayslipOtHoursByMonth).
+        const monthKey = range ? range.start.slice(0, 7) : null;
+        const rateUsed = monthKey ? getEffectiveOtRateForMonth(monthKey) : ipaRate;
+        const hasRateUsed = Number.isFinite(rateUsed);
+        if (!hasRateUsed) missingRateCount++;
+        // Amount is always computed here (hours × rate), never the slip's own printed "Total
+        // Overtime Pay" — that figure isn't extracted at all (see lib/payslips.ts), since a payslip's
+        // own arithmetic can carry its own rounding and isn't worth trusting over a plain multiply.
+        const amount = hasRateUsed ? hours * rateUsed : null;
+        // Only a real dispute if the ACTIVE source differs from the payslip's own rate — if payslip
+        // is picked and this entry's own rate matches what's shown, there's nothing to flag. If IPA
+        // is picked, show what the payslip itself said instead, for reference.
+        const usingPayslipRate = monthKey ? (otRateSource === 'payslip' && getPayslipRateByMonth().has(monthKey)) : false;
+        const mismatch = hasOwnRate && hasRateUsed && Math.abs(t.hourlyRate - rateUsed) > 0.005;
+        const mismatchNote = mismatch
+          ? `<div class="pay-total-sub">⚠ ${usingPayslipRate ? `IPA declares ${formatMoney(ipaRate)}/hr instead` : `payslip states ${formatMoney(t.hourlyRate)}/hr instead`} — pick which to use under "Declared OT rate" above.</div>`
+          : '';
+        return `<tr>
+      <td>${escapeHtml(t.granularity || '—')}</td>
+      <td>${escapeHtml(periodLabel)}</td>
+      <td>${hours.toFixed(1)}</td>
+      <td>${hasRateUsed ? formatMoney(rateUsed) : '—'}${mismatchNote}</td>
+      <td>${amount !== null ? formatMoney(amount) : '—'}</td>
+      <td>${escapeHtml(t.source || '')}</td>
+    </tr>`;
+      }).join('');
+      const totalHours = withRange.reduce((sum, { t }) => sum + (Number.isFinite(t.overtimeHours) ? t.overtimeHours : 0), 0);
+      const totalAmount = withRange.reduce((sum, { t, range }) => {
+        const monthKey = range ? range.start.slice(0, 7) : null;
+        const rateUsed = monthKey ? getEffectiveOtRateForMonth(monthKey) : ipaRate;
+        return sum + (Number.isFinite(rateUsed) ? t.overtimeHours * rateUsed : 0);
+      }, 0);
+      const totalRow = `<tr class="pay-total-row">
+      <td colspan="2">Total</td>
+      <td><strong>${totalHours.toFixed(1)}</strong></td>
+      <td></td>
+      <td><strong>${formatMoney(totalAmount)}</strong></td>
+      <td></td>
+    </tr>`;
+      const missingRateNote = missingRateCount > 0
+        ? `<div class="pay-total-sub">⚠ ${missingRateCount} ${missingRateCount === 1 ? 'entry has' : 'entries have'} no rate available at all (no payslip rate and no IPA rate) — its Amount is left blank and excluded from the total above, not treated as $0.</div>`
+        : '';
+      el.innerHTML = `<h3>Payslip — scanned overtime figures</h3>
+    <div class="sub">Every OT-hours entry currently in the payslip review — the raw scanned/edited data, for
+      reference. Amount uses whichever rate is currently active claim-wide (IPA vs payslip — picked once, under
+      "Declared OT rate" in the IPA summary card above, not per entry here).</div>
+    <table class="pay-total-table">
+    <thead><tr><th>Granularity</th><th>Period</th><th>OT hours</th><th>Hourly rate</th><th>Amount</th><th>Source page</th></tr></thead>
+    <tbody>${rows}${totalRow}</tbody>
+  </table>${missingRateNote}`;
+    }
+
+    // A payslip entry directly changes what a month's Overtime Breakdown can show (once the
+    // caseworker picks "Payslip" as that month's OT source) — re-run the full monthly totals
+    // recompute whenever a row changes, same reasoning as refreshMedicalCertGuardrails.
+    /** Re-runs the monthly pay totals after a payslip row changes. */
+    function refreshPayslipDerivedTotals() {
+      renderPayslipBreakdown();
+      // The IPA summary card's rate-source toggle (see renderIpaSummaryText) only shows once a
+      // payslip rate exists — re-render it here too so the toggle appears/updates the moment a
+      // payslip is scanned, even if that happens after the IPA card already rendered. Safe to call
+      // before the IPA itself has been scanned (it null-guards every field) and doesn't force the
+      // card visible — display is still controlled solely by the actual IPA scan result.
+      if (typeof renderIpaSummaryText === 'function') {
+        renderIpaSummaryText();
+        renderComputedRates(); // must follow immediately — see renderIpaSummaryText's own call-site comment
+      }
+      recomputeMonthlyPayTotals();
+      updateClaimPeriodPayslipWarning();
+    }
+
+    /** Wires one payslip row's granularity select, date/hours inputs, and delete button. */
+    function wirePayslipRow(tr) {
+      const select = tr.querySelector('.payslip-granularity-select');
+      const dayGroup = tr.querySelector('.payslip-period-day');
+      const weekGroup = tr.querySelector('.payslip-period-week');
+      const monthGroup = tr.querySelector('.payslip-period-month');
+      select.addEventListener('change', () => {
+        dayGroup.style.display = select.value === 'day' ? '' : 'none';
+        weekGroup.style.display = select.value === 'week' ? '' : 'none';
+        monthGroup.style.display = select.value === 'month' ? '' : 'none';
+        refreshPayslipDerivedTotals();
+      });
+      tr.querySelectorAll('.payslip-date-input, .payslip-week-start-input, .payslip-week-end-input, .payslip-month-input, .payslip-hours-input, .payslip-rate-input').forEach(input => {
+        input.addEventListener('input', refreshPayslipDerivedTotals);
+        input.addEventListener('change', refreshPayslipDerivedTotals);
+      });
+      tr.querySelector('.payslip-delete-btn').addEventListener('click', () => {
+        tr.remove();
+        refreshPayslipDerivedTotals();
+      });
+    }
+
+    /** Wires one payslip page card's editable rows and "+ Add entry" button. */
+    function wirePayslipPageCard(card) {
+      card.querySelectorAll('.payslip-row').forEach(wirePayslipRow);
+      const addBtn = card.querySelector('.payslip-add-entry-btn');
+      if (!addBtn) return;
+      addBtn.addEventListener('click', () => {
+        const container = card.querySelector('.payslip-table-container');
+        if (!container.querySelector('tbody')) container.innerHTML = formatPayslipEntriesTableEditable([]);
+        const row = { granularity: 'month', date: null, weekStart: null, weekEnd: null, yearMonth: '', overtimeHours: 0, hourlyRate: null, source: addBtn.dataset.source, confirmedByAttempts: null };
+        container.querySelector('tbody').insertAdjacentHTML('beforeend', formatPayslipEntryRow(row, true));
+        wirePayslipRow(container.querySelector('tbody').lastElementChild);
+        refreshPayslipDerivedTotals();
+      });
+    }
+
+    // Shared by the batch live-progress render and the single-page rescan splice — same idea as
+    // renderMedicalCertPageCard.
+    /** Renders one payslip page-review card: source thumbnail, editable entries, optional rescan controls. */
+    function renderPayslipPageCard(p, key, reviewIndex) {
+      const rescanHtml = key !== undefined ? `
+        <div class="page-rescan-controls" data-file-index="${key.split('-')[0]}" data-page-index="${key.split('-')[1]}" data-key="${escapeHtml(key)}">
+          <button type="button" class="page-rotate-btn" title="Rotate this page before rescanning">⟳ Rotate</button>
+          <button type="button" class="page-rescan-btn">Rescan this page</button>
+        </div>
+        <div class="page-rescan-status"></div>` : '';
+      return `
+    <div class="page-review-row"${reviewIndex !== undefined ? ` data-review-index="${reviewIndex}"` : ''}>
+      <div class="page-review-image"><img src="data:image/png;base64,${p.image}" alt="${escapeHtml(p.source)}">${rescanHtml}</div>
+      <div class="page-review-details">
+        <div class="page-review-source"><span>${escapeHtml(p.source)}</span></div>
+        <div class="payslip-table-container">${p.entries.length === 0
+          ? '<div class="review-hint">No overtime-hours figure found on this page.</div>'
+          : formatPayslipEntriesTableEditable(p.entries.map(t => ({ ...t, source: p.source })))}</div>
+        <div class="page-add-day">
+          <div class="review-hint">Add an OT figure this page's scan didn't pick up.</div>
+          <button type="button" class="add-day-btn payslip-add-entry-btn" data-source="${escapeHtml(p.source)}">+ Add entry</button>
+        </div>
+      </div>
+    </div>`;
+    }
+
+    /** Renders the payslip page-by-page review as pages arrive during a scan (or on completion). */
+    function renderPayslipLivePages(pages, done) {
+      if (pages.length === 0) return;
+      pageReviewsEl.style.display = 'block';
+      payslipPageReviewListEl.style.display = 'block';
+      const orderedKeys = done
+        ? payslipsPreviewPages
+          .filter(p => !excludedPayslipsPages.has(`${p.fileIndex}-${p.pageIndex}`))
+          .map(p => `${p.fileIndex}-${p.pageIndex}`)
+        : [];
+      payslipPageReviewListEl.innerHTML = pages
+        .map((p, idx) => renderPayslipPageCard(p, done ? orderedKeys[idx] : undefined, done ? idx : undefined))
+        .join('');
+      payslipPageReviewListEl.querySelectorAll('.page-review-row').forEach(wirePayslipPageCard);
+      if (done) payslipPageReviewListEl.querySelectorAll('.page-rescan-controls').forEach(wirePayslipRescanControls);
+      refreshPayslipDerivedTotals();
+    }
+
+    // Same rotate-then-rescan pattern as wireMedicalCertRescanControls.
+    /** Wires a payslip page's rotate + rescan controls, splicing the fresh single-page result back into its card. */
+    function wirePayslipRescanControls(controls) {
+      const fileIndex = Number(controls.dataset.fileIndex);
+      const pageIndex = Number(controls.dataset.pageIndex);
+      const key = controls.dataset.key;
+      const statusEl = controls.nextElementSibling;
+      const rotateBtn = controls.querySelector('.page-rotate-btn');
+      const rescanBtn = controls.querySelector('.page-rescan-btn');
+      const img = controls.parentElement.querySelector('img');
+      let previewDelta = 0; // see wireTimesheetRescanControls' comment on this pattern
+
+      rotateBtn.addEventListener('click', () => {
+        payslipsRotations[key] = ((payslipsRotations[key] || 0) + 90) % 360;
+        previewDelta = (previewDelta + 90) % 360;
+        img.style.transform = `rotate(${previewDelta}deg)`;
+        statusEl.className = 'page-rescan-status';
+        statusEl.textContent = `Pending rotation: +${previewDelta}° — click "Rescan this page" to apply and re-read it.`;
+      });
+
+      rescanBtn.addEventListener('click', async () => {
+        const file = payslipsInput.files[fileIndex];
+        if (!file) {
+          statusEl.className = 'page-rescan-status error';
+          statusEl.textContent = 'Original file no longer attached (selection changed since the scan ran) — re-upload and rescan the whole batch instead.';
+          return;
+        }
+        rescanBtn.disabled = true;
+        statusEl.className = 'page-rescan-status';
+        statusEl.textContent = 'Rescanning…';
+
+        const pageCount = payslipsPreviewPages.filter(p => p.fileIndex === fileIndex).length;
+        const excluded = [];
+        for (let pi = 0; pi < pageCount; pi++) if (pi !== pageIndex) excluded.push(`0-${pi}`);
+
+        const formData = new FormData();
+        formData.append('payslips', file);
+        formData.append('rotations', JSON.stringify({ [`0-${pageIndex}`]: payslipsRotations[key] || 0 }));
+        formData.append('excludedPages', JSON.stringify(excluded));
+
+        try {
+          const res = await fetch('/api/payslips', { method: 'POST', body: formData });
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.error || `Server returned ${res.status}`);
+          const polled = await pollSinglePageJob('/api/payslips', data.jobId);
+          const freshPage = polled.pages && polled.pages[0];
+          if (!freshPage) {
+            throw new Error('Scan finished but returned no page — this may not look like a payslip after rotating; double-check the rotation and try again.');
+          }
+          applyRescannedPayslipPage(controls.closest('.page-review-row'), freshPage, key);
+        } catch (err) {
+          statusEl.className = 'page-rescan-status error';
+          statusEl.textContent = 'Error: ' + err.message;
+        } finally {
+          rescanBtn.disabled = false;
+        }
+      });
+    }
+
+    /** Replaces a payslip page card with its freshly-rescanned result and re-syncs the monthly totals. */
+    function applyRescannedPayslipPage(rowEl, freshPage, key) {
+      const reviewIndex = Number(rowEl.dataset.reviewIndex);
+      const temp = document.createElement('div');
+      temp.innerHTML = renderPayslipPageCard(freshPage, key, reviewIndex);
+      const newRowEl = temp.firstElementChild;
+      rowEl.replaceWith(newRowEl);
+      wirePayslipPageCard(newRowEl);
+      newRowEl.querySelectorAll('.page-rescan-controls').forEach(wirePayslipRescanControls);
+      const statusEl = newRowEl.querySelector('.page-rescan-status');
+      statusEl.className = 'page-rescan-status success';
+      statusEl.textContent = 'Rescanned — OT figures updated below.';
+      refreshPayslipDerivedTotals();
+    }
+
+    /** Polls a payslip scan job until done/error, rendering live page results along the way. */
+    async function pollPayslipJobUntilDone(jobId) {
+      let consecutiveFailures = 0;
+      for (; ;) {
+        let res, job;
+        try {
+          res = await fetch(`/api/payslips/${jobId}`);
+          job = await res.json();
+        } catch (err) {
+          consecutiveFailures++;
+          if (consecutiveFailures > MAX_CONSECUTIVE_POLL_FAILURES) throw err;
+          await new Promise(r => setTimeout(r, 2000));
+          continue;
+        }
+        consecutiveFailures = 0;
+        if (!res.ok) throw new Error(job.error || `Server returned ${res.status}`);
+        renderPayslipLivePages(job.pages, job.status === 'done');
+        if (job.status === 'done') return job.result;
+        if (job.status === 'error') throw new Error(job.error || 'Scan failed');
+        await new Promise(r => setTimeout(r, 2000));
+      }
+    }
+
+    // Runs alongside the main scan and the other optional uploads (five-way Promise.allSettled in
+    // the submit handler) — optional, silent no-op if nothing's attached, own status area.
+    /** Runs the full payslip scan (all staged pages), polling to completion. */
+    async function runPayslipsScan() {
+      const files = [...payslipsInput.files];
+      if (files.length === 0) return;
+
+      payslipsStatusEl.className = 'status';
+      payslipsStatusEl.textContent = '';
+
+      const formData = new FormData();
+      for (const f of files) formData.append('payslips', f);
+      formData.append('rotations', JSON.stringify(payslipsRotations));
+      formData.append('excludedPages', JSON.stringify([...excludedPayslipsPages]));
+
+      try {
+        const res = await fetch('/api/payslips', { method: 'POST', body: formData });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || `Server returned ${res.status}`);
+        const result = await pollPayslipJobUntilDone(data.jobId);
+        return result.costUsd;
+      } catch (err) {
+        payslipsStatusEl.className = 'status error';
+        payslipsStatusEl.textContent = 'Error: ' + err.message;
       }
     }
   </script>

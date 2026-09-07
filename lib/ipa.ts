@@ -19,7 +19,6 @@ export type IpaFields = {
     fixedMonthlyDeductions: IpaAmount[];
     dailyBasicRate: number | null;
     hourlyBasicRate: number | null;
-    otRate: number | null; // hourly OT rate declared to MOM, SGD
     workingHoursPerDay: number | null;
     workingDaysPerWeek: number | null;
     wpValidityStart: string | null; // YYYY-MM-DD
@@ -38,11 +37,10 @@ Read the ENTIRE document and extract exactly these fields. If a field is not sta
 - occupation: job title as stated, e.g. "General Worker", "Welder", "Construction Worker"
 - sector: industry sector as stated, e.g. "Construction", "Marine", "Manufacturing", "Process"
 - basicMonthlySalary: worker's fixed basic monthly salary in SGD, before overtime, as a plain number (no currency symbol, no commas)
-- fixedMonthlyAllowances: array of {type, amount} — one entry per fixed monthly allowance stated (e.g. food, housing, transport, attendance). [] if none are stated.
-- fixedMonthlyDeductions: array of {type, amount} — one entry per fixed monthly deduction declared. [] if none are stated.
+- fixedMonthlyAllowances: array of {type, amount} — one entry per fixed monthly allowance stated (e.g. food, housing, transport, attendance). If an amount is stated but its type/category isn't labeled on the document, still output one entry for it with type "unspecified" — never leave an allowance amount out of this array just because its type is unclear (explain the missing type in notes if you want, but the amount must still appear here). [] only if no allowance amount at all is stated.
+- fixedMonthlyDeductions: array of {type, amount} — one entry per fixed monthly deduction declared. Same rule as above: an unlabeled type is "unspecified", not a reason to omit the entry. [] only if no deduction amount at all is stated.
 - dailyBasicRate: daily basic rate in SGD as a number, or null if not separately stated
 - hourlyBasicRate: hourly basic rate in SGD as a number, or null if not separately stated
-- otRate: the hourly overtime rate declared to MOM, in SGD, as a number, or null if not stated
 - workingHoursPerDay: normal working hours per day, as a number, or null if not stated
 - workingDaysPerWeek: normal working days per week, as a number, or null if not stated
 - wpValidityStart: Work Permit validity start date, YYYY-MM-DD, or null if not stated
@@ -61,18 +59,27 @@ Output ONLY a valid JSON object with exactly these fields, no markdown fences, n
  * @returns A valid `IpaAmount[]`, `[]` if `v` isn't an array at all.
  */
 function normalizeAmounts(v: unknown): IpaAmount[] {
-    if (!Array.isArray(v)) return [];
-    return v
+    // The model occasionally emits a single {type, amount} object instead of a one-element array
+    // when only one allowance/deduction is stated, despite the prompt asking for an array — treat
+    // that shape as a one-element array rather than discarding the whole field.
+    const arr = Array.isArray(v) ? v : v && typeof v === "object" ? [v] : [];
+    return arr
         .filter((x): x is { type: unknown; amount: unknown } => typeof x === "object" && x !== null)
         .map(x => ({
             type: typeof x.type === "string" ? x.type : "unspecified",
-            amount: typeof x.amount === "number" ? x.amount : 0,
+            amount: num(x.amount) ?? 0,
         }));
 }
 
-/** Coerces a value to a number, or `null` if it isn't one. */
+// The model sometimes emits a numeric field as a string (e.g. "800" instead of 800), especially
+// inside the fixedMonthlyAllowances/fixedMonthlyDeductions arrays — a strict `typeof v === "number"`
+// check silently drops that value to null/0 even though the model plainly read it off the document
+// (and often still describes it correctly in `notes`), which looks like a missed extraction to the
+// caseworker. Coerce numeric strings instead of discarding them.
+/** Coerces a value to a number, or `null` if it isn't a finite number (numeric strings included). */
 function num(v: unknown): number | null {
-    return typeof v === "number" ? v : null;
+    const n = typeof v === "number" ? v : typeof v === "string" ? Number(v) : NaN;
+    return Number.isFinite(n) ? n : null;
 }
 
 /** Coerces a value to a trimmed, non-empty string, or `null` otherwise. */
@@ -165,7 +172,6 @@ export async function extractIpaFields(base64Image: string): Promise<{ fields: I
         fixedMonthlyDeductions: normalizeAmounts(parsed.fixedMonthlyDeductions),
         dailyBasicRate: num(parsed.dailyBasicRate),
         hourlyBasicRate: num(parsed.hourlyBasicRate),
-        otRate: num(parsed.otRate),
         workingHoursPerDay: num(parsed.workingHoursPerDay),
         workingDaysPerWeek: num(parsed.workingDaysPerWeek),
         wpValidityStart: str(parsed.wpValidityStart),

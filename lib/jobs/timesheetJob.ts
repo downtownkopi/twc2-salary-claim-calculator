@@ -324,13 +324,29 @@ export async function runProcessJob(
         }
     }
 
+    // No timesheet page had a usable date header — before giving up, try the IPA letter's own Work
+    // Permit validity dates (lib/ipa.ts's wpValidityStart/wpValidityEnd). Unlike a timesheet, the
+    // IPA is mandatory on every single request (server.ts), so this is the one date source that's
+    // always available — most useful for a timesheet-optional claim (a payslip-only case, or here,
+    // an IPA scanned on its own) where there's no timesheet page to have a date header at all.
+    // ipaPromise was already kicked off above and runs concurrently with the page-context loop, so
+    // awaiting it here rarely adds real latency; `ipa` is reused (not re-fetched) by the `await
+    // ipaPromise` further down once the promise has already settled.
     if (resolvedYearBySource.size === 0 && fallbackYear === undefined) {
-        const job = processJobs.get(jobId);
-        if (job) {
-            job.status = "error";
-            job.error = "Could not detect a claim year from any uploaded page — none had a printed/typed date header (a title, filename, or form field naming the month/year), and none fell in the supported range (" + SUPPORTED_YEARS.join(", ") + ").";
+        const ipaFieldsForYear = await ipaPromise;
+        const ipaYear = [ipaFieldsForYear?.wpValidityStart, ipaFieldsForYear?.wpValidityEnd]
+            .map(d => (d ? Number(d.slice(0, 4)) : null))
+            .find((y): y is number => y !== null && SUPPORTED_YEARS.includes(y));
+        if (ipaYear !== undefined) {
+            fallbackYear = ipaYear;
+        } else {
+            const job = processJobs.get(jobId);
+            if (job) {
+                job.status = "error";
+                job.error = "Could not detect a claim year from any uploaded page — none had a printed/typed date header (a title, filename, or form field naming the month/year), the IPA letter's own Work Permit validity dates didn't resolve to one either, and none fell in the supported range (" + SUPPORTED_YEARS.join(", ") + ").";
+            }
+            return;
         }
-        return;
     }
 
     for (let fi = 0; fi < files.length; fi++) {

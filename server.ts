@@ -26,6 +26,7 @@ import { processJobs, runProcessJob, scheduleJobCleanup, type RotationMap } from
 import { bankJobs, runBankStatementJob, scheduleBankJobCleanup } from "./lib/jobs/bankStatementJob";
 import { medicalJobs, runMedicalBillsJob, scheduleMedicalJobCleanup } from "./lib/jobs/medicalBillsJob";
 import { medicalCertJobs, runMedicalCertificateJob, scheduleMedicalCertJobCleanup } from "./lib/jobs/medicalCertificateJob";
+import { payslipJobs, runPayslipJob, schedulePayslipJobCleanup } from "./lib/jobs/payslipJob";
 
 const TEMPLATE_PATH = path.join(__dirname, "calculation.xltx");
 const PORT = process.env.PORT || 3002;
@@ -100,6 +101,7 @@ app.post(
         { name: "bankStatement", maxCount: 10 },
         { name: "medicalBills", maxCount: 10 },
         { name: "medicalCertificates", maxCount: 10 },
+        { name: "payslips", maxCount: 10 },
     ]),
     enforceTotalUploadSize,
     async (req, res) => {
@@ -109,6 +111,7 @@ app.post(
         const bankStatementFiles = uploadedFields?.bankStatement ?? [];
         const medicalBillsFiles = uploadedFields?.medicalBills ?? [];
         const medicalCertificatesFiles = uploadedFields?.medicalCertificates ?? [];
+        const payslipFiles = uploadedFields?.payslips ?? [];
 
         // Preview is a one-shot request/response (not a background job), so its rendered pages get
         // their own short-lived temp dir instead of a job id — cleaned up in the `finally` below as
@@ -191,11 +194,28 @@ app.post(
                 }
             }
 
+            // Same staging idea as medicalCertificates above — a payslip is just as likely to be a
+            // phone photo as a clean printout.
+            const payslipsPreview: { fileIndex: number; pageIndex: number; fileName: string; image: string }[] = [];
+            const payslipsErrors: { fileName: string; error: string }[] = [];
+            for (let fi = 0; fi < payslipFiles.length; fi++) {
+                const file = payslipFiles[fi];
+                try {
+                    const images = await loadPagesForFile(file, path.join(previewDir, `payslips-${fi}`), MAX_PAGES_PER_JOB);
+                    for (let pi = 0; pi < images.length; pi++) {
+                        payslipsPreview.push({ fileIndex: fi, pageIndex: pi, fileName: file.originalname, image: await resizeForDisplay(await images.get(pi), 400) });
+                    }
+                } catch (e: any) {
+                    payslipsErrors.push({ fileName: file.originalname, error: e.message });
+                }
+            }
+
             res.json({
                 pdfsPreview, pdfsErrors, ipaPreview, ipaError,
                 bankStatementPreview, bankStatementErrors,
                 medicalBillsPreview, medicalBillsErrors,
                 medicalCertificatesPreview, medicalCertificatesErrors,
+                payslipsPreview, payslipsErrors,
             });
         } finally {
             await cleanupJobDir(previewDir);
@@ -207,18 +227,19 @@ app.post(
     "/api/process",
     upload.fields([
         { name: "pdfs", maxCount: 10 },
-        { name: "ipa", maxCount: 1 }, // the IPA letter, a single separate document from the timesheets — compulsory, same as pdfs
+        { name: "ipa", maxCount: 1 }, // the IPA letter, a single separate document — compulsory even when pdfs (timesheets) are skipped in favor of a payslip
     ]),
     enforceTotalUploadSize,
     (req, res) => {
         const uploadedFields = req.files as { [field: string]: Express.Multer.File[] } | undefined;
-        const files = uploadedFields?.pdfs;
+        // Timesheet files are optional — a claim can run on a payslip's stated OT hours alone (see
+        // lib/jobs/payslipJob.ts), with the claim-period dates driving which days get an
+        // auto-inserted default-shift row instead of a scanned one. An empty/missing `pdfs` field
+        // is treated the same as zero files, not an error.
+        const files = uploadedFields?.pdfs ?? [];
         const ipaFile = uploadedFields?.ipa?.[0];
-        if (!files || files.length === 0) {
-            return res.status(400).json({ error: "No PDF files uploaded." });
-        }
         if (!ipaFile) {
-            return res.status(400).json({ error: "No IPA letter uploaded — it's required, same as the timesheet files." });
+            return res.status(400).json({ error: "No IPA letter uploaded — it's required." });
         }
 
         // Rotation degrees a human confirmed against the /api/preview thumbnails (public/index.html's
@@ -498,6 +519,67 @@ app.get("/api/medical-certificates/:jobId", (req, res) => {
         return res.status(404).json({
             error:
                 "This medical certificate scan's progress can't be found anymore. This almost always means the server process restarted while the scan was still running — its in-progress state only lives in memory, not a database, so a restart (a new deploy, or the server recycling itself) wipes it. " +
+                "It is NOT something you did wrong, and nothing about your uploaded files caused it. " +
+                "Nothing can be recovered from this specific scan — please re-upload and start it again. " +
+                `(job id: ${req.params.jobId}, if this keeps happening please share this id and the approximate time)`,
+        });
+    }
+    res.json({ ...job, pages: job.pages.filter(p => p !== undefined) });
+});
+
+// A payslip states overtime hours the employer already worked out for some period (day/week/
+// month) — a distinct document from a timesheet's daily punch log. Mirrors the medical
+// certificates endpoint's structure exactly.
+app.post(
+    "/api/payslips",
+    upload.fields([{ name: "payslips", maxCount: 10 }]),
+    enforceTotalUploadSize,
+    (req, res) => {
+        const uploadedFields = req.files as { [field: string]: Express.Multer.File[] } | undefined;
+        const files = uploadedFields?.payslips;
+        if (!files || files.length === 0) {
+            return res.status(400).json({ error: "No payslip files uploaded." });
+        }
+
+        let rotations: Record<string, number> = {};
+        try {
+            const parsed = JSON.parse(req.body.rotations ?? "{}");
+            if (parsed && typeof parsed === "object") rotations = parsed;
+        } catch {
+            // ignore — fall through with no rotations applied
+        }
+        let excludedPages = new Set<string>();
+        try {
+            const parsed = JSON.parse(req.body.excludedPages ?? "[]");
+            if (Array.isArray(parsed)) excludedPages = new Set(parsed);
+        } catch {
+            // ignore — fall through with no exclusions applied
+        }
+
+        const jobId = randomUUID();
+        payslipJobs.set(jobId, { status: "running", pages: [], result: null, error: null });
+        acquireJobSlot()
+            .then(() => runPayslipJob(jobId, files, rotations, excludedPages))
+            .catch(e => {
+                const job = payslipJobs.get(jobId);
+                if (job) { job.status = "error"; job.error = e.message; }
+            })
+            .finally(() => {
+                releaseJobSlot();
+                schedulePayslipJobCleanup(jobId);
+            });
+
+        res.json({ jobId });
+    }
+);
+
+app.get("/api/payslips/:jobId", (req, res) => {
+    const job = payslipJobs.get(req.params.jobId);
+    if (!job) {
+        console.error(`GET /api/payslips/${req.params.jobId}: job not found (jobs map has ${payslipJobs.size} entr${payslipJobs.size === 1 ? "y" : "ies"})`);
+        return res.status(404).json({
+            error:
+                "This payslip scan's progress can't be found anymore. This almost always means the server process restarted while the scan was still running — its in-progress state only lives in memory, not a database, so a restart (a new deploy, or the server recycling itself) wipes it. " +
                 "It is NOT something you did wrong, and nothing about your uploaded files caused it. " +
                 "Nothing can be recovered from this specific scan — please re-upload and start it again. " +
                 `(job id: ${req.params.jobId}, if this keeps happening please share this id and the approximate time)`,

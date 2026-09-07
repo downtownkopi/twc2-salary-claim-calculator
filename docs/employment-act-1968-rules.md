@@ -49,12 +49,25 @@ claim needs those, not reproduced here since not yet relevant to this app's scop
 For the overwhelming majority of claims (monthly-rated workman): **hourly basic rate = monthly
 basic salary × 12 ÷ 2288**.
 
+The app's default OT rate (`getEffectiveOtRate()`) is the IPA letter's own declared rate if one was
+extracted, falling back to 1.5× the computed hourly basic rate above only when the IPA didn't state
+one — this is what MOM has on record for the worker, not necessarily the same as what a payslip
+shows was actually paid. A payslip's stated hourly OT rate is scanned separately (see §10) and can
+differ from the IPA's — sometimes a genuine underpayment (the whole point of a wage claim), so the
+app doesn't auto-prefer either one: the caseworker picks once, claim-wide — next to "Declared OT
+rate" in the IPA summary card — which rate actually drives every month's claim math.
+
 ## 3. Hours of work (s.38, s.40)
 
 - Default max: **8 hours/day or 44 hours/week**.
 - Flexible-arrangement variants (by agreement in the contract of service) can push this to 9
   hours/day or 48 hours/week in a given week, provided the *average* stays within limits over the
   agreed pattern (e.g. alternate-week schemes average ≤44h/week, capped at 88h per 2-week period).
+  - The ≤5-working-day-a-week variant (s.38(1)(e)) requires the week to have **no more than 5**
+    working days. A "5.5-day week" (6 distinct working days, one of them a half-day) does **not**
+    qualify for this proviso's 9h/day extension — only the alternate-week variant (proviso (f))
+    or the shift-worker rule (s.40) could apply instead. Relevant when a 5.5-day worker's timesheet
+    shows >8h on a full working day.
 - Shift workers (s.40): may exceed 6 consecutive hours / 8h/day / 44h/week, but the **average
   over any continuous 3-week period must not exceed 44h/week**.
 - Hard ceiling: **12 hours/day**, except for specific emergencies (accident, essential community
@@ -62,13 +75,20 @@ basic salary × 12 ÷ 2288**.
 - **Overtime capped at 72 hours/month.**
 - **OT rate: not less than 1.5× the hourly basic rate** (see Fourth Schedule above), for any hours
   beyond the daily/weekly limit worked at the employer's request.
+- **Rest/meal break (s.38(1)(a) and proviso (c))**: an employee must not work more than **6
+  consecutive hours without a break**. If the work must be carried on continuously, the employee
+  can instead be required to work up to **8 consecutive hours**, provided the break(s) taken
+  during that stretch total **at least 45 minutes**. This is the statutory floor behind the app's
+  "Standard break" field — the field itself is a caseworker-declared value used only to flag a
+  timesheet row whose extracted break doesn't match it, not a live check against this 45-minute
+  floor.
 
 ## 4. Rest day (s.36, s.37)
 
 - Every employee gets **1 whole unpaid rest day per week**, default Sunday unless the employer
   sets a different day. Shift workers can instead get a rotating continuous 30-hour rest period.
-- **Pay for working on a rest day depends on who initiated it** — a distinction this app does not
-  currently capture anywhere:
+- **Pay for working on a rest day depends on who initiated it** — the app captures this via a
+  per-row "who asked for this work?" radio (worker vs employer):
 
   | Initiated by | Worked ≤ half normal hours | Worked > half, ≤ normal hours | Worked > normal hours |
   |---|---|---|---|
@@ -89,6 +109,14 @@ If a public holiday falls on Sunday, the worker gets whichever is more favourabl
 should compare the PH formula against the Sunday/rest-day formula for that date rather than assume
 PH always wins (per the caseworker's original point that Sunday work should use the higher rate).
 
+Note on the literal statute mechanism (s.88(1)(b)), for reference against the rule above: the Act
+itself doesn't frame this as "pick whichever is higher" — it says that when a public holiday falls
+on a rest day, the holiday itself shifts whole to the next working day, and the original rest day
+stays a plain rest day (paid under the s.37 rest-day-worked formula if worked, not the PH formula).
+The caseworker's higher-of-the-two rule is a deliberate practical simplification on top of that, not
+a literal reading — keep applying it as-is unless it's revisited, but don't be surprised if the two
+don't match section-for-section.
+
 ## 6. Contractor / subcontractor liability (s.65)
 
 Where a principal contracts with a contractor (who may use a subcontractor) for labour, and salary
@@ -105,21 +133,98 @@ worker's direct employer.
 
 Useful for flagging late payment as a distinct violation, separate from underpayment.
 
-## 8. Leave entitlements (secondary — not core to OT/wage math, noted for completeness)
+## 8. Leave entitlements
 
-- **Annual leave (s.88A)**: 7 days in year 1 of continuous service, +1 day per subsequent year, capped at 14 days.
-- **Sick leave (s.89)**: after ≥6 months' service, 14 days/year (no hospitalisation) or 60 days/year
-  (hospitalisation), pro-rated down for 3–6 months' service, none before 3 months.
+Both entitlements below only start after **≥3 months' service**; nothing accrues before that.
+These back the app's "Claim salary-in-lieu of paid annual leave" and "Claim sick leave pay"
+optional claims.
+
+- **Annual leave (s.88A)**: 7 days in year 1 of continuous service, +1 day per subsequent
+  completed year, capped at 14 days. Under 12 months' service in a leave-year, entitlement is
+  pro-rated by completed months (half-day-or-more fractions round up, below half-day round down —
+  s.88A(3)). Paid at the **gross rate of pay**. On termination, unused leave must be paid out in
+  cash **unless the employee was dismissed for misconduct** (s.88A(8)) — a case detail the app's
+  salary-in-lieu-of-leave claim doesn't currently ask about, so a misconduct dismissal needs a
+  caseworker override.
+- **Sick leave (s.89)**: paid at the **gross rate of pay** (excluding shift allowance unless
+  hospitalised). Entitlement is a step table by completed months of service, not a smooth
+  prorate:
+
+  | Completed service | Non-hospitalisation days/year | Hospitalisation days/year (inclusive of the non-hosp days) |
+  |---|---|---|
+  | < 3 months | 0 (not entitled) | 0 |
+  | 3 months | 5 | 15 |
+  | 4 months | 8 | 30 |
+  | 5 months | 11 | 45 |
+  | 6+ months | 14 | 60 |
+
+  - No paid sick leave on a rest day, a public holiday, a day of paid annual leave, or a
+    non-working day (s.89(6)).
+  - **Certification requirement (s.89(4))** — sick leave is only payable if it's certified by a
+    medical practitioner; if the certifying practitioner isn't one appointed by the employer, the
+    employee must also have informed (or tried to inform) the employer within **48 hours** of the
+    absence starting. Uncertified leave, or leave failing that 48-hour notice, is treated as
+    unauthorised absence, not paid sick leave. This is the statutory basis for the app's Medical
+    certificates check — a claimed sick/MC day without a matching certificate on file is unpaid
+    unless one is produced (see [Not yet wired](#not-yet-wired-into-the-app) — this part *is*
+    wired in, via the MC-vs-claimed-date cross-check).
+
+## 9. Salary period (s.20)
+
+- An employer may fix a salary period; it must not exceed **one month**, and if none is fixed the
+  Act deems it to be **one month** (s.20(1)–(3)).
+- This is the statutory backing for the app's "Claim period" field and the month-by-month
+  breakdown the app renders — a monthly salary period is the default and the near-universal case
+  for the workers this app processes. The claim period itself (start/end dates) is an app-level
+  scoping input, not a term the Act defines directly; it just keeps auto-filled shift rows inside
+  the dates the worker actually claims to have been employed, and bounds which monthly salary
+  periods get included.
+
+## 10. Documents referenced by the app, and their relationship to the Act
+
+- **IPA letter** — an In-Principle Approval letter is issued under the **Employment of Foreign
+  Manpower Act**, not the Employment Act 1968. It's used here only as a source for the declared
+  basic monthly salary figure that all the Employment Act formulas above run on — it isn't itself
+  an Employment Act document.
+- **Timesheet files** — not a document the Act names or defines; used as the primary evidence of
+  hours actually worked, which the above formulas are then applied to. Optional (not just "not
+  required by the Act" but literally not enforced by the app either) when a payslip covers a
+  month's overtime instead — the claim period's start/end dates then become the only source of
+  which dates get an auto-filled placeholder row.
+- **Payslip** — also not an Act-defined document; an alternate source for two independently-chosen
+  things: a period's stated overtime-hours figure (per day, per week, or per month, whichever a
+  given slip shows), picked per MONTH, used in place of summed timesheet rows when no daily
+  timesheet is available for that stretch; and the payslip's own stated hourly OT rate, picked once
+  claim-wide (not per month — see §2 above), used in place of the Fourth Schedule/s.38(6) rate
+  (ordinarily the IPA's declared rate) when the caseworker decides the payslip's rate — not the
+  IPA's — is the one to claim against. Both default to the pre-payslip behavior (timesheet-derived
+  hours, IPA-derived rate) unless explicitly switched.
+
+  When no timesheet is attached at all, basic salary itself is also driven by the payslip: every
+  calendar month any payslip entry's period touches is assumed a full month worked (days claimed =
+  days in month), since there's no day-level evidence to prorate against otherwise. This is still
+  clamped against the declared claim period, if one was set — a claim period starting 2025-09-03
+  excludes 2025-09-01/02 from September's days claimed even though the payslip's own period covers
+  the whole month, prorating that month down accordingly rather than counting it as full. Never
+  applies once even one timesheet file is attached; a real timesheet's actual coverage is never
+  overridden by this assumption.
+- **Bank statement files** — not an Act-defined document; used only as an independent check of
+  what was actually paid, compared against what the Act above says should have been owed.
+- **Medical certificates** — the app's proof requirement for a claimed sick/MC day maps directly
+  onto the s.89(4) certification rule (§8 above): no matching certificate on file means that day
+  is unpaid unless one is produced.
+- **Medical bills** — not tied to any Employment Act leave provision; these are invoices/receipts
+  for medical costs, checked against a separate question (was the worker actually reimbursed),
+  unrelated to the sick-leave-days entitlement computed under s.89.
 
 ## Not yet wired into the app
 
-Everything above is reference material only — none of it is implemented in `server.ts`/`lib/`
-yet. Candidate next steps discussed:
-- Compute actual OT/rest-day/PH dollar amounts from IPA's basic salary using the Fourth Schedule
-  formula, instead of just extracting basic salary + allowances as raw fields.
-- Add a "who initiated this rest-day work" input per rest-day-worked row (worker vs employer),
-  since the payable amount differs by 2× depending on which.
-- Cross-check whether a claim's date range/OT hours ever exceeds the 72h/month statutory cap, as a
-  sanity flag (a scan reading that implies more than that in a month is worth a second look).
-- Surface late-payment (s.21) as a distinct flaggable issue once proof-of-payment dates are captured (payslip/bank statement scanning is still unbuilt — see general TWC2 case-assessment
-  transcript from earlier in this project's history for that gap).
+Most of the reference material above is now implemented in `public/index.html` (OT/rest-day/PH
+dollar amounts from the Fourth Schedule, the rest-day initiator radio, the 72h/month OT cap flag,
+the s.89 sick-leave tiers, the s.88A annual-leave payout, and the MC-vs-claimed-date check). What's
+still outstanding:
+- Surface late-payment (s.21) as a distinct flaggable issue once proof-of-payment dates are
+  captured (payslip/bank statement scanning gives paid amounts, but not per-payment dates yet — see
+  general TWC2 case-assessment transcript from earlier in this project's history for that gap).
+- The s.88A(8) misconduct-dismissal exception for annual-leave payout isn't asked about in the
+  salary-in-lieu-of-leave claim form — currently assumes every termination qualifies for payout.
