@@ -930,6 +930,32 @@
     .agent-event-detail { color: var(--muted); }
     #stopScanBtn { margin-left: 8px; }
 
+    #interpretationDisagreementPanel {
+      margin: 12px 0;
+    }
+    .disagreement-group {
+      border: 1px solid #e0a800;
+      background: #fffaf0;
+      border-radius: 6px;
+      padding: 12px;
+      margin-bottom: 12px;
+    }
+    .disagreement-header { font-weight: 600; margin-bottom: 8px; }
+    .disagreement-candidate {
+      display: block;
+      border: 1px solid #ddd;
+      border-radius: 4px;
+      padding: 6px 8px;
+      margin-bottom: 6px;
+      cursor: pointer;
+    }
+    .disagreement-candidate input { margin-right: 6px; }
+    .disagreement-explain { display: block; margin: 8px 0; }
+    .disagreement-explain-input { width: 100%; box-sizing: border-box; }
+    .disagreement-status { font-size: 13px; margin-top: 6px; }
+    .disagreement-status.error { color: #b00020; }
+    .disagreement-status.success { color: #2e7d32; }
+
     .ipa-computed-rates-list {
       margin: 0;
       padding-left: 18px;
@@ -1441,6 +1467,7 @@
       to the spreadsheet until you click Generate. Any page you edit is automatically saved (original scan + your
       correction) when you click Generate — this is what helps improve future scans.</div>
     <div id="ipaPageReview" style="display:none"></div>
+    <div id="interpretationDisagreementPanel" style="display:none"></div>
     <div id="pageReviewList"></div>
     <div id="bankPageReviewList" style="display:none"></div>
     <div id="medicalPageReviewList" style="display:none"></div>
@@ -2112,6 +2139,9 @@
       const agentEventFeedEl = document.getElementById('agentEventFeed');
       agentEventFeedEl.innerHTML = '';
       agentEventFeedEl.style.display = 'none';
+      const interpretationDisagreementPanelEl = document.getElementById('interpretationDisagreementPanel');
+      interpretationDisagreementPanelEl.innerHTML = '';
+      interpretationDisagreementPanelEl.style.display = 'none';
 
       const formData = new FormData();
       for (const file of pdfsInput.files) formData.append('pdfs', file);
@@ -2413,6 +2443,7 @@
           .map(p => `${p.fileIndex}-${p.pageIndex}`);
         pageReviewList.innerHTML = data.pageReviews.map((page, idx) => renderPageReview(page, orderedKeys[idx], idx)).join('');
         pageReviewList.querySelectorAll('.page-rescan-controls').forEach(wireTimesheetRescanControls);
+        renderInterpretationDisagreements(data.pageReviews, orderedKeys);
         // Each page card was rendered with an empty placeholder list (see renderPageReview) — now
         // that they're in the DOM, populate each with the reviewRows whose `source` traces back to
         // that page, so the editable Start/End/Break inputs sit right beside their source image.
@@ -4461,15 +4492,17 @@
       });
     }
 
-    // Splices a single rescanned page's fresh result into its existing card, in place — everything
-    // else in the review (every other page's rows, the summary totals so far) is left untouched.
+    // Splices one rescanned page's fresh result into its existing card, in place — everything else
+    // in the review (every other page's rows, the summary totals so far) is left untouched.
     // Rebuilds the whole card via renderPageReview (same function the initial batch render uses) so
     // the two paths can never visually drift apart, then re-wires it exactly like a freshly-rendered
-    // card needs: rows inserted, "+ Add day" bound, rescan controls bound again for next time.
-    /** Splices a single rescanned timesheet page's fresh result into its existing card, in place. */
-    function applyRescannedTimesheetPage(rowEl, result, key) {
+    // card needs: rows inserted, "+ Add day" bound, rescan controls bound again for next time. Shared
+    // by both the single-page "Rotate + Rescan" flow (applyRescannedTimesheetPage) and the
+    // interpretation-disagreement group-resolve flow (renderInterpretationDisagreements below), which
+    // can splice several pages back in from one rescan response.
+    /** Splices one rescanned timesheet page's fresh result into its existing card, in place. */
+    function spliceRescannedPage(rowEl, newPage, key, reviewRows) {
       const reviewIndex = Number(rowEl.dataset.reviewIndex);
-      const newPage = result.pageReviews[0];
       currentPageReviews[reviewIndex] = newPage;
 
       const temp = document.createElement('div');
@@ -4478,7 +4511,7 @@
       rowEl.replaceWith(newRowEl);
 
       const container = newRowEl.querySelector('.review-target-list');
-      const matching = (result.reviewRows || []).filter(r => r.source.split(', ').includes(newPage.source));
+      const matching = (reviewRows || []).filter(r => r.source.split(', ').includes(newPage.source));
       if (matching.length === 0) {
         container.innerHTML = '<li class="empty">No entries extracted from this page</li>';
       } else {
@@ -4493,11 +4526,178 @@
 
       newRowEl.querySelectorAll('.page-rescan-controls').forEach(wireTimesheetRescanControls);
       const newStatusEl = newRowEl.querySelector('.page-rescan-status');
-      newStatusEl.className = 'page-rescan-status success';
-      newStatusEl.textContent = 'Rescanned — rows updated below.';
+      if (newStatusEl) {
+        newStatusEl.className = 'page-rescan-status success';
+        newStatusEl.textContent = 'Rescanned — rows updated below.';
+      }
 
       detectAndInsertMissingDays();
       recomputeMonthlyPayTotals();
+      return newRowEl;
+    }
+
+    /** Splices a single rescanned timesheet page's fresh result into its existing card, in place. */
+    function applyRescannedTimesheetPage(rowEl, result, key) {
+      spliceRescannedPage(rowEl, result.pageReviews[0], key, result.reviewRows);
+    }
+
+    // ===== Interpretation-disagreement resolution (post-scan) =====
+    // Some pages' independent agentic attempts can disagree not just on exact digits (normal
+    // reading noise, already resolved server-side by reconciliation voting) but on what KIND of
+    // record a date's row even is — e.g. an ambiguous "Qty/Amount" column read as clock in/out
+    // times by one attempt, as hours worked + dollars paid by another (see
+    // lib/jobs/timesheetJob.ts's detectInterpretationDisagreement). Since one uploaded document uses
+    // one consistent convention throughout, flagged pages are grouped by (file, conflict type) so a
+    // caseworker resolves it ONCE per group, and that answer rescans every page in the group — not
+    // the whole document, and not page-by-page.
+    /** Converts a server-side ParsedEntry-shaped candidate row into formatLiveEntry's display shape. */
+    function parsedEntryToLiveShape(r) {
+      const yearGuess = (currentYear && currentYear.length > 0) ? currentYear[0] : new Date().getFullYear();
+      const date = `${yearGuess}-${String(r.month).padStart(2, '0')}-${String(r.day).padStart(2, '0')}`;
+      if (r.rest_day) return { type: 'rest_day', date };
+      if (r.times && r.times.length >= 2) return { type: 'worked', date, clockIn: r.times[0], clockOut: r.times[r.times.length - 1], guessed: false };
+      if (r.hoursWorked != null) return { type: 'hours_worked', date, hoursWorked: r.hoursWorked, otHours: r.otHours, guessed: false };
+      return { type: 'rest_day', date };
+    }
+
+    /** Builds a human-readable resolution hint from whichever candidate's reading strategy was picked. */
+    function hintFromCandidate(candidateRows) {
+      const usesTimes = candidateRows.some(r => r.times && r.times.length > 0);
+      return usesTimes
+        ? 'The ambiguous numeric columns on this document (e.g. labeled Qty/Amount/Hrs) represent clock in/out times, not total hours worked and dollars paid.'
+        : 'The ambiguous numeric columns on this document (e.g. labeled Qty/Amount/Hrs) represent total hours worked (and possibly a separate OT figure), not clock in/out times.';
+    }
+
+    /** Renders the grouped interpretation-disagreement resolution panel for every flagged page. */
+    function renderInterpretationDisagreements(pageReviews, orderedKeys) {
+      const panelEl = document.getElementById('interpretationDisagreementPanel');
+      const groups = new Map(); // "fileIndex:conflictType" -> { fileIndex, conflictType, pages: [{reviewIndex, key, page}] }
+      pageReviews.forEach((page, idx) => {
+        const d = page.interpretationDisagreement;
+        const key = orderedKeys[idx];
+        if (!d || !key) return;
+        const fileIndex = Number(key.split('-')[0]);
+        const groupKey = `${fileIndex}:${d.conflictType}`;
+        if (!groups.has(groupKey)) groups.set(groupKey, { fileIndex, conflictType: d.conflictType, pages: [] });
+        groups.get(groupKey).pages.push({ reviewIndex: idx, key, page });
+      });
+
+      if (groups.size === 0) {
+        panelEl.style.display = 'none';
+        panelEl.innerHTML = '';
+        return;
+      }
+
+      const groupList = [...groups.values()];
+      panelEl.style.display = 'block';
+      panelEl.innerHTML = groupList.map((group, groupIdx) => {
+        const pageNumbers = group.pages.map(p => Number(p.key.split('-')[1]) + 1).join(', ');
+        const candidates = group.pages[0].page.interpretationDisagreement.candidates;
+        const candidateHtml = candidates.map((c, ci) => {
+          const sample = c.rows.slice(0, 6).map(r => `<li class="empty">${escapeHtml(formatLiveEntry(parsedEntryToLiveShape(r)))}</li>`).join('');
+          return `
+        <label class="disagreement-candidate">
+          <input type="radio" name="disagreement-${groupIdx}" value="${ci}">
+          Reading ${ci + 1}:
+          <ul class="inline-review-list">${sample}</ul>
+        </label>`;
+        }).join('');
+        return `
+      <div class="disagreement-group" data-group-index="${groupIdx}">
+        <div class="disagreement-header">Page${group.pages.length > 1 ? 's' : ''} ${escapeHtml(pageNumbers)} of this document disagree on how to read it — is this an ambiguous column a clock in/out time, or a total hours figure? Resolving this once applies to every page listed here.</div>
+        ${candidateHtml}
+        <label class="disagreement-explain">Or explain the correct reading:
+          <textarea class="disagreement-explain-input" rows="2" placeholder="e.g. the Qty column is hours worked, Amount is the daily wage paid"></textarea>
+        </label>
+        <button type="button" class="disagreement-resolve-btn">Resolve &amp; rescan ${group.pages.length} page${group.pages.length > 1 ? 's' : ''}</button>
+        <div class="disagreement-status"></div>
+      </div>`;
+      }).join('');
+
+      panelEl.querySelectorAll('.disagreement-group').forEach((groupEl, groupIdx) => {
+        wireDisagreementGroup(groupEl, groupList[groupIdx]);
+      });
+    }
+
+    /** Wires one interpretation-disagreement group's Resolve button to rescan just that group's pages. */
+    function wireDisagreementGroup(groupEl, group) {
+      const resolveBtn = groupEl.querySelector('.disagreement-resolve-btn');
+      const statusEl = groupEl.querySelector('.disagreement-status');
+
+      resolveBtn.addEventListener('click', async () => {
+        const picked = groupEl.querySelector('input[type=radio]:checked');
+        const explain = groupEl.querySelector('.disagreement-explain-input').value.trim();
+        let hint = explain;
+        if (!hint && picked) {
+          const ci = Number(picked.value);
+          const candidates = group.pages[0].page.interpretationDisagreement.candidates;
+          hint = hintFromCandidate(candidates[ci].rows);
+        }
+        if (!hint) {
+          statusEl.className = 'disagreement-status error';
+          statusEl.textContent = 'Pick a reading above, or type an explanation, before resolving.';
+          return;
+        }
+
+        const file = pdfsInput.files[group.fileIndex];
+        const ipaFile = ipaInput.files[0];
+        if (!file || !ipaFile) {
+          statusEl.className = 'disagreement-status error';
+          statusEl.textContent = 'Original file(s) no longer attached (selection changed since the scan ran) — re-upload and rescan the whole batch instead.';
+          return;
+        }
+
+        resolveBtn.disabled = true;
+        statusEl.className = 'disagreement-status';
+        statusEl.textContent = `Rescanning ${group.pages.length} page(s)…`;
+
+        // Excludes every page of this file EXCEPT the ones in this disagreement group — only those
+        // get (re-)scanned, same exclude-list mechanism the single-page "Rotate + Rescan" flow
+        // already relies on (wireTimesheetRescanControls above), just targeting several pages at once.
+        const targetPageIndices = new Set(group.pages.map(p => Number(p.key.split('-')[1])));
+        const pageCount = pdfsPreviewPages.filter(p => p.fileIndex === group.fileIndex).length;
+        const excluded = [];
+        for (let pi = 0; pi < pageCount; pi++) if (!targetPageIndices.has(pi)) excluded.push(`${group.fileIndex}-${pi}`);
+
+        const formData = new FormData();
+        formData.append('pdfs', file);
+        formData.append('ipa', ipaFile);
+        formData.append('rotations', JSON.stringify({ pdfs: pdfsRotations, ipa: ipaRotations }));
+        formData.append('excludedPages', JSON.stringify(excluded));
+        formData.append('excludedIpaPages', JSON.stringify([...excludedIpaPages]));
+        formData.append('standardBreakHours', getStandardBreakHours());
+        formData.append('interpretationHint', hint);
+        if (currentYear && currentYear.length > 0) formData.append('fallbackYear', currentYear[0]);
+
+        try {
+          const res = await fetch('/api/process', { method: 'POST', body: formData });
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.error || `Server returned ${res.status}`);
+          const polled = await pollSinglePageJob('/api/process', data.jobId);
+          const result = polled.result;
+          if (!result || !result.pageReviews || result.pageReviews.length === 0) {
+            throw new Error('Rescan finished but returned no pages.');
+          }
+          // Matched back to this group's cards by source string (stable for the same file/page
+          // across rescans), not array position — the rescan response's own page order isn't
+          // guaranteed to mirror this group's page list.
+          const cardEls = pageReviewList.querySelectorAll('.page-review-row');
+          for (const newPage of result.pageReviews) {
+            const target = group.pages.find(p => p.page.source === newPage.source);
+            if (!target) continue;
+            const rowEl = cardEls[target.reviewIndex];
+            if (rowEl) spliceRescannedPage(rowEl, newPage, target.key, result.reviewRows || []);
+          }
+          statusEl.className = 'disagreement-status success';
+          statusEl.textContent = `Resolved — ${result.pageReviews.length} page(s) updated below.`;
+          resolveBtn.textContent = 'Resolved';
+          groupEl.querySelectorAll('input, textarea').forEach(el => { el.disabled = true; });
+        } catch (err) {
+          statusEl.className = 'disagreement-status error';
+          statusEl.textContent = 'Error: ' + err.message;
+          resolveBtn.disabled = false;
+        }
+      });
     }
 
     // Only basic monthly salary, fixed monthly allowances, and the declared OT/daily-basic rates

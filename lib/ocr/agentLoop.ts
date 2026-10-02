@@ -175,6 +175,11 @@ function imageContent(base64Image: string) {
  * @param signal - Optional abort signal; checked between turns and passed into each vision call.
  * @param maxTurns - Hard cap on tool-call turns before giving up as `flagForHuman`.
  * @param model - Which vision model to call; defaults to {@link PRIMARY_VISION_MODEL}.
+ * @param interpretationHint - A caseworker's resolution of a structural reading question (e.g.
+ * "Qty/Amount columns are clock in/out times, not hours+dollars"), surfaced from a targeted rescan
+ * after a post-scan review flagged this document's convention as ambiguous (see
+ * lib/jobs/timesheetJob.ts's interpretation-disagreement detection). Only set on that rescan
+ * request — never persisted beyond it.
  * @returns The discovered shape family and its extracted rows (or a flag-for-human reason), plus
  * this attempt's full event log and total cost.
  */
@@ -189,7 +194,8 @@ export async function runAgentLoop(
     onCost: (model: string, cost: number) => void,
     signal?: AbortSignal,
     maxTurns: number = DEFAULT_MAX_TURNS,
-    model: string = PRIMARY_VISION_MODEL
+    model: string = PRIMARY_VISION_MODEL,
+    interpretationHint?: string
 ): Promise<AgentLoopResult> {
     const events: AgentEvent[] = [];
     const emit = (e: Omit<AgentEvent, "ts" | "source" | "attempt">) => {
@@ -198,9 +204,13 @@ export async function runAgentLoop(
         onEvent(full);
     };
 
+    const promptText = interpretationHint
+        ? `${SYSTEM_PROMPT}\n\nIMPORTANT — A caseworker reviewing this same document has already confirmed the following about how to read it: "${interpretationHint}". Apply this understanding when reading this page.`
+        : SYSTEM_PROMPT;
+
     let totalCost = 0;
     const messages: VisionMessage[] = [
-        { role: "user", content: [{ type: "text", text: SYSTEM_PROMPT }, imageContent(pageImage)] },
+        { role: "user", content: [{ type: "text", text: promptText }, imageContent(pageImage)] },
     ];
 
     for (let turn = 0; turn < maxTurns; turn++) {

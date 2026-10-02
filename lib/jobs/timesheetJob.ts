@@ -60,6 +60,17 @@ export type PageReview = {
     // picked row can still be built into a full YYYY-MM-DD entry) — lets public/index.html render a
     // picker to override the match if it's wrong or missing.
     rosterMatch?: { confidence: WorkerMatchConfidence; allRows: RosterRow[]; date: string | null; matchedRowIndex: number | null };
+    // Only set when the agentic attempts disagreed on what KIND of record this page's dates are
+    // (clock in/out times vs total hours worked), not just the exact digits — see
+    // detectInterpretationDisagreement. Lets public/index.html group same-conflictType pages across
+    // the whole document into one caseworker resolution, then rescan just those pages with the
+    // caseworker's answer as a hint (lib/ocr/agentLoop.ts's interpretationHint).
+    interpretationDisagreement?: InterpretationDisagreement;
+};
+
+export type InterpretationDisagreement = {
+    conflictType: string; // e.g. "times_vs_hoursWorked" — used for grouping pages client-side
+    candidates: { attemptIndex: number; rows: ParsedEntry[] }[]; // each attempt's full extracted rows for this page
 };
 
 // /api/process kicks off a scan as a background job (12 real-world pages can take 15-20+ minutes
@@ -122,6 +133,11 @@ export function scheduleJobCleanup(jobId: string) {
  * on its own even after being rescanned (e.g. the rotation fix was needed for the date header
  * itself). A normal full-batch job never passes this — every page there can still borrow from a
  * real neighbor.
+ * @param interpretationHint - Only set by the post-scan "resolve this document's reading
+ * convention" rescan flow (public/index.html) — a caseworker's answer to a structural
+ * interpretation question the agentic loop flagged (see `detectInterpretationDisagreement` below),
+ * e.g. "Qty/Amount columns are clock in/out times, not hours+dollars". Forwarded into every
+ * agentic-path page this request scans (see lib/ocr/agentLoop.ts's `interpretationHint` param).
  */
 export async function runProcessJob(
     jobId: string,
@@ -132,7 +148,8 @@ export async function runProcessJob(
     excludedIpaPages: Set<number>,
     standardBreakHours: number,
     fallbackYear?: number,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    interpretationHint?: string
 ): Promise<void> {
     const startedAt = Date.now();
 
@@ -185,6 +202,12 @@ export async function runProcessJob(
     // Roster-match info per page, keyed by source — populated only for dataModel "worker_roster"
     // pages, carried into pageReviews so the client can render the worker-picker fallback UI.
     const pageRosterMeta = new Map<string, { confidence: WorkerMatchConfidence; allRows: RosterRow[]; date: string | null; matchedRowIndex: number | null }>();
+    // Structural interpretation disagreement per page, keyed by source — populated only when the
+    // agentic attempts disagreed on WHAT KIND of record a date's row is (clock-times vs total
+    // hours), not just the exact values, recurring across several dates on the page. See
+    // detectInterpretationDisagreement below. Carried into pageReviews so the client can group
+    // same-conflictType pages into one caseworker resolution (public/index.html).
+    const pageInterpretationDisagreement = new Map<string, InterpretationDisagreement>();
 
     // toLocalDateString, not toISOString: .toISOString() converts to UTC, which silently shifts
     // the calendar date by a day in timezones ahead of UTC (e.g. a local-midnight Sept 11 becomes
@@ -411,6 +434,53 @@ export async function runProcessJob(
     // show pages in "whichever finished first" order instead of upload order while the job runs.
     const liveJob = processJobs.get(jobId);
     if (liveJob) liveJob.pages.length = pageTasks.length;
+
+    // Detects a STRUCTURAL interpretation disagreement between independent agentic attempts — not
+    // the normal "attempts agree it's a clock-time pair but disagree on the exact digits" noise
+    // reconcileAttempts already handles via unanimity/majority/drop, but attempts disagreeing on
+    // WHAT KIND of record a date's row even is (e.g. one attempt read "800/2200" as a clock in/out
+    // pair, another read the same row as "8 hours worked"). A single such date could just be one
+    // attempt's misread; this only flags the page when the SAME kind of field-type mismatch recurs
+    // across several dates — a strong signal the attempts disagree about this document's own
+    // convention (e.g. "does the Qty/Amount column mean hours or clock-times"), not about one hard
+    // row. Observed live on sample-data/338M/338M_Timecards.pdf: isolated single-attempt runs on the
+    // same page produced times-based and hoursWorked-based reads for the same dates.
+    function detectInterpretationDisagreement(attempts: ParsedEntry[][]): InterpretationDisagreement | null {
+        if (attempts.length < 2) return null;
+
+        const fieldKindOf = (e: ParsedEntry): "times" | "hoursWorked" | "rest_day" | "none" => {
+            if (e.rest_day === true) return "rest_day";
+            if (e.times && e.times.length > 0) return "times";
+            if (e.hoursWorked !== null && e.hoursWorked !== undefined) return "hoursWorked";
+            return "none";
+        };
+
+        const maps = attempts.map(rows => {
+            const m = new Map<string, ParsedEntry>();
+            for (const e of rows) if (e.day !== null && e.month !== null) m.set(`${e.month}-${e.day}`, e);
+            return m;
+        });
+        const allKeys = new Set<string>();
+        for (const m of maps) for (const k of m.keys()) allKeys.add(k);
+
+        let conflictCount = 0;
+        for (const key of allKeys) {
+            const kinds = new Set<string>();
+            for (const m of maps) {
+                const e = m.get(key);
+                if (e) kinds.add(fieldKindOf(e));
+            }
+            if (kinds.has("times") && kinds.has("hoursWorked")) conflictCount++;
+        }
+
+        const DISAGREEMENT_THRESHOLD = 3; // a lone conflicting date is more likely one misread than a convention question
+        if (conflictCount < DISAGREEMENT_THRESHOLD) return null;
+
+        return {
+            conflictType: "times_vs_hoursWorked",
+            candidates: attempts.map((rows, attemptIndex) => ({ attemptIndex, rows })),
+        };
+    }
 
     // Agentic discovery+extraction for one page's shape (lib/ocr/agentLoop.ts) — replaces
     // extractPageContext's fixed dataModel classification AND the roster/normal-path split below
@@ -668,7 +738,7 @@ export async function runProcessJob(
 
                     const runAttempt = (idx: number) => {
                         const { temperature, seed } = SCAN_TEMPERATURES[idx];
-                        return runAgentLoop(pageImage, source, idx, temperature, seed, targetWorker, onEvent, onCost, signal, 8, timesheetModel);
+                        return runAgentLoop(pageImage, source, idx, temperature, seed, targetWorker, onEvent, onCost, signal, 8, timesheetModel, interpretationHint);
                     };
 
                     // Run the first two attempts, then check whether they already agree — both the
@@ -764,6 +834,8 @@ export async function runProcessJob(
                         dataModel = "clock_times"; // closest existing label — only used for display/picker gating
                         pageMeta.set(source, { dataModel, pageContext });
                         const attempts = winning.map(r => (r as Extract<AgentLoopResult, { shapeFamily: "one_worker_many_dates" }>).rows);
+                        const disagreement = detectInterpretationDisagreement(attempts);
+                        if (disagreement) pageInterpretationDisagreement.set(source, disagreement);
                         const { entries, warnings: w } = reconcileAttempts(attempts, source, true, pageYear, true);
                         warnings.push(...w);
                         applyParsedEntries(entries, source, pageYear);
@@ -1239,6 +1311,7 @@ export async function runProcessJob(
                         pageContext,
                         modelsUsed: [...(pageModelsUsed.get(source) ?? new Set<string>())],
                         rosterMatch: pageRosterMeta.get(source),
+                        interpretationDisagreement: pageInterpretationDisagreement.get(source),
                     };
                 }
             }
@@ -1396,6 +1469,7 @@ export async function runProcessJob(
             pageContext: meta?.pageContext ?? "",
             modelsUsed,
             rosterMatch: pageRosterMeta.get(source),
+            interpretationDisagreement: pageInterpretationDisagreement.get(source),
         };
     });
 

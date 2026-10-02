@@ -300,6 +300,12 @@ app.post(
         const parsedFallbackYear = Number(req.body.fallbackYear);
         const fallbackYear = Number.isFinite(parsedFallbackYear) && SUPPORTED_YEARS.includes(parsedFallbackYear) ? parsedFallbackYear : undefined;
 
+        // Only sent by the post-scan "resolve this document's reading convention" rescan flow
+        // (public/index.html) — a caseworker's answer to a structural interpretation question the
+        // agentic loop flagged across several pages of the same document. See runProcessJob's
+        // interpretationHint param comment.
+        const interpretationHint = typeof req.body.interpretationHint === "string" && req.body.interpretationHint.trim() ? req.body.interpretationHint.trim() : undefined;
+
         // A real scan (many pages, sequential) can run 15-20+ minutes — long enough that holding this
         // HTTP request open the whole time is fragile (proxies/networks can drop a connection that
         // long) and gives the browser zero visibility into progress until the very end. Instead: kick
@@ -314,7 +320,7 @@ app.post(
         // until a concurrency slot is free, so peak memory/CPU stays bounded to MAX_CONCURRENT_JOBS
         // regardless of how many caseworkers upload at the same moment.
         acquireJobSlot()
-            .then(() => runProcessJob(jobId, files, ipaFile, rotations, excludedPages, excludedIpaPages, standardBreakHours, fallbackYear, controller.signal))
+            .then(() => runProcessJob(jobId, files, ipaFile, rotations, excludedPages, excludedIpaPages, standardBreakHours, fallbackYear, controller.signal, interpretationHint))
             .catch(e => {
                 const job = processJobs.get(jobId);
                 if (job && job.status === "running") { job.status = "error"; job.error = e.message; }
