@@ -77,7 +77,15 @@ const FULL_DATE_FORMAT = /^\d{4}-\d{2}-\d{2}$/;
  * @throws If the model's reply can't be parsed as a JSON array.
  */
 export async function extractMatchingTransactions(base64Image: string, temperature = 0, seed = 42): Promise<{ transactions: BankTransaction[]; cost: number }> {
-    const { content, cost } = await sendVisionRequest(base64Image, PROMPT, temperature, seed, 3000);
+    // Was 3000 — a dense statement page (20+ transaction lines) needing a JSON object per line can
+    // burn through that on reasoning alone before any output is emitted, truncating to a completely
+    // EMPTY response rather than a partial one (same "reasoning eats the budget" failure mode
+    // scanPageImage/extractPageContext were already bumped for — see lib/ocr/pageScan.ts). Observed
+    // live: 2 of 3 independent attempts on a real page returning empty content under the old budget,
+    // leaving only 1 attempt's reading with zero redundancy to catch a misclassified transaction —
+    // mergeTransactionAttempts unions attempts rather than voting, so a lone bad attempt with no
+    // competing reads to disagree with survives straight into the final result.
+    const { content, cost } = await sendVisionRequest(base64Image, PROMPT, temperature, seed, 10000);
     let parsed: unknown;
     try {
         parsed = JSON.parse(extractJsonBlock(content));
