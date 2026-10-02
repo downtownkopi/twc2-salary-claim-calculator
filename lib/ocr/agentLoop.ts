@@ -62,8 +62,13 @@ A page can be one of four shapes:
 - "many_workers_many_dates": a duty roster / schedule GRID with many named workers as rows AND many dates as columns in the same page (e.g. a week's schedule for a whole team).
 - "other": not a timesheet/attendance page at all, or genuinely too ambiguous/illegible to extract reliably.
 
-You have tools to explore the page before committing to an answer:
-- cropRegion: zoom into a rectangular area (fractions 0-1 of the page) ONLY when something SPECIFIC is actually illegible at full size (a particular digit, a cramped handwritten value, a faint mark you genuinely cannot resolve) — not as a routine first step. The page image you're given is already high-resolution; most of it is readable without zooming. Try reading the full page first. Do not reflexively crop into halves/quadrants "just in case" before you've identified an actual problem — every crop is a real cost, and most pages don't need one at all. If you do need to crop, target the SPECIFIC small area that's actually unclear, not a generic half/quadrant split of the whole page.
+On your FIRST turn, cropRegion and flagForHuman are not available — you must attempt the page from the full image first, using only getTargetWorker/describeShape/emitRows. The page image you're given is already high-resolution; most of it is readable without zooming, so most pages should resolve in this first attempt. If you genuinely cannot read something, it's fine to leave that specific field null and explain in notes rather than stall — you'll get cropRegion (and the option to flagForHuman) from your second turn onward if you still need them. Do not ask for cropRegion on turn one; it simply isn't offered yet.
+
+From your second turn onward, you also have:
+- cropRegion: zoom into a SMALL, SPECIFIC rectangular area (fractions 0-1 of the page) where something is genuinely illegible — a particular digit, a cramped handwritten value, a faint mark. Target the SPECIFIC unclear spot, not a generic half/quadrant split of the whole page. Every crop is a real cost — only use it for a field you actually couldn't resolve on your first attempt.
+- flagForHuman: if the page is "other", or you cannot reliably extract it even after cropping closer.
+
+Always available:
 - getTargetWorker: find out the name/FIN of the specific worker this wage claim is about — important for "one_date_many_workers" and "many_workers_many_dates" pages, where you must extract ONLY that worker's row, not everyone's.
 - describeShape: state in your own words what you've figured out so far about the page's layout. Use this once you have a working theory, before extracting.
 
@@ -84,65 +89,70 @@ If shapeFamily is "many_workers_many_dates", rows is a JSON OBJECT:
   { "workers": [ { "workerName": <string or null>, "workerIc": <string or null>, "cells": [ { "day": <1-31>, "month": <1-12>, "times": <array of bare HHMM integers or null>, "hoursWorked": <number or null>, "otHours": <number or null>, "rest_day": <true or false>, "notes": <string or null> } ] } ] }
   List EVERY worker row on the page with their own per-date cells, not just the target worker — the caller matches the target worker by name/IC itself.
 
-- flagForHuman: if the page is "other", or you cannot reliably extract it even after cropping closer.
-
 Read what is actually visible. Do not invent, reconstruct, or guess missing values — leave fields null and explain in notes instead. Do not stop at the first plausible read if cropping closer would resolve genuine ambiguity.`;
 
-function buildTools(): VisionTool[] {
-    return [
-        {
-            name: "cropRegion",
-            description: "Crop a SMALL, SPECIFIC rectangular region of the page to look closer at something you genuinely cannot read at full size. Not a routine first step — try reading the full page first, and only crop the actual unclear spot, not a generic half/quadrant of the whole page. Coordinates are fractions (0-1) of the page width/height.",
-            parameters: {
-                type: "object",
-                properties: {
-                    left: { type: "number" },
-                    top: { type: "number" },
-                    width: { type: "number" },
-                    height: { type: "number" },
+// cropRegion/flagForHuman are withheld on the FIRST turn (see the loop below) — forces at least one
+// genuine attempt at reading the full page before cropping becomes an option at all, rather than
+// relying on prompt wording alone to discourage reflexive cropping (observed live: the model kept
+// quartering the page as a habitual first move even when explicitly told not to — a withheld tool
+// can't be called, where a prompt instruction can just be ignored).
+function buildTools(allowCropAndFlag: boolean): VisionTool[] {
+    const getTargetWorker: VisionTool = {
+        name: "getTargetWorker",
+        description: "Returns the name/FIN of the worker this wage claim is about, already extracted from their IPA letter.",
+        parameters: { type: "object", properties: {} },
+    };
+    const describeShape: VisionTool = {
+        name: "describeShape",
+        description: "Record your working theory of this page's layout/shape in a short sentence, before extracting.",
+        parameters: {
+            type: "object",
+            properties: { description: { type: "string" } },
+            required: ["description"],
+        },
+    };
+    const emitRows: VisionTool = {
+        name: "emitRows",
+        description: "Terminal. Call once you're confident, with the page's shape family and the extracted rows in that shape's schema (see the system prompt for the exact field names per shapeFamily). `rows` must be a real JSON array or object value, never a JSON-encoded string.",
+        parameters: {
+            type: "object",
+            properties: {
+                shapeFamily: { type: "string", enum: SHAPE_FAMILIES },
+                rows: {
+                    description: "A JSON array (for one_worker_many_dates) or JSON object (for one_date_many_workers / many_workers_many_dates) — exact shape per the system prompt. Never a stringified/escaped JSON string.",
+                    oneOf: [{ type: "array" }, { type: "object" }],
                 },
-                required: ["left", "top", "width", "height"],
             },
+            required: ["shapeFamily", "rows"],
         },
-        {
-            name: "getTargetWorker",
-            description: "Returns the name/FIN of the worker this wage claim is about, already extracted from their IPA letter.",
-            parameters: { type: "object", properties: {} },
-        },
-        {
-            name: "describeShape",
-            description: "Record your working theory of this page's layout/shape in a short sentence, before extracting.",
-            parameters: {
-                type: "object",
-                properties: { description: { type: "string" } },
-                required: ["description"],
+    };
+
+    if (!allowCropAndFlag) return [getTargetWorker, describeShape, emitRows];
+
+    const cropRegion: VisionTool = {
+        name: "cropRegion",
+        description: "Crop a SMALL, SPECIFIC rectangular region of the page to look closer at something you genuinely cannot read at full size. Coordinates are fractions (0-1) of the page width/height.",
+        parameters: {
+            type: "object",
+            properties: {
+                left: { type: "number" },
+                top: { type: "number" },
+                width: { type: "number" },
+                height: { type: "number" },
             },
+            required: ["left", "top", "width", "height"],
         },
-        {
-            name: "emitRows",
-            description: "Terminal. Call once you're confident, with the page's shape family and the extracted rows in that shape's schema (see the system prompt for the exact field names per shapeFamily). `rows` must be a real JSON array or object value, never a JSON-encoded string.",
-            parameters: {
-                type: "object",
-                properties: {
-                    shapeFamily: { type: "string", enum: SHAPE_FAMILIES },
-                    rows: {
-                        description: "A JSON array (for one_worker_many_dates) or JSON object (for one_date_many_workers / many_workers_many_dates) — exact shape per the system prompt. Never a stringified/escaped JSON string.",
-                        oneOf: [{ type: "array" }, { type: "object" }],
-                    },
-                },
-                required: ["shapeFamily", "rows"],
-            },
+    };
+    const flagForHuman: VisionTool = {
+        name: "flagForHuman",
+        description: "Terminal. Call if the page is not a timesheet/attendance record, or cannot be reliably extracted even after cropping closer.",
+        parameters: {
+            type: "object",
+            properties: { reason: { type: "string" } },
+            required: ["reason"],
         },
-        {
-            name: "flagForHuman",
-            description: "Terminal. Call if the page is not a timesheet/attendance record, or cannot be reliably extracted even after cropping closer.",
-            parameters: {
-                type: "object",
-                properties: { reason: { type: "string" } },
-                required: ["reason"],
-            },
-        },
-    ];
+    };
+    return [cropRegion, getTargetWorker, describeShape, emitRows, flagForHuman];
 }
 
 function imageContent(base64Image: string) {
@@ -189,7 +199,6 @@ export async function runAgentLoop(
     };
 
     let totalCost = 0;
-    const tools = buildTools();
     const messages: VisionMessage[] = [
         { role: "user", content: [{ type: "text", text: SYSTEM_PROMPT }, imageContent(pageImage)] },
     ];
@@ -199,6 +208,12 @@ export async function runAgentLoop(
             emit({ kind: "info", label: "cancelled before completing" });
             return { shapeFamily: "other", reason: "cancelled by user", events, cost: totalCost };
         }
+
+        // cropRegion/flagForHuman are withheld on turn 0 (see buildTools) — the model physically
+        // cannot call a tool it isn't offered, forcing at least one genuine attempt at reading the
+        // full page (via emitRows, optionally after getTargetWorker/describeShape) before cropping
+        // becomes an option at all, from turn 1 onward.
+        const tools = buildTools(turn > 0);
 
         let response;
         try {
