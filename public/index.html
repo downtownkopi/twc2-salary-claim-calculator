@@ -2139,6 +2139,9 @@
       const agentEventFeedEl = document.getElementById('agentEventFeed');
       agentEventFeedEl.innerHTML = '';
       agentEventFeedEl.style.display = 'none';
+      // Shown immediately on submit, before any real agent event can possibly have arrived yet
+      // (upload hasn't even finished) — so the box isn't blank for the first several seconds.
+      appendSyntheticEvent('Starting scan…', 'info');
       const interpretationDisagreementPanelEl = document.getElementById('interpretationDisagreementPanel');
       interpretationDisagreementPanelEl.innerHTML = '';
       interpretationDisagreementPanelEl.style.display = 'none';
@@ -2192,10 +2195,12 @@
       // own status area, not held back or overwritten by the combined line.
       const mainScan = (async () => {
         try {
+          if (pdfsInput.files.length) appendSyntheticEvent(`Timesheet: uploading ${pdfsInput.files.length} file(s)…`, 'info');
           const res = await fetch('/api/process', { method: 'POST', body: formData });
           const data = await res.json();
           if (!res.ok) throw new Error(data.error || `Server returned ${res.status}`);
 
+          if (pdfsInput.files.length) appendSyntheticEvent('Timesheet: resolving page shapes and claim year…', 'info');
           currentMainJobId = data.jobId;
           stopScanBtn.style.display = '';
           stopScanBtn.disabled = false;
@@ -2215,7 +2220,26 @@
       // Reuses the pre-fired payslipsScanPromise from the year-detection fallback above if there is
       // one (already resolved by this point — Promise.allSettled just picks up its settled value,
       // no re-scan) — otherwise this is a completely normal submit and runs fresh, same as before.
-      const [mainResult, bankResult, medicalResult, medicalCertResult, payslipsResult] = await Promise.allSettled([mainScan, runBankStatementScan(), runMedicalBillsScan(), runMedicalCertificatesScan(), payslipsScanPromise || runPayslipsScan()]);
+      // Wraps a non-agentic scan's promise with start/done/failed milestone lines in the live feed
+      // — only when that document type is actually attached, so an unattached scan (which no-ops
+      // internally) doesn't add noise. These scans have no per-step events of their own to stream
+      // (single fixed-prompt pass per page, not a tool-calling loop like the timesheet path), so
+      // this is the only progress signal the feed can show for them.
+      function withScanMilestones(label, inputEl, scanPromise) {
+        if (!inputEl.files.length) return scanPromise;
+        appendSyntheticEvent(`${label}: scanning ${inputEl.files.length} file(s)…`, 'info');
+        return scanPromise
+          .then(result => { appendSyntheticEvent(`${label}: done`, 'terminal'); return result; })
+          .catch(err => { appendSyntheticEvent(`${label}: failed — ${err.message}`, 'error'); throw err; });
+      }
+
+      const [mainResult, bankResult, medicalResult, medicalCertResult, payslipsResult] = await Promise.allSettled([
+        mainScan,
+        withScanMilestones('Bank statement', bankStatementInput, runBankStatementScan()),
+        withScanMilestones('Medical bills', medicalBillsInput, runMedicalBillsScan()),
+        withScanMilestones('Medical certificates', medicalCertificatesInput, runMedicalCertificatesScan()),
+        withScanMilestones('Payslips', payslipsInput, payslipsScanPromise || runPayslipsScan()),
+      ]);
       if (!mainErrored) {
         const mainCost = mainResult.status === 'fulfilled' && typeof mainResult.value === 'number' ? mainResult.value : 0;
         const bankCost = bankResult.status === 'fulfilled' && typeof bankResult.value === 'number' ? bankResult.value : 0;
@@ -2336,6 +2360,22 @@
       feedEl.innerHTML += newEvents
         .map(e => `<div class="agent-event">${icon[e.kind] || ''} <strong>${escapeHtml(e.source)}</strong>: ${escapeHtml(e.label)}${e.detail ? ` — <span class="agent-event-detail">${escapeHtml(e.detail)}</span>` : ''}</div>`)
         .join('');
+      feedEl.scrollTop = feedEl.scrollHeight;
+    }
+
+    // Locally-generated milestone lines for the NON-agentic scans (bank statement, payslips,
+    // medical bills/certificates) — these run a single fixed-prompt pass per page, not a tool-
+    // calling loop, so they have no per-step events to stream from the server the way the agentic
+    // timesheet path does. Appended directly into the same feed (not through renderAgentEvents'
+    // server-event diffing, which only tracks the real `data.events` array) purely so the box isn't
+    // blank/hidden for however long those scans take, and so clicking "Extract details" shows
+    // SOME sign of life immediately instead of waiting for the first real agent event to arrive.
+    /** Appends one synthetic (client-generated, not server-sourced) line to the live feed. */
+    function appendSyntheticEvent(label, kind) {
+      const feedEl = document.getElementById('agentEventFeed');
+      feedEl.style.display = 'block';
+      const icon = { tool_call: '🔍', info: 'ℹ️', terminal: '✅', error: '⚠️' };
+      feedEl.innerHTML += `<div class="agent-event">${icon[kind] || 'ℹ️'} ${escapeHtml(label)}</div>`;
       feedEl.scrollTop = feedEl.scrollHeight;
     }
 
