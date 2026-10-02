@@ -2254,12 +2254,25 @@
         const yearNote = currentYear && currentYear.length > 0
           ? ` — detected claim year${currentYear.length > 1 ? 's' : ''}: ${currentYear.join(', ')}`
           : '';
-        // Per-model breakdown (primary vs the fallback model an escalated page used) — most jobs
-        // only ever show one model since the fallback only runs on pages the primary model's own
-        // attempts couldn't agree on (see server.ts's hybrid escalation step).
-        const modelBreakdown = currentCostByModel && Object.keys(currentCostByModel).length > 0
-          ? ' (' + Object.entries(currentCostByModel).map(([model, cost]) => `${model}: $${cost.toFixed(4)}`).join(', ') + ')'
-          : '';
+        // Per-model breakdown (primary vs the fallback model an escalated timesheet page used) —
+        // most jobs only ever show one model since the fallback only runs on pages the primary
+        // model's own attempts couldn't agree on (see server.ts's hybrid escalation step). Only the
+        // timesheet job tracks cost PER MODEL (lib/jobs/timesheetJob.ts's costByModel) — the bank
+        // statement/medical bills/medical certificates/payslip jobs each only ever call
+        // PRIMARY_VISION_MODEL (no fallback escalation in those simpler jobs), so their own cost is
+        // listed by scan type instead of needing a second per-model breakdown. Previously the total
+        // (mainCost + bankCost + ...) already summed every attached scan, but this breakdown only
+        // showed the timesheet portion — looked like a mismatch (e.g. "$0.0396 total" next to
+        // "(xiaomi/mimo-v2.5: $0.0246)") even though the total itself was correct.
+        const breakdownParts = [];
+        if (currentCostByModel) {
+          for (const [model, cost] of Object.entries(currentCostByModel)) breakdownParts.push(`timesheet (${model}): $${cost.toFixed(4)}`);
+        }
+        if (bankCost > 0) breakdownParts.push(`bank statement: $${bankCost.toFixed(4)}`);
+        if (medicalCost > 0) breakdownParts.push(`medical bills: $${medicalCost.toFixed(4)}`);
+        if (medicalCertCost > 0) breakdownParts.push(`medical certificates: $${medicalCertCost.toFixed(4)}`);
+        if (payslipsCost > 0) breakdownParts.push(`payslips: $${payslipsCost.toFixed(4)}`);
+        const modelBreakdown = breakdownParts.length > 0 ? ' (' + breakdownParts.join(', ') + ')' : '';
         statusEl.textContent = `Scan done in ${formatDuration(Date.now() - submitStartedAt)}${formatCost(mainCost + bankCost + medicalCost + medicalCertCost + payslipsCost)}${modelBreakdown}${yearNote}`;
       }
       submitBtn.disabled = false;
