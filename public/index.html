@@ -538,6 +538,12 @@
       font-weight: 700;
     }
 
+    .owed-vs-paid-formula {
+      margin-top: 4px;
+      font-size: 13px;
+      color: var(--muted);
+      font-weight: 400;
+    }
     .owed-vs-paid-sub {
       margin-top: 8px;
       font-size: 12px;
@@ -1596,6 +1602,7 @@
             ? `Overpaid by ${formatMoney(-delta)}`
             : `✓ Fully paid — no shortfall detected`}
     </div>
+    <div class="owed-vs-paid-formula">Total owed ${formatMoney(totalOwedCache)} − Total paid ${formatMoney(totalPaidCache)} = ${formatMoney(Math.abs(delta))}</div>
     ${paidIsAssumedZero ? `<div class="owed-vs-paid-sub">No bank statement attached — assuming $0 paid so far. Attach one to check against an actual figure.</div>` : ''}`;
     }
     // Click-to-enlarge for every review/preview image — both the final page-by-page review
