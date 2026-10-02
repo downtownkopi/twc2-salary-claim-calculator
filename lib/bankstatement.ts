@@ -129,6 +129,16 @@ export async function extractMatchingTransactions(base64Image: string, temperatu
 // attempts (extra whitespace, a truncated reference number) even when it's clearly the same line.
 const DATE_CLUSTER_TOLERANCE_MS = 3 * 24 * 60 * 60 * 1000;
 
+// Compares only the transaction-TYPE line (e.g. "Cash Deposit Machine"), not the full multi-line
+// description — a trailing reference/site code line ("63493333.TO PAGAR DL2" vs "63493333,TG PAGAR
+// DL2") is exactly the kind of noisy OCR detail that varies between attempts even when it's clearly
+// the same real transaction, so comparing the full string would still miss the match this is meant
+// to catch.
+/** Normalizes a transaction description's first line for same-transaction comparison. */
+function normalizeDescription(description: string): string {
+    return description.split("\n")[0].trim().toLowerCase().replace(/\s+/g, " ");
+}
+
 /** Returns the most frequent value in a `Map<value, count>`, falling back to `fallback` if empty. */
 function pickMostCommon(counts: Map<string, number>, fallback: string): string {
     let best = fallback;
@@ -167,9 +177,22 @@ export function mergeTransactionAttempts(attempts: BankTransaction[][]): BankTra
         const clusters: Candidate[][] = [];
         for (const cand of candidates) {
             const candDate = Date.parse(cand.t.date);
+            const candDesc = normalizeDescription(cand.t.description);
             const cluster = clusters.find(c => {
+                // Two signals, either is enough: close dates (handles a misread DIGIT — "28" vs
+                // "30"), or an identical description (handles a date that's genuinely illegible in
+                // the source scan, not just misread — observed live: a statement's date column
+                // literally cropped off at the page's left edge for one row, so two attempts each
+                // guessed a different day number up to 6 days apart for what the matching
+                // description ("Cash Deposit Machine" at the same site code) confirms is the same
+                // single real transaction. Amount+direction already match (that's the group key);
+                // requiring EITHER signal rather than date alone catches this without needing an
+                // unboundedly wide date tolerance that would risk merging genuinely different
+                // same-amount transactions weeks apart.
                 const clusterDate = Date.parse(c[0].t.date);
-                return Number.isFinite(candDate) && Number.isFinite(clusterDate) && Math.abs(candDate - clusterDate) <= DATE_CLUSTER_TOLERANCE_MS;
+                const closeDates = Number.isFinite(candDate) && Number.isFinite(clusterDate) && Math.abs(candDate - clusterDate) <= DATE_CLUSTER_TOLERANCE_MS;
+                const sameDescription = candDesc !== "" && candDesc === normalizeDescription(c[0].t.description);
+                return closeDates || sameDescription;
             });
             if (cluster) cluster.push(cand);
             else clusters.push([cand]);
