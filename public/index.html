@@ -1466,12 +1466,18 @@
       the scan (a guess, a multi-shift day, or an implausible reading) and are worth a closer look. Nothing is written
       to the spreadsheet until you click Generate. Any page you edit is automatically saved (original scan + your
       correction) when you click Generate — this is what helps improve future scans.</div>
+    <h3 id="ipaPageReviewHeading" style="display:none">IPA letter</h3>
     <div id="ipaPageReview" style="display:none"></div>
     <div id="interpretationDisagreementPanel" style="display:none"></div>
+    <h3 id="pageReviewListHeading" style="display:none">Timesheet files</h3>
     <div id="pageReviewList"></div>
+    <h3 id="bankPageReviewListHeading" style="display:none">Bank statement</h3>
     <div id="bankPageReviewList" style="display:none"></div>
+    <h3 id="medicalPageReviewListHeading" style="display:none">Medical bills</h3>
     <div id="medicalPageReviewList" style="display:none"></div>
+    <h3 id="medicalCertPageReviewListHeading" style="display:none">Medical certificates</h3>
     <div id="medicalCertPageReviewList" style="display:none"></div>
+    <h3 id="payslipPageReviewListHeading" style="display:none">Payslips</h3>
     <div id="payslipPageReviewList" style="display:none"></div>
 
     <div class="extra-days-body-width">
@@ -2174,6 +2180,8 @@
       ipaReviewEl.innerHTML = '';
       ipaPageReviewEl.style.display = 'none';
       ipaPageReviewEl.innerHTML = '';
+      document.getElementById('ipaPageReviewHeading').style.display = 'none';
+      document.getElementById('pageReviewListHeading').style.display = 'none';
       totalOwedCache = null;
       totalPaidCache = null;
       paidIsAssumedZero = false;
@@ -2413,7 +2421,10 @@
     /** Renders one read-only card per timesheet page finished so far, while the job is still running. */
     function renderLivePages(pages) {
       livePagesProcessedCount = pages.length;
-      if (pages.length > 0) pageReviewsEl.style.display = 'block'; // reveal only once there's something to show
+      if (pages.length > 0) {
+        pageReviewsEl.style.display = 'block'; // reveal only once there's something to show
+        document.getElementById('pageReviewListHeading').style.display = 'block';
+      }
       pageReviewList.innerHTML = pages.map(page => {
         const entriesHtml = page.entries.length
           ? `<ul class="inline-review-list">${page.entries.map(e => `<li class="empty">${escapeHtml(formatLiveEntry(e))}</li>`).join('')}</ul>`
@@ -2461,6 +2472,7 @@
       // rendering of the same data (see ipaReviewEl below), not something to edit twice.
       if (data.ipaImage || data.ipa || data.ipaWarning) {
         ipaPageReviewEl.style.display = 'block';
+        document.getElementById('ipaPageReviewHeading').style.display = 'block';
         ipaPageReviewEl.innerHTML = renderIpaCard(data.ipaImage, data.ipa, data.ipaWarning);
         const ipaRescanControls = ipaPageReviewEl.querySelector('.page-rescan-controls');
         if (ipaRescanControls) wireIpaRescanControls(ipaRescanControls);
@@ -5322,6 +5334,7 @@
       if (pages.length === 0) return;
       pageReviewsEl.style.display = 'block'; // reveal page-by-page review even if the main scan hasn't produced anything yet
       bankPageReviewListEl.style.display = 'block';
+      document.getElementById('bankPageReviewListHeading').style.display = 'block';
       const orderedKeys = done
         ? bankStatementPreviewPages
           .filter(p => !excludedBankStatementPages.has(`${p.fileIndex}-${p.pageIndex}`))
@@ -5679,6 +5692,7 @@
       if (pages.length === 0) return;
       pageReviewsEl.style.display = 'block';
       medicalPageReviewListEl.style.display = 'block';
+      document.getElementById('medicalPageReviewListHeading').style.display = 'block';
       const orderedKeys = done
         ? medicalBillsPreviewPages
           .filter(p => !excludedMedicalBillsPages.has(`${p.fileIndex}-${p.pageIndex}`))
@@ -6053,6 +6067,7 @@
       if (pages.length === 0) return;
       pageReviewsEl.style.display = 'block';
       medicalCertPageReviewListEl.style.display = 'block';
+      document.getElementById('medicalCertPageReviewListHeading').style.display = 'block';
       const orderedKeys = done
         ? medicalCertificatesPreviewPages
           .filter(p => !excludedMedicalCertificatesPages.has(`${p.fileIndex}-${p.pageIndex}`))
@@ -6660,6 +6675,7 @@
       if (pages.length === 0) return;
       pageReviewsEl.style.display = 'block';
       payslipPageReviewListEl.style.display = 'block';
+      document.getElementById('payslipPageReviewListHeading').style.display = 'block';
       const orderedKeys = done
         ? payslipsPreviewPages
           .filter(p => !excludedPayslipsPages.has(`${p.fileIndex}-${p.pageIndex}`))
