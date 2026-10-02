@@ -1594,6 +1594,13 @@
       const isUnderpaid = delta > 0.005; // guards against float noise landing a cent either side of zero
       owedVsPaidBoxEl.className = 'owed-vs-paid ' + (isUnderpaid ? 'underpaid' : 'settled');
       owedVsPaidBoxEl.style.display = 'block';
+      // Only non-zero categories are shown — most claims only ever populate 2-3 of the 7 possible
+      // categories (e.g. basic + OT), so listing every zero category every time would bury the
+      // formula in noise rather than clarify it.
+      const owedParts = (owedBreakdownCache || []).filter(c => Math.abs(c.amount) > 0.005);
+      const owedFormula = owedParts.length > 0
+        ? owedParts.map(c => `${c.label} (${formatMoney(c.amount)})`).join(' + ')
+        : formatMoney(totalOwedCache);
       owedVsPaidBoxEl.innerHTML = `
     <div class="owed-vs-paid-delta">
       ${isUnderpaid
@@ -1602,7 +1609,7 @@
             ? `Overpaid by ${formatMoney(-delta)}`
             : `✓ Fully paid — no shortfall detected`}
     </div>
-    <div class="owed-vs-paid-formula">Total owed ${formatMoney(totalOwedCache)} − Total paid ${formatMoney(totalPaidCache)} = ${formatMoney(Math.abs(delta))}</div>
+    <div class="owed-vs-paid-formula">${owedFormula} − Bank statement payments received (${formatMoney(totalPaidCache)}) = ${formatMoney(Math.abs(delta))}</div>
     ${paidIsAssumedZero ? `<div class="owed-vs-paid-sub">No bank statement attached — assuming $0 paid so far. Attach one to check against an actual figure.</div>` : ''}`;
     }
     // Click-to-enlarge for every review/preview image — both the final page-by-page review
@@ -1651,6 +1658,11 @@
     // available yet" (no salary set / bank statement never scanned), not "zero".
     let totalOwedCache = null;
     let totalPaidCache = null;
+    // Named-category breakdown of totalOwedCache (basic/OT-rest-PH/allowances/notice/leave/sick/
+    // medical bills) — set alongside totalOwedCache by recomputeMonthlyPayTotals, read by
+    // updateOwedVsPaidBox to show the actual formula behind the headline "amount owed" figure
+    // instead of just the opaque total.
+    let owedBreakdownCache = null;
     // Snapshot of the same monthKeys/totals/otRate/allocated/etc. recomputeMonthlyPayTotals just
     // built its breakdown tables from — the Worker Personal Details export reads this rather than
     // recomputing anything itself, so the docx can never disagree with what's on screen. null
@@ -2191,6 +2203,7 @@
       document.getElementById('pageReviewListHeading').style.display = 'none';
       totalOwedCache = null;
       totalPaidCache = null;
+      owedBreakdownCache = null;
       paidIsAssumedZero = false;
       updateSummarySectionVisibility();
       updateOwedVsPaidBox();
@@ -3661,6 +3674,7 @@
         document.getElementById('publicHolidayBreakdown').style.display = 'none';
         document.getElementById('publicHolidayBreakdown').innerHTML = '';
         totalOwedCache = null;
+        owedBreakdownCache = null;
         lastBreakdownForExport = null;
         document.getElementById('exportDocxBtn').style.display = 'none';
         document.getElementById('exportPdfBtn').style.display = 'none';
@@ -3760,23 +3774,32 @@
       // Deliberately NOT each table's own "Computed claim" (which already subtracts a payment
       // figure) — updateOwedVsPaidBox does that subtraction exactly once, against totalPaidCache,
       // so feeding it an already-discounted number here would double-subtract.
-      let grossOwed = sumTotal;
+      // Split into named categories (rather than one running accumulator) purely so
+      // updateOwedVsPaidBox can show each non-zero category as its own line in the "amount owed"
+      // formula, instead of just a single opaque total.
+      let otRestPhSum = 0;
       for (const month of monthKeys) {
         const t = totals.get(month) || { otHours: 0, otRate: 0, restDayPay: 0, phPay: 0 };
-        grossOwed += t.otRate * t.otHours + t.restDayPay + t.phPay;
+        otRestPhSum += t.otRate * t.otHours + t.restDayPay + t.phPay;
       }
+      let allowancesSum = 0;
       for (const month of monthKeys) {
-        grossOwed += allowancesFullAmountByMonth.get(month) || 0;
+        allowancesSum += allowancesFullAmountByMonth.get(month) || 0;
       }
       const noticeClaim = computeSalaryInLieuOfNotice();
-      if (noticeClaim) grossOwed += noticeClaim.owedAmount;
       const leaveClaim = computeSalaryInLieuOfLeave();
-      if (leaveClaim && leaveClaim.qualifies) grossOwed += leaveClaim.owedAmount;
       const sickClaim = computeSickLeaveClaim();
-      if (sickClaim && sickClaim.qualifies) grossOwed += sickClaim.owedAmount;
       const medicalBillsClaim = computeMedicalBillsClaim();
-      if (medicalBillsClaim) grossOwed += medicalBillsClaim.owedAmount;
-      totalOwedCache = grossOwed;
+      owedBreakdownCache = [
+        { label: 'Basic salary', amount: sumTotal },
+        { label: 'OT / rest-day / public-holiday pay', amount: otRestPhSum },
+        { label: 'Allowances', amount: allowancesSum },
+        { label: 'Salary in lieu of notice', amount: noticeClaim ? noticeClaim.owedAmount : 0 },
+        { label: 'Salary in lieu of annual leave', amount: (leaveClaim && leaveClaim.qualifies) ? leaveClaim.owedAmount : 0 },
+        { label: 'Sick leave pay', amount: (sickClaim && sickClaim.qualifies) ? sickClaim.owedAmount : 0 },
+        { label: 'Medical bills reimbursement', amount: medicalBillsClaim ? medicalBillsClaim.owedAmount : 0 },
+      ];
+      totalOwedCache = owedBreakdownCache.reduce((sum, c) => sum + c.amount, 0);
       // otRate is no longer a single flat figure (see the per-month t.otRate override above) — every
       // consumer of this snapshot reads it off `totals` per month instead, so it's not duplicated
       // here as its own field.
