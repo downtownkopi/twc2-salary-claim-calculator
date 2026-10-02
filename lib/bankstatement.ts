@@ -115,11 +115,33 @@ export async function extractMatchingTransactions(base64Image: string, temperatu
 // multi-attempt scanning here: a single pass missing a page's transaction entirely, silently
 // understating what the worker was actually paid.
 //
-// Two transactions from different attempts are treated as the same real transaction if they agree
-// on date+amount+direction — description wording can vary slightly between attempts (extra
-// whitespace, a truncated reference number) even when they're clearly the same line, so it isn't
-// part of the identity key. The most common description among the attempts that reported it wins
-// (ties broken by whichever appeared first).
+// Grouped primarily by amount+direction, NOT by an exact date match. Observed live, twice, on real
+// statements: one attempt reads "28-06-2025", another reads "30-06-2025", for the SAME real
+// transaction — a single-digit date misread, not a disagreement about which day it happened. Keying
+// on exact date (the original design) treated these as two different transactions instead of one
+// correctly-voted one, duplicating every date-misread transaction in the final list. Amount is a
+// far more reliable identity signal than a handwritten/printed date digit — within one amount+
+// direction group, candidates are further clustered by date PROXIMITY (±3 days) before being
+// treated as the same transaction, so a genuinely different transaction that happens to share an
+// amount (e.g. the same dollar figure paid in two different months) doesn't incorrectly merge just
+// because the number matches. The most common date/description among a cluster's attempts wins
+// (ties broken by whichever appeared first) — description wording can vary slightly between
+// attempts (extra whitespace, a truncated reference number) even when it's clearly the same line.
+const DATE_CLUSTER_TOLERANCE_MS = 3 * 24 * 60 * 60 * 1000;
+
+/** Returns the most frequent value in a `Map<value, count>`, falling back to `fallback` if empty. */
+function pickMostCommon(counts: Map<string, number>, fallback: string): string {
+    let best = fallback;
+    let bestCount = 0;
+    for (const [value, count] of counts) {
+        if (count > bestCount) {
+            best = value;
+            bestCount = count;
+        }
+    }
+    return best;
+}
+
 /**
  * Merges multiple independent scan attempts of the same page into one deduplicated transaction list.
  *
@@ -128,34 +150,48 @@ export async function extractMatchingTransactions(base64Image: string, temperatu
  */
 export function mergeTransactionAttempts(attempts: BankTransaction[][]): BankTransaction[] {
     const total = attempts.length;
-    const groups = new Map<string, { descriptionCounts: Map<string, number>; sample: BankTransaction; seenIn: Set<number> }>();
 
+    type Candidate = { t: BankTransaction; attemptIdx: number };
+    const byAmountDirection = new Map<string, Candidate[]>();
     attempts.forEach((attempt, attemptIdx) => {
         for (const t of attempt) {
-            const key = `${t.date}|${t.amount}|${t.direction ?? ""}`;
-            let group = groups.get(key);
-            if (!group) {
-                group = { descriptionCounts: new Map(), sample: t, seenIn: new Set() };
-                groups.set(key, group);
-            }
-            group.seenIn.add(attemptIdx);
-            group.descriptionCounts.set(t.description, (group.descriptionCounts.get(t.description) ?? 0) + 1);
+            const key = `${t.amount}|${t.direction ?? ""}`;
+            const list = byAmountDirection.get(key) ?? [];
+            list.push({ t, attemptIdx });
+            byAmountDirection.set(key, list);
         }
     });
 
-    return [...groups.values()].map(group => {
-        let bestDescription = group.sample.description;
-        let bestCount = 0;
-        for (const [description, count] of group.descriptionCounts) {
-            if (count > bestCount) {
-                bestDescription = description;
-                bestCount = count;
-            }
+    const results: BankTransaction[] = [];
+    for (const candidates of byAmountDirection.values()) {
+        const clusters: Candidate[][] = [];
+        for (const cand of candidates) {
+            const candDate = Date.parse(cand.t.date);
+            const cluster = clusters.find(c => {
+                const clusterDate = Date.parse(c[0].t.date);
+                return Number.isFinite(candDate) && Number.isFinite(clusterDate) && Math.abs(candDate - clusterDate) <= DATE_CLUSTER_TOLERANCE_MS;
+            });
+            if (cluster) cluster.push(cand);
+            else clusters.push([cand]);
         }
-        return {
-            ...group.sample,
-            description: bestDescription,
-            confirmedByAttempts: { seen: group.seenIn.size, total },
-        };
-    });
+
+        for (const cluster of clusters) {
+            const dateCounts = new Map<string, number>();
+            const descriptionCounts = new Map<string, number>();
+            const seenIn = new Set<number>();
+            for (const { t, attemptIdx } of cluster) {
+                dateCounts.set(t.date, (dateCounts.get(t.date) ?? 0) + 1);
+                descriptionCounts.set(t.description, (descriptionCounts.get(t.description) ?? 0) + 1);
+                seenIn.add(attemptIdx);
+            }
+            results.push({
+                ...cluster[0].t,
+                date: pickMostCommon(dateCounts, cluster[0].t.date),
+                description: pickMostCommon(descriptionCounts, cluster[0].t.description),
+                confirmedByAttempts: { seen: seenIn.size, total },
+            });
+        }
+    }
+
+    return results;
 }
