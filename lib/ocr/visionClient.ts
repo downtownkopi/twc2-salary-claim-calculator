@@ -5,16 +5,20 @@ import { traceable } from "langsmith/traceable";
 // param on sendVisionRequest/scanPageImage/extractPageContext/verifyDatesOnPage). IPA extraction
 // (lib/ipa.ts) and bank statement extraction (lib/bankstatement.ts) never override, so they always
 // use this; server.ts's timesheet pipeline also uses this directly now (see timesheetModel there).
-// Switched from xiaomi/mimo-v2.5 to xiaomi/mimo-v2.6-flash — identical OpenRouter pricing
-// ($0.14/$0.28 per 1M prompt/completion tokens) and context window, newer release, same
-// tools/tool_choice support (confirmed via lib/ocr/agentLoop.ts live testing: matched v2.5 exactly
-// on a clean page — 0 reflexive crops, all rows correct — and was roughly a wash on 338M's hard
-// ambiguous page, no clear accuracy win either way from a small sample). FALLBACK_VISION_MODEL is
-// currently identical to PRIMARY_VISION_MODEL, so server.ts's hybrid escalation step (re-asking a
-// disputed date with the fallback model) is a no-op while they match — repoint FALLBACK_VISION_MODEL
-// to a genuinely different model to restore that escalation's value.
-export const PRIMARY_VISION_MODEL = "xiaomi/mimo-v2.6-flash";
-export const FALLBACK_VISION_MODEL = "xiaomi/mimo-v2.6-flash";
+// Briefly tried xiaomi/mimo-v2.6-flash (identical OpenRouter pricing and context window, newer
+// release) — reverted back to xiaomi/mimo-v2.5. A small 3-call sample looked like a wash, but real
+// full-document usage on sample-data/338M/338M_Timecards.pdf (the hardest sample on hand — a
+// passbook-style sheet with genuinely ambiguous Qty/Amount columns) showed v2.6-flash returning
+// empty/wrong rows across most of the document, consistent with an empty-array failure mode
+// (shapeFamily correct, rows: [] on a page with 28 real dates) already caught in isolated testing
+// before the switch. v2.5 remains the validated default until v2.6-flash (or another candidate) is
+// tested more rigorously at full-document scale, not just a handful of isolated calls, before
+// switching again. FALLBACK_VISION_MODEL is currently identical to PRIMARY_VISION_MODEL, so
+// server.ts's hybrid escalation step (re-asking a disputed date with the fallback model) is a no-op
+// while they match — repoint FALLBACK_VISION_MODEL to a genuinely different model to restore that
+// escalation's value.
+export const PRIMARY_VISION_MODEL = "xiaomi/mimo-v2.5";
+export const FALLBACK_VISION_MODEL = "xiaomi/mimo-v2.5";
 
 let client: OpenRouter | null = null;
 
