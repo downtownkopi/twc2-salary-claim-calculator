@@ -22,6 +22,8 @@ const PROMPT = `This image is one page of a bank statement belonging to a migran
 
 Scan every transaction line on this page. Report every transaction where money came INTO this account (a credit/incoming transaction) — do NOT report debits/withdrawals/outgoing transfers, and do NOT try to judge which credits look employer-related or not; report every single incoming credit transaction on the page, regardless of who it's from or what it's for.
 
+DETERMINE DIRECTION FROM THE COLUMN THE AMOUNT IS PRINTED IN (a "Deposit"/"Credit"/money-in column vs a "Withdrawal"/"Debit"/money-out column), NOT from the transaction type label. A label like "FAST Payment / Receipt" or "Payment / Collection" can describe BOTH an incoming and an outgoing transfer on the same statement — the word "Receipt" does NOT mean money came in, it's just the bank's name for that transaction type. If an amount sits in the withdrawal/debit column, it is NOT a credit, no matter what the row's label says — skip it entirely, even if the label sounds like money-in.
+
 For each incoming transaction, report:
 - date: YYYY-MM-DD (infer the year from the statement's own header/period if the row itself only shows day/month)
 - description: the transaction description exactly as printed/written on the statement
