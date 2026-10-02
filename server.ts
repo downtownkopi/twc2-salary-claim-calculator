@@ -337,6 +337,11 @@ app.post(
 // Polled by public/index.html every few seconds while a scan runs. `pages` grows live as each
 // page finishes scanning; `result`/`error` land once `status` moves away from "running".
 app.get("/api/process/:jobId", (req, res) => {
+    // This is a live-progress poll, not a cacheable resource — the response changes on every call
+    // while a job is running. Without this header some browsers/proxies can serve a cached copy of
+    // an earlier response for repeated identical GETs to the same URL, which would make the client's
+    // live event feed/page cards appear frozen until the cache finally invalidates.
+    res.set("Cache-Control", "no-store");
     const job = processJobs.get(req.params.jobId);
     if (!job) {
         // Logged server-side with the exact jobId/timestamp so a real occurrence can be grepped

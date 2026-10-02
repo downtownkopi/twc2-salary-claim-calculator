@@ -2265,7 +2265,13 @@
         const tick = async () => {
           let res, data;
           try {
-            res = await fetch(`/api/process/${jobId}`);
+            // cache: 'no-store' — without this, some browsers can quietly serve a cached response
+            // for repeated identical GETs to the same URL in quick succession, which would make the
+            // live event feed/page cards appear completely frozen during the scan and only "catch
+            // up" once the browser's cache finally invalidates near the end — looks exactly like
+            // "nothing happens until it's all done" even though the server is genuinely returning
+            // fresh, growing data on every request (confirmed via direct polling during development).
+            res = await fetch(`/api/process/${jobId}`, { cache: 'no-store' });
             data = await res.json();
           } catch (err) {
             // A dropped connection or a proxy error page instead of JSON (e.g. a brief 502) is
