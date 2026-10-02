@@ -166,6 +166,16 @@ export function reconcileAttempts(
         let attemptsThatMentionedDay = 0;
         let implausibleCount = 0;
         const implausibleValues: number[] = [];
+        // An attempt that produced a row for this date but with NO determinable signal at all
+        // (times=null, hoursWorked=null, rest_day=false — a genuine non-answer, not a value this
+        // function can vote on) — same "didn't produce a usable reading" treatment as an implausible
+        // value, not counted as participation. Previously this silently counted toward
+        // attemptsThatMentionedDay via a catch-all branch below, which could make 2 attempts that
+        // fully agreed on real times fail BOTH the unanimous AND majority paths (both require every
+        // counted participant to have actually voted times) purely because a third attempt
+        // contributed nothing — and the final warning-reasons check didn't cover this exact
+        // combination either, so the whole day vanished with zero trace, not even a warning.
+        let noSignalCount = 0;
 
         for (const attempt of attempts) {
             // A punch-log-style page (a phone app's chronological list of individual clock
@@ -225,7 +235,7 @@ export function reconcileAttempts(
                 attemptsThatMentionedDay++;
                 hoursVotes.push({ hoursWorked: rowForDay.hoursWorked, otHours: rowForDay.otHours ?? null });
             } else {
-                attemptsThatMentionedDay++;
+                noSignalCount++;
             }
         }
 
@@ -278,7 +288,7 @@ export function reconcileAttempts(
         // count against "did everyone weigh in". Still requires at least 2 valid attempts to
         // agree (not just 1) so a day isn't accepted off a single surviving attempt when the
         // other two were both unreadable — that's too little redundancy to trust unguessed.
-        const effectiveTotal = attempts.length - implausibleCount;
+        const effectiveTotal = attempts.length - implausibleCount - noSignalCount;
         const fullyParticipated = !requireFullParticipation || attemptsThatMentionedDay === effectiveTotal;
         const sufficientRedundancy = !requireFullParticipation || attemptsThatMentionedDay >= 2;
         const unanimous = fullyParticipated && sufficientRedundancy && (allAgreeOnTimes || allAgreeOnRest || allAgreeOnHours);
@@ -313,7 +323,7 @@ export function reconcileAttempts(
                 rest_day: false,
                 notes: `majority reading (${majorityTimes.agreeCount}/${majorityTimes.totalCount} attempts agreed on ${majorityTimes.times.join(",")}) — not unanimous, please verify against the source PDF`,
             });
-        } else if (attemptsThatMentionedDay > 0 || implausibleCount > 0) {
+        } else if (attemptsThatMentionedDay > 0 || implausibleCount > 0 || noSignalCount > 0) {
             // something was reported, but not unanimously — dropped rather than guessed
             const reasons: string[] = [];
             if (requireFullParticipation && attemptsThatMentionedDay < effectiveTotal) {
@@ -333,6 +343,9 @@ export function reconcileAttempts(
             }
             if (implausibleCount > 0) {
                 reasons.push(`${implausibleCount} attempt(s) reported an impossible clock time or hours value (${implausibleValues.join(", ")}) and were excluded from voting`);
+            }
+            if (noSignalCount > 0) {
+                reasons.push(`${noSignalCount} attempt(s) reported this date but with no determinable clock-time, hours, or rest-day value — excluded from voting`);
             }
             if (reasons.length === 0) continue; // e.g. lenient mode, single non-conflicting mention already accepted above
             warnings.push({
