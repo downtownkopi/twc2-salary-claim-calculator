@@ -44,6 +44,16 @@ export type ParsedEntry = {
  * @returns Whether `t` could represent a real clock time.
  */
 function isPlausibleTime(t: number): boolean {
+    // Despite the `number` type, a times array's elements aren't guaranteed to actually be numbers
+    // at runtime — the model's JSON output is trusted as-is. A stray `null` (observed live: the
+    // agentic loop reading an overnight end-time it couldn't decide how to encode, e.g. "8:00am to
+    // 4:00am" -> [800, null] instead of [800, 400]) would otherwise silently pass as "plausible":
+    // JS coerces `null < 0` to `0 < 0` (false) and `null % 100` to `0`, so the checks below would
+    // treat it as a valid midnight-ish time instead of catching it as unreadable. That let a
+    // half-invalid time pair win unanimous/majority voting and get written through with a literal
+    // `null` clockOut, silently lost further downstream instead of being excluded from voting here
+    // like any other implausible value.
+    if (typeof t !== "number" || !Number.isFinite(t)) return false;
     if (t < 0) return false;
     if (t === 2400) return true;
     const minutes = t % 100;
@@ -70,6 +80,9 @@ function isPlausibleTime(t: number): boolean {
  * @returns Whether `h` is a plausible single-day hours value.
  */
 function isPlausibleHours(h: number, allowZero: boolean): boolean {
+    // Same runtime-type trust-boundary issue as isPlausibleTime above — a null/non-number here
+    // would otherwise coerce (`null >= 0` -> `0 >= 0` -> true) and silently pass as plausible.
+    if (typeof h !== "number" || !Number.isFinite(h)) return false;
     return allowZero ? h >= 0 && h < 24 : h > 0 && h < 24;
 }
 
