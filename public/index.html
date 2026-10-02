@@ -915,6 +915,21 @@
       margin: 6px 0 12px;
     }
 
+    #agentEventFeed {
+      max-height: 160px;
+      overflow-y: auto;
+      font-size: 12px;
+      font-family: monospace;
+      background: #f7f7f7;
+      border: 1px solid #ddd;
+      border-radius: 4px;
+      padding: 8px;
+      margin: 8px 0;
+    }
+    .agent-event { padding: 1px 0; }
+    .agent-event-detail { color: var(--muted); }
+    #stopScanBtn { margin-left: 8px; }
+
     .ipa-computed-rates-list {
       margin: 0;
       padding-left: 18px;
@@ -1406,8 +1421,10 @@
       <hr />
 
       <button type="submit" id="submitBtn">Extract details</button>
+      <button type="button" id="stopScanBtn" style="display:none;">Stop scan</button>
 
       <div class="status" id="status"></div>
+      <div id="agentEventFeed" style="display:none;"></div>
       <div class="status" id="bankStatus"></div>
       <div class="status" id="medicalBillsStatus"></div>
       <div class="status" id="medicalCertificatesStatus"></div>
@@ -1632,10 +1649,15 @@
     // (/api/process's `rotations` field) so the server applies the same correction before OCR ever
     // sees the page. pdfsRotations is keyed "<fileIndex>-<pageIndex>" to match server.ts's lookup —
     // reset whenever the pdfs selection changes (refreshPdfsPreview), since a changed file selection
-    // invalidates old indices. Kept entirely separate from ipaRotationDeg/refreshIpaPreview so
+    // invalidates old indices. Kept entirely separate from ipaRotations/refreshIpaPreview so
     // attaching one doesn't reset or re-fetch the other's already-confirmed state.
     let pdfsRotations = {};
-    let ipaRotationDeg = 0;
+    // Same idea as pdfsRotations, but for the IPA letter's own pages — keyed by page index (as a
+    // string, e.g. "0") since there's only ever one IPA file. The IPA upload can itself be
+    // multi-page (a cover sheet, the actual approval page, maybe an annex); server.ts's
+    // runProcessJob extracts from only the first page NOT in excludedIpaPages below, so a human can
+    // attach the whole file and delete whichever pages aren't the actual approval page.
+    let ipaRotations = {};
     // Every {fileIndex, pageIndex} pair the staging preview found, in file/page order — same order
     // server.ts's own pageTasks loop walks (see runProcessJob), just without the excluded-page
     // filter applied yet. Kept around after staging so the final page-by-page review can work out
@@ -1643,30 +1665,45 @@
     // needed for the per-page "Rotate + Rescan" action, which has to re-attach the correct original
     // File object.
     let pdfsPreviewPages = [];
+    // Every page index the IPA staging preview found, same purpose as pdfsPreviewPages — lets the
+    // post-scan "Rotate IPA + Rescan" button (wireIpaRescanControls) work out which page index is
+    // actually the one in use (the first one not in excludedIpaPages) without re-fetching a preview.
+    let ipaPreviewPages = [];
     // Pages a human dropped in the staging preview, keyed "<fileIndex>-<pageIndex>" same as
     // pdfsRotations. A PDF's underlying pages can't be excluded from the file itself client-side (the
     // server always re-renders every page from the uploaded bytes) — so this set is sent alongside
     // `rotations` on the real submit, and server.ts skips scanning any page whose key is in it.
     let excludedPdfsPages = new Set();
+    // Same idea as excludedPdfsPages, but for the IPA letter's own pages — keyed by page index
+    // (as a string). Sent as `excludedIpaPages` on submit; server.ts's runProcessJob picks the first
+    // page index NOT in this set as the one actually scanned.
+    let excludedIpaPages = new Set();
 
     // ===== Timesheet/IPA staging preview (pre-scan rotate/exclude step) =====
+    // Both pdfs and ipa staging grids are now page-level (rotate/delete per page) — the only real
+    // difference between them is which rotations-map object each writes into, so both are driven by
+    // the same tile renderer/wiring rather than a kind-based branch.
+    /** Looks up the live rotations-map object for a staging tile's `kind` ('pdfs' or 'ipa'). */
+    function stageRotationsFor(kind) {
+      return kind === 'pdfs' ? pdfsRotations : ipaRotations;
+    }
+
     /**
-     * Builds one staging-grid thumbnail tile (used for both timesheet pages and the IPA letter).
+     * Builds one staging-grid thumbnail tile (used for both timesheet pages and IPA letter pages).
      * @param {'pdfs'|'ipa'} kind - Which upload this tile belongs to.
-     * @param {string} key - `"<fileIndex>-<pageIndex>"` for pdfs; unused for ipa.
+     * @param {string} key - `"<fileIndex>-<pageIndex>"` for pdfs; `"<pageIndex>"` for ipa.
      * @param {string} label - Tile caption, e.g. `"p3"`.
      * @param {string} imageB64 - The page thumbnail, base64-encoded.
      * @returns {string} The tile's HTML.
      */
     function renderStageTile(kind, key, label, imageB64) {
-      const rotation = kind === 'pdfs' ? (pdfsRotations[key] || 0) : ipaRotationDeg;
-      const removeTitle = kind === 'pdfs' ? 'Remove this page' : 'Remove this file';
+      const rotation = stageRotationsFor(kind)[key] || 0;
       return `
     <div class="stage-tile" data-kind="${kind}" data-key="${key}">
       <div class="stage-tile-img-wrap">
         <img src="data:image/png;base64,${imageB64}" style="transform: rotate(${rotation}deg);">
         <button type="button" class="stage-tile-rotate-btn" title="Rotate">⟳</button>
-        <button type="button" class="stage-tile-delete-btn" title="${removeTitle}">✕</button>
+        <button type="button" class="stage-tile-delete-btn" title="Remove this page">✕</button>
       </div>
       <div class="stage-tile-label">${escapeHtml(label)}</div>
     </div>`;
@@ -1678,10 +1715,10 @@
         const kind = tile.dataset.kind;
         const key = tile.dataset.key;
         const img = tile.querySelector('img');
+        const rotations = stageRotationsFor(kind);
         tile.querySelector('.stage-tile-rotate-btn').addEventListener('click', () => {
-          const current = kind === 'pdfs' ? (pdfsRotations[key] || 0) : ipaRotationDeg;
-          const next = (current + 90) % 360;
-          if (kind === 'pdfs') pdfsRotations[key] = next; else ipaRotationDeg = next;
+          const next = ((rotations[key] || 0) + 90) % 360;
+          rotations[key] = next;
           img.style.transform = `rotate(${next}deg)`;
         });
       });
@@ -1753,11 +1790,17 @@
 
     // Same idea as refreshPdfsPreview but for the single optional IPA file — kept as a separate
     // function (rather than one combined refreshPreview covering both) specifically so attaching a
-    // timesheet doesn't reset/re-fetch the already-confirmed IPA rotation, and vice versa.
-    /** Fetches and renders a staging thumbnail for the attached IPA letter's first page. */
+    // timesheet doesn't reset/re-fetch the already-confirmed IPA rotation, and vice versa. The IPA
+    // upload can itself be multi-page (a cover sheet, the actual approval page, maybe an annex) —
+    // every page is shown with its own rotate/delete controls, same "attach, then drop the pages you
+    // don't need" flow pdfs already has, since only ONE page ever actually gets extracted from
+    // (runProcessJob uses the first page not in excludedIpaPages).
+    /** Fetches and renders staging thumbnails for every page of the attached IPA letter. */
     async function refreshIpaPreview() {
       const hasIpa = !!ipaInput.files[0];
-      ipaRotationDeg = 0;
+      ipaRotations = {};
+      excludedIpaPages = new Set();
+      ipaPreviewPages = [];
 
       if (!hasIpa) {
         ipaStageEl.innerHTML = '';
@@ -1773,20 +1816,26 @@
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || `Server returned ${res.status}`);
 
-        ipaStageEl.innerHTML = data.ipaPreview
+        ipaPreviewPages = (data.ipaPreview || []).map(p => p.pageIndex);
+        const tiles = (data.ipaPreview || []).map(p => renderStageTile('ipa', String(p.pageIndex), `p${p.pageIndex + 1}`, p.image));
+        ipaStageEl.innerHTML = tiles.length
           ? `<div class="stage-file-group">
           <div class="stage-file-header">
-            <span>${escapeHtml(ipaInput.files[0].name)} (only p1 is used)</span>
+            <span>${escapeHtml(ipaInput.files[0].name)}${tiles.length > 1 ? ' — delete any pages that aren’t the approval page itself' : ''}</span>
           </div>
-          <div class="stage-file-pages">${renderStageTile('ipa', 'ipa', '', data.ipaPreview)}</div>
+          <div class="stage-file-pages">${tiles.join('')}</div>
         </div>`
           : (data.ipaError ? `<div class="stage-error">${escapeHtml(data.ipaError)}</div>` : '');
 
         wireStageRotateButtons(ipaStageEl);
-        const deleteBtn = ipaStageEl.querySelector('.stage-tile-delete-btn');
-        if (deleteBtn) deleteBtn.addEventListener('click', () => {
-          ipaInput.value = ''; // single-file input — clearing it entirely IS "removing the file"
-          refreshIpaPreview();
+        ipaStageEl.querySelectorAll('.stage-tile-delete-btn').forEach(btn => {
+          btn.addEventListener('click', () => {
+            const tile = btn.closest('.stage-tile');
+            excludedIpaPages.add(tile.dataset.key);
+            const group = tile.closest('.stage-file-group');
+            tile.remove();
+            if (group && group.querySelectorAll('.stage-tile').length === 0) group.remove();
+          });
         });
       } catch (err) {
         ipaStageEl.innerHTML = `<div class="stage-error">Preview failed: ${escapeHtml(err.message)}</div>`;
@@ -1984,6 +2033,22 @@
     // shows both "how long" and "how much done" without the two updaters fighting over statusEl.
     let scanTimerInterval = null;
     let livePagesProcessedCount = 0;
+    // Tracks the currently-running /api/process job so the Stop button (added alongside the
+    // agentic discovery loop — loop length/cost per page is no longer fixed the way one prompt
+    // call was, so a caseworker may want to cut a run short) knows which job to cancel. Cleared
+    // once the job settles (done/error/cancelled), which also hides the button again.
+    let currentMainJobId = null;
+    const stopScanBtn = document.getElementById('stopScanBtn');
+    stopScanBtn.addEventListener('click', async () => {
+      if (!currentMainJobId) return;
+      stopScanBtn.disabled = true;
+      try {
+        await fetch(`/api/process/${currentMainJobId}/cancel`, { method: 'POST' });
+      } catch {
+        // The next poll tick will still pick up the eventual status either way — nothing more to
+        // do here if the cancel request itself didn't make it (e.g. a dropped connection).
+      }
+    });
     /** Starts the live "Scanning pages… Ns elapsed" status readout, ticking once per second. */
     function startScanTimer() {
       const startedAt = Date.now();
@@ -2043,14 +2108,19 @@
       pageReviewList.innerHTML = '';
       generateStatusEl.className = 'status';
       generateStatusEl.textContent = '';
+      lastRenderedEventCount = 0;
+      const agentEventFeedEl = document.getElementById('agentEventFeed');
+      agentEventFeedEl.innerHTML = '';
+      agentEventFeedEl.style.display = 'none';
 
       const formData = new FormData();
       for (const file of pdfsInput.files) formData.append('pdfs', file);
       if (ipaInput.files[0]) formData.append('ipa', ipaInput.files[0]);
       // Rotations + page exclusions confirmed in the staging preview above — same fileIndex/pageIndex
       // keys server.ts expects, matched against the exact same files/order being submitted here.
-      formData.append('rotations', JSON.stringify({ pdfs: pdfsRotations, ipa: ipaRotationDeg }));
+      formData.append('rotations', JSON.stringify({ pdfs: pdfsRotations, ipa: ipaRotations }));
       formData.append('excludedPages', JSON.stringify([...excludedPdfsPages]));
+      formData.append('excludedIpaPages', JSON.stringify([...excludedIpaPages]));
       // Declared standard break — server.ts uses this as the single-shift default (nothing is
       // actually observed to contradict it there) instead of a hardcoded assumption, so it agrees by
       // construction with checkBreakMismatch's later comparison for those rows.
@@ -2096,6 +2166,9 @@
           const data = await res.json();
           if (!res.ok) throw new Error(data.error || `Server returned ${res.status}`);
 
+          currentMainJobId = data.jobId;
+          stopScanBtn.style.display = '';
+          stopScanBtn.disabled = false;
           return await pollJobUntilDone(data.jobId);
         } catch (err) {
           mainErrored = true;
@@ -2103,6 +2176,9 @@
           statusEl.className = 'status error';
           statusEl.textContent = 'Error: ' + err.message;
           notifyIfPermitted('Scan failed', err.message);
+        } finally {
+          currentMainJobId = null;
+          stopScanBtn.style.display = 'none';
         }
       })();
 
@@ -2135,7 +2211,11 @@
       submitBtn.disabled = false;
     });
 
-    const POLL_INTERVAL_MS = 3000;
+    // 1500ms (was 3000ms) — the agent-event feed (renderAgentEvents) exists specifically so a
+    // caseworker can watch what's happening page by page during a scan; 3s felt noticeably choppy
+    // for that purpose. Still cheap either way (one small JSON GET), not worth trading responsiveness
+    // for request volume here.
+    const POLL_INTERVAL_MS = 1500;
 
     // Polls a running /api/process job rather than waiting on one held-open request — a real scan
     // (many pages, sequential) can take 15-20+ minutes, long enough that a single connection is
@@ -2182,9 +2262,14 @@
           }
 
           renderLivePages(data.pages || []);
+          renderAgentEvents(data.events || []);
 
-          if (data.status === 'done') {
+          if (data.status === 'done' || data.status === 'cancelled') {
             stopScanTimer();
+            if (data.status === 'cancelled' && statusEl) {
+              statusEl.className = 'status loading';
+              statusEl.innerHTML = 'Scan stopped — showing results from the pages that finished before you stopped it.';
+            }
             const message = renderFinalResult(data.result);
             resolve(message);
             return;
@@ -2194,6 +2279,28 @@
         };
         tick();
       });
+    }
+
+    // Live "what the agent is doing" feed — only populated while USE_AGENTIC_DISCOVERY is on
+    // server-side (lib/ocr/agentLoop.ts emits these as it tool-calls its way through a page's
+    // shape discovery). Appends only the events new since the last poll tick (same
+    // "track last-rendered count" pattern livePagesProcessedCount already uses for pages), newest
+    // at the bottom, auto-scrolled — a long multi-page job can produce many of these, so this is a
+    // capped-height scrolling log rather than growing the page indefinitely.
+    let lastRenderedEventCount = 0;
+    /** Renders newly-arrived agent events (since the last call) into the live feed. */
+    function renderAgentEvents(events) {
+      if (events.length === 0) return;
+      const feedEl = document.getElementById('agentEventFeed');
+      feedEl.style.display = 'block';
+      const newEvents = events.slice(lastRenderedEventCount);
+      lastRenderedEventCount = events.length;
+      if (newEvents.length === 0) return;
+      const icon = { tool_call: '🔍', info: 'ℹ️', terminal: '✅', error: '⚠️' };
+      feedEl.innerHTML += newEvents
+        .map(e => `<div class="agent-event">${icon[e.kind] || ''} <strong>${escapeHtml(e.source)}</strong>: ${escapeHtml(e.label)}${e.detail ? ` — <span class="agent-event-detail">${escapeHtml(e.detail)}</span>` : ''}</div>`)
+        .join('');
+      feedEl.scrollTop = feedEl.scrollHeight;
     }
 
     // One line per extracted entry, read-only — shown as soon as a page finishes, before the
@@ -4324,8 +4431,9 @@
         const formData = new FormData();
         formData.append('pdfs', file);
         formData.append('ipa', ipaFile);
-        formData.append('rotations', JSON.stringify({ pdfs: { [`0-${pageIndex}`]: pdfsRotations[key] || 0 }, ipa: ipaRotationDeg }));
+        formData.append('rotations', JSON.stringify({ pdfs: { [`0-${pageIndex}`]: pdfsRotations[key] || 0 }, ipa: ipaRotations }));
         formData.append('excludedPages', JSON.stringify(excluded));
+        formData.append('excludedIpaPages', JSON.stringify([...excludedIpaPages]));
         formData.append('standardBreakHours', getStandardBreakHours());
         // Isolating this page from its neighbors (excludedPages above) means it can't borrow a year
         // from an adjacent page the way the original full-batch scan could — see runProcessJob's
@@ -4444,7 +4552,12 @@
       let previewDelta = 0;
 
       rotateBtn.addEventListener('click', () => {
-        ipaRotationDeg = (ipaRotationDeg + 90) % 360;
+        // The IPA upload can be multi-page — this rotates whichever page index is actually in use
+        // (the first one not dropped in staging), same resolution logic server.ts's runProcessJob
+        // applies, so this button keeps rotating the right page even if page 0 was deleted earlier.
+        const usedPageIndex = ipaPreviewPages.find(pi => !excludedIpaPages.has(String(pi))) ?? 0;
+        const key = String(usedPageIndex);
+        ipaRotations[key] = ((ipaRotations[key] || 0) + 90) % 360;
         previewDelta = (previewDelta + 90) % 360;
         if (img) img.style.transform = `rotate(${previewDelta}deg)`;
         statusEl.className = 'page-rescan-status';
@@ -4467,7 +4580,8 @@
         // exclude here the way this used to work. Only the IPA itself gets scanned.
         const formData = new FormData();
         formData.append('ipa', ipaFile);
-        formData.append('rotations', JSON.stringify({ pdfs: {}, ipa: ipaRotationDeg }));
+        formData.append('rotations', JSON.stringify({ pdfs: {}, ipa: ipaRotations }));
+        formData.append('excludedIpaPages', JSON.stringify([...excludedIpaPages]));
         formData.append('standardBreakHours', getStandardBreakHours());
         // With no timesheet page in this request there's nothing for /api/process to infer a claim
         // year from — it still needs SOME year to avoid erroring out before it ever reaches IPA

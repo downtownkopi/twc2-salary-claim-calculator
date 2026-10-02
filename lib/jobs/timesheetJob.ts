@@ -13,10 +13,11 @@ import {
     type PagedImages,
 } from "../ocr";
 import { buildReviewRows, MONTH_ABBR, type TimeEntry, type FillWarning, type RestDay } from "../xlsx";
-import { reconcileAttempts, reconcileRosterAttempts, type ParsedEntry, type RosterPageAttempt, type RosterRow } from "../reconcile";
+import { reconcileAttempts, reconcileRosterAttempts, reconcileGridAttempts, type ParsedEntry, type RosterPageAttempt, type RosterRow, type RosterReconciledEntry, type GridPageAttempt } from "../reconcile";
 import { extractIpaFields, type IpaFields } from "../ipa";
 import { buildPrompt } from "../timesheetPrompt";
 import { buildRosterPrompt } from "../rosterPrompt";
+import { runAgentLoop, type AgentEvent, type AgentLoopResult, type ShapeFamily } from "../ocr/agentLoop";
 import type { WorkerMatchConfidence } from "../workerMatch";
 import {
     loadPagesForFile,
@@ -26,6 +27,7 @@ import {
     JOB_TTL_MS,
     MAX_PAGES_PER_JOB,
     MAX_PAGE_CONCURRENCY,
+    USE_AGENTIC_DISCOVERY,
     checkPageCount,
     cleanupJobDir,
     jobPagesDir,
@@ -35,7 +37,10 @@ import {
 // /api/process can look up which page they apply to. pdfs are keyed "<fileIndex>-<pageIndex>"
 // since there can be several multi-page files; ipa is a single number since only its first page is
 // ever used downstream (../ipa.ts).
-export type RotationMap = { pdfs?: Record<string, number>; ipa?: number };
+// ipa is keyed by page INDEX (as a string, e.g. "0", "1") same convention as pdfs — the IPA upload
+// can be a multi-page file (a cover letter, the actual approval page, maybe an annex), and a human
+// may need to rotate more than one of those pages while staging it, not just page 0.
+export type RotationMap = { pdfs?: Record<string, number>; ipa?: Record<string, number> };
 
 // A page's own image + everything read from it so far, in the exact shape public/index.html
 // already knows how to render — used both as a live in-progress snapshot (pushed as each page
@@ -64,10 +69,18 @@ export type PageReview = {
 // GET /api/process/:jobId to render each page's card as soon as that page finishes, instead of
 // waiting for the entire batch.
 export type ProcessJob = {
-    status: "running" | "done" | "error";
+    status: "running" | "done" | "error" | "cancelled";
     pages: PageReview[]; // grows live while running; replaced with the authoritative final list once done
     result: Record<string, unknown> | null; // set once status is "done" — same shape /api/process used to return directly
     error: string | null;
+    // Live "what the agent is doing" feed (lib/ocr/agentLoop.ts), only populated when
+    // USE_AGENTIC_DISCOVERY is on — grows live during the scan, same polling model as `pages`.
+    // Capped at push time (see the agentic branch in processPage below) so a long job with many
+    // pages' worth of tool-call turns doesn't grow this unbounded.
+    events: AgentEvent[];
+    // Not serialized to the client — set by server.ts on job creation, aborted by the cancel
+    // endpoint. Threaded down into every vision call so an in-flight request actually cancels.
+    controller: AbortController;
 };
 // Named processJobs, not jobs — the per-page scan loop below already uses a local variable
 // called `jobs` for its band x temperature attempt list, and shadowing that would be a landmine.
@@ -98,6 +111,8 @@ export function scheduleJobCleanup(jobId: string) {
  * @param ipaFile - The uploaded IPA letter, if any.
  * @param rotations - Human-confirmed page rotations from the pre-scan staging step.
  * @param excludedPages - Pages dropped by the caseworker in staging, keyed `"<fileIndex>-<pageIndex>"`.
+ * @param excludedIpaPages - IPA pages dropped by the caseworker in staging (page indices) — the IPA
+ * upload can span several pages; the first page NOT in this set is the one actually used.
  * @param standardBreakHours - The caseworker's declared standard meal break.
  * @param fallbackYear - Only set by the single-page "Rotate + Rescan" flow (public/index.html) —
  * that request deliberately excludes every OTHER page of the file (to avoid re-scanning/re-billing
@@ -114,8 +129,10 @@ export async function runProcessJob(
     ipaFile: Express.Multer.File | undefined,
     rotations: RotationMap,
     excludedPages: Set<string>,
+    excludedIpaPages: Set<number>,
     standardBreakHours: number,
-    fallbackYear?: number
+    fallbackYear?: number,
+    signal?: AbortSignal
 ): Promise<void> {
     const startedAt = Date.now();
 
@@ -229,8 +246,21 @@ export async function runProcessJob(
                     ipaWarning = "IPA file had no readable pages";
                     return null;
                 }
-                const page0 = await images.get(0);
-                const image = rotations.ipa ? await rotateImage(page0, rotations.ipa) : page0;
+                // The IPA upload can be multi-page (a cover sheet, the actual approval page, maybe an
+                // annex) — only ONE page is ever actually extracted from (extractIpaFields below is a
+                // single-document pass), so the first page the caseworker hasn't dropped in staging
+                // (public/index.html's IPA staging grid, same "attach then delete the pages you don't
+                // need" pattern the pdfs staging grid already has) is the one used. Defaults to page 0
+                // when nothing was excluded, same as before this page-picker existed.
+                let pageIdx = 0;
+                while (excludedIpaPages.has(pageIdx) && pageIdx < images.length) pageIdx++;
+                if (pageIdx >= images.length) {
+                    ipaWarning = "every page of the IPA file was removed in the staging step — nothing left to scan";
+                    return null;
+                }
+                const rawPage = await images.get(pageIdx);
+                const rotationDeg = rotations.ipa?.[String(pageIdx)];
+                const image = rotationDeg ? await rotateImage(rawPage, rotationDeg) : rawPage;
                 ipaImage = await resizeForDisplay(image, 500);
                 const { fields, cost } = await extractIpaFields(image);
                 addCost(PRIMARY_VISION_MODEL, cost);
@@ -274,7 +304,7 @@ export async function runProcessJob(
             if (pageRotation) await imagesByFile[fi].set(i, await rotateImage(await imagesByFile[fi].get(i), pageRotation));
             const source = `${file.originalname} p${i + 1}`;
             try {
-                const result = await extractPageContext(await imagesByFile[fi].get(i), timesheetModel);
+                const result = await extractPageContext(await imagesByFile[fi].get(i), timesheetModel, signal);
                 const validYear = result.year !== null && SUPPORTED_YEARS.includes(result.year) ? result.year : null;
                 pageContextCache.set(source, { context: result.context, isTimesheet: result.isTimesheet, dataModel: result.dataModel, year: validYear });
                 addCost(timesheetModel, result.cost);
@@ -382,6 +412,152 @@ export async function runProcessJob(
     const liveJob = processJobs.get(jobId);
     if (liveJob) liveJob.pages.length = pageTasks.length;
 
+    // Agentic discovery+extraction for one page's shape (lib/ocr/agentLoop.ts) — replaces
+    // extractPageContext's fixed dataModel classification AND the roster/normal-path split below
+    // when USE_AGENTIC_DISCOVERY is on. Applies its own entries via applyParsedEntries/
+    // applyRosterResult so the rest of processPage (live-progress push, finally block) doesn't need
+    // to know whether a page was classified the old way or discovered agentically.
+    function applyParsedEntries(parsed: ParsedEntry[], source: string, pageYear: number): void {
+        for (const entry of parsed) {
+            if (entry.day === null || entry.month === null) {
+                warnings.push({
+                    source,
+                    reason: `skipped a row with no determinable date (times=${entry.times ? entry.times.join(",") : entry.times})${entry.notes ? `: ${entry.notes}` : ""}`,
+                    category: "skipped_invalid",
+                });
+                continue;
+            }
+            if (entry.month < 1 || entry.month > 12 || entry.day < 1 || entry.day > 31) {
+                warnings.push({ source, reason: `implausible date day=${entry.day} month=${entry.month}, skipped`, category: "skipped_invalid" });
+                continue;
+            }
+            const daysInThisMonth = new Date(pageYear, entry.month, 0).getDate();
+            if (entry.day > daysInThisMonth) {
+                warnings.push({
+                    source,
+                    reason: `day=${entry.day} does not exist in month=${entry.month}/${pageYear} (only has ${daysInThisMonth} days), skipped`,
+                    category: "skipped_invalid",
+                });
+                continue;
+            }
+            if (entry.rest_day === true) {
+                restDays.push({ year: pageYear, month: entry.month, day: entry.day, source, notes: entry.notes });
+                continue;
+            }
+            const entryDate = `${pageYear}-${String(entry.month).padStart(2, "0")}-${String(entry.day).padStart(2, "0")}`;
+            if ((!entry.times || entry.times.length === 0) && entry.hoursWorked !== null) {
+                hoursEntries.push({
+                    date: new Date(pageYear, entry.month - 1, entry.day),
+                    hoursWorked: entry.hoursWorked,
+                    otHours: entry.otHours,
+                    source,
+                    guessed: entry.guessed === true,
+                });
+                warnings.push({
+                    source,
+                    reason: `day=${entry.day} month=${entry.month}: only a total-hours figure was found (${entry.hoursWorked}h${entry.otHours ? ` + ${entry.otHours}h OT` : ""}), no clock in/out times — NOT written to the spreadsheet (needs clock times), please enter this day manually`,
+                    category: "flagged_review",
+                    date: entryDate,
+                });
+                continue;
+            }
+            if (!entry.times || entry.times.length === 0) {
+                restDays.push({ year: pageYear, month: entry.month, day: entry.day, source, notes: entry.notes ? `unclear mark: ${entry.notes} — please verify` : "unclear mark — please verify" });
+                warnings.push({
+                    source,
+                    reason: `day=${entry.day} month=${entry.month}: has a mark but no clock times/hours/leave-code could be determined${entry.notes ? ` (${entry.notes})` : ""} — recorded as unworked so it isn't auto-filled as a missing day, please verify against the source PDF`,
+                    category: "flagged_review",
+                    date: entryDate,
+                });
+                continue;
+            }
+            if (entry.times.length % 2 !== 0) {
+                warnings.push({
+                    source,
+                    reason: `day=${entry.day} month=${entry.month}: odd number of time values (${entry.times.join(", ")}) — cannot pair into clock-in/out shifts, skipped, please verify against the original page`,
+                    category: "skipped_invalid",
+                    date: entryDate,
+                });
+                continue;
+            }
+            if (entry.guessed === true) {
+                const alreadyHasCta = entry.notes ? /verify|double check/i.test(entry.notes) : false;
+                warnings.push({
+                    source,
+                    reason: `day=${entry.day} month=${entry.month} is a model-derived guess (${entry.times.join(", ")})${entry.notes ? `: ${entry.notes}` : ""}${alreadyHasCta ? "" : " — please double check"}`,
+                    category: "flagged_review",
+                    date: entryDate,
+                });
+            }
+            for (let ti = 0; ti < entry.times.length; ti += 2) {
+                timeEntries.push({
+                    date: new Date(pageYear, entry.month - 1, entry.day),
+                    clockIn: entry.times[ti],
+                    clockOut: entry.times[ti + 1],
+                    source,
+                    guessed: entry.guessed === true,
+                    noBreak: entry.noBreak === true,
+                });
+            }
+        }
+    }
+
+    // Shared by the legacy worker_roster branch and the agentic one_date_many_workers branch — both
+    // produce the exact same reconcileRosterAttempts() output shape, just via different extraction
+    // front-ends, so they apply it identically.
+    function applyRosterResult(
+        pageYear: number,
+        source: string,
+        rosterDate: { day: number; month: number } | null,
+        entry: RosterReconciledEntry | null,
+        allRows: RosterRow[],
+        rosterWarnings: FillWarning[]
+    ): void {
+        warnings.push(...rosterWarnings);
+        const rosterDateStr = rosterDate ? `${pageYear}-${String(rosterDate.month).padStart(2, "0")}-${String(rosterDate.day).padStart(2, "0")}` : null;
+        pageRosterMeta.set(source, {
+            confidence: entry?.matchConfidence ?? "none",
+            allRows,
+            date: rosterDateStr,
+            matchedRowIndex: entry?.matchedRowIndex ?? null,
+        });
+
+        if (!entry) return;
+        const entryDate = `${pageYear}-${String(entry.month).padStart(2, "0")}-${String(entry.day).padStart(2, "0")}`;
+        if (entry.actualTimeIn !== null && entry.actualTimeOut !== null) {
+            timeEntries.push({
+                date: new Date(pageYear, entry.month - 1, entry.day),
+                clockIn: entry.actualTimeIn,
+                clockOut: entry.actualTimeOut,
+                source,
+                guessed: entry.guessed,
+                noBreak: entry.mealBreakHours === 0,
+            });
+            if (entry.guessed) {
+                warnings.push({
+                    source,
+                    reason: `day=${entry.day} month=${entry.month}: roster match for the target worker is a model-derived guess${entry.notes ? `: ${entry.notes}` : ""} — please double check`,
+                    category: "flagged_review",
+                    date: entryDate,
+                });
+            }
+        } else {
+            restDays.push({
+                year: pageYear,
+                month: entry.month,
+                day: entry.day,
+                source,
+                notes: entry.notes ? `roster match, unclear time: ${entry.notes}` : "roster match, unclear actual time in/out — please verify",
+            });
+            warnings.push({
+                source,
+                reason: `day=${entry.day} month=${entry.month}: target worker matched on the roster, but actual time in/out could not be determined — recorded as unworked so it isn't auto-filled as a missing day, please verify against the source PDF`,
+                category: "flagged_review",
+                date: entryDate,
+            });
+        }
+    }
+
     async function processPage(fi: number, i: number, orderIndex: number): Promise<void> {
             const file = files[fi];
             const images = imagesByFile[fi];
@@ -389,6 +565,10 @@ export async function runProcessJob(
             let displayImage = "";
             let pageContext = "";
             let dataModel: PageDataModel = "unclear";
+            if (signal?.aborted) {
+                warnings.push({ source, reason: "cancelled by user before this page started", category: "system" });
+                return;
+            }
             // Wrapped in try/finally (rather than checking success at every one of this block's
             // several early `return`s) so the live progress push below always fires exactly once
             // per page — whether it fully scanned, got skipped as a non-timesheet, or every scan
@@ -410,7 +590,7 @@ export async function runProcessJob(
                 let cached = pageContextCache.get(source);
                 if (!cached) {
                     try {
-                        const result = await extractPageContext(pageImage, timesheetModel);
+                        const result = await extractPageContext(pageImage, timesheetModel, signal);
                         const validYear = result.year !== null && SUPPORTED_YEARS.includes(result.year) ? result.year : null;
                         cached = { context: result.context, isTimesheet: result.isTimesheet, dataModel: result.dataModel, year: validYear };
                         addCost(timesheetModel, result.cost);
@@ -454,6 +634,170 @@ export async function runProcessJob(
                     return;
                 }
 
+                // Agentic discovery (lib/ocr/agentLoop.ts) replaces extractPageContext's fixed
+                // dataModel classification AND both legacy branches below (worker_roster vs
+                // everything else) with a single routing step: 3 independent agent-loop runs (one
+                // per SCAN_TEMPERATURES entry, same fan-out the legacy path already uses) each
+                // explore the page themselves and settle on a shapeFamily + extracted rows; the 3
+                // results are majority-voted on shapeFamily, then routed to whichever existing
+                // reconciler matches (reconcileAttempts/reconcileRosterAttempts/reconcileGridAttempts
+                // — all three completely unchanged, only the extraction front-end feeding them is
+                // agentic). Gated behind USE_AGENTIC_DISCOVERY so the proven legacy path below stays
+                // one env var away from instantly reinstated.
+                if (USE_AGENTIC_DISCOVERY) {
+                    const ipa = await ipaPromise;
+                    const targetWorker = { name: ipa?.workerName ?? null, fin: ipa?.workerFin ?? null };
+
+                    const onEvent = (e: AgentEvent) => {
+                        const job = processJobs.get(jobId);
+                        if (!job) return;
+                        // Deliberately never trimmed/shifted — public/index.html's renderAgentEvents
+                        // diffs against the array's raw length each poll (events.slice(lastRenderedCount)),
+                        // which only works if length only ever grows. A shift()-based cap (tried earlier)
+                        // breaks that invariant once the cap kicks in — the array's length can plateau or
+                        // shrink relative to what the client already counted, silently stalling the live
+                        // feed until it desyncs and dumps everything at once. A few thousand small event
+                        // objects for one job's lifetime (bounded by MAX_PAGES_PER_JOB=200 pages and
+                        // JOB_TTL_MS) costs nowhere near enough memory to justify reintroducing that bug.
+                        job.events.push(e);
+                    };
+                    const onCost = (m: string, c: number) => {
+                        addCost(m, c);
+                        markModelUsed(source, m);
+                    };
+
+                    const runAttempt = (idx: number) => {
+                        const { temperature, seed } = SCAN_TEMPERATURES[idx];
+                        return runAgentLoop(pageImage, source, idx, temperature, seed, targetWorker, onEvent, onCost, signal, 8, timesheetModel);
+                    };
+
+                    // Run the first two attempts, then check whether they already agree — both the
+                    // shapeFamily AND the extracted rows themselves, not just the shape — before ever
+                    // starting the third. The downstream routing below already requires at least 2
+                    // agreeing attempts to trust a shape-family decision (winningCount < 2 is treated
+                    // as "no agreement" a bit further down), and reconcileAttempts/reconcileRosterAttempts/
+                    // reconcileGridAttempts can each already reach a confident "unanimous" result from
+                    // just 2 fully-agreeing attempts — a 3rd identical reading wouldn't change the
+                    // outcome, only the bill. The 3rd ("tiebreaker") attempt is only worth paying for
+                    // when the first two genuinely disagree, exactly where a majority vote needs it.
+                    const [first, second] = await Promise.allSettled([runAttempt(0), runAttempt(1)]);
+                    if (first.status === "rejected") console.error(`${source} agent attempt 0 rejected —`, first.reason);
+                    if (second.status === "rejected") console.error(`${source} agent attempt 1 rejected —`, second.reason);
+
+                    const settled: AgentLoopResult[] = [];
+                    if (first.status === "fulfilled") settled.push(first.value);
+                    if (second.status === "fulfilled") settled.push(second.value);
+
+                    // `notes` is free-form natural language the model re-phrases differently almost
+                    // every single call, even when the actual day/month/times/hours it read are
+                    // identical (observed live: two attempts agreeing on every extracted value still
+                    // failed a raw JSON.stringify equality check purely over notes wording) — stripped
+                    // recursively (it appears at every nesting level: a plain date row, a roster
+                    // worker row, a grid cell) before comparing, so "agree" means "agree on the actual
+                    // substance", not "happened to phrase it identically".
+                    const stripNotes = (v: unknown): unknown => {
+                        if (Array.isArray(v)) return v.map(stripNotes);
+                        if (v !== null && typeof v === "object") {
+                            const out: Record<string, unknown> = {};
+                            for (const [k, val] of Object.entries(v)) {
+                                if (k === "notes") continue;
+                                out[k] = stripNotes(val);
+                            }
+                            return out;
+                        }
+                        return v;
+                    };
+                    const agentResultsAgree = (a: AgentLoopResult, b: AgentLoopResult): boolean =>
+                        a.shapeFamily === b.shapeFamily &&
+                        JSON.stringify(stripNotes("rows" in a ? a.rows : a.reason)) === JSON.stringify(stripNotes("rows" in b ? b.rows : b.reason));
+
+                    const firstTwoAgree = first.status === "fulfilled" && second.status === "fulfilled" && agentResultsAgree(first.value, second.value);
+
+                    if (!firstTwoAgree) {
+                        try {
+                            settled.push(await runAttempt(2));
+                        } catch (e) {
+                            console.error(`${source} agent attempt 2 rejected —`, e);
+                        }
+                    }
+
+                    if (settled.length === 0) {
+                        warnings.push({ source, reason: "all agentic discovery attempts for this page failed — page was skipped entirely", category: "scan_quality" });
+                        return;
+                    }
+
+                    // Majority-vote the SHAPE first (2-of-3) — the 3 attempts are independent explorations,
+                    // not 3 reads of one fixed prompt, so they can genuinely disagree about what shape the
+                    // page even is, not just about values within an agreed shape. Only attempts that agreed
+                    // with the winning shape are used below; the rest are dropped, same "excluded from
+                    // voting, not a real reading" treatment reconcileAttempts already gives a non-participant.
+                    const familyVotes = new Map<ShapeFamily, number>();
+                    for (const r of settled) familyVotes.set(r.shapeFamily, (familyVotes.get(r.shapeFamily) ?? 0) + 1);
+                    let winningFamily: ShapeFamily | null = null;
+                    let winningCount = 0;
+                    for (const [family, count] of familyVotes) {
+                        if (count > winningCount) { winningFamily = family; winningCount = count; }
+                    }
+
+                    if (winningFamily === null || winningCount < 2) {
+                        warnings.push({
+                            source,
+                            reason: `agentic discovery attempts could not agree on this page's shape (${settled.map(r => r.shapeFamily).join(", ")}) — skipped, please check the source PDF directly`,
+                            category: "flagged_review",
+                        });
+                        dataModel = "unclear";
+                        pageMeta.set(source, { dataModel, pageContext });
+                        return;
+                    }
+
+                    if (winningFamily === "other") {
+                        const reasons = settled.filter(r => r.shapeFamily === "other").map(r => (r as Extract<AgentLoopResult, { shapeFamily: "other" }>).reason);
+                        warnings.push({ source, reason: `flagged for human review: ${reasons.join("; ")}`, category: "flagged_review" });
+                        dataModel = "unclear";
+                        pageMeta.set(source, { dataModel, pageContext });
+                        return;
+                    }
+
+                    const winning = settled.filter(r => r.shapeFamily === winningFamily);
+
+                    if (winningFamily === "one_worker_many_dates") {
+                        dataModel = "clock_times"; // closest existing label — only used for display/picker gating
+                        pageMeta.set(source, { dataModel, pageContext });
+                        const attempts = winning.map(r => (r as Extract<AgentLoopResult, { shapeFamily: "one_worker_many_dates" }>).rows);
+                        const { entries, warnings: w } = reconcileAttempts(attempts, source, true, pageYear, true);
+                        warnings.push(...w);
+                        applyParsedEntries(entries, source, pageYear);
+                        return;
+                    }
+
+                    if (winningFamily === "one_date_many_workers") {
+                        dataModel = "worker_roster";
+                        pageMeta.set(source, { dataModel, pageContext });
+                        const attempts = winning.map(r => (r as Extract<AgentLoopResult, { shapeFamily: "one_date_many_workers" }>).rows);
+                        const { date, entry, allRows, warnings: w } = reconcileRosterAttempts(attempts, source, targetWorker.name, targetWorker.fin, pageYear);
+                        applyRosterResult(pageYear, source, date, entry, allRows, w);
+                        return;
+                    }
+
+                    // many_workers_many_dates — the shape the fixed 4-way classifier never had a bucket
+                    // for at all (e.g. sample-data/745X_Timesheets.pdf's duty-roster grid).
+                    dataModel = "worker_roster"; // reuses the same label so the UI's existing picker-fallback check also covers a grid page
+                    pageMeta.set(source, { dataModel, pageContext });
+                    const attempts: GridPageAttempt[] = winning.map(r => (r as Extract<AgentLoopResult, { shapeFamily: "many_workers_many_dates" }>).rows);
+                    const { entries, warnings: w, matchConfidence, allWorkerNames } = reconcileGridAttempts(attempts, source, targetWorker.name, targetWorker.fin, pageYear);
+                    warnings.push(...w);
+                    pageRosterMeta.set(source, {
+                        confidence: matchConfidence,
+                        allRows: allWorkerNames.map(name => ({ workerName: name, workerIc: null, actualTimeIn: null, actualTimeOut: null, mealBreakHours: null, struckThrough: false, notes: null })),
+                        date: null,
+                        matchedRowIndex: null,
+                    });
+                    applyParsedEntries(entries, source, pageYear);
+                    return;
+                }
+
+                // ---- Legacy, non-agentic path (USE_AGENTIC_DISCOVERY=false) — unchanged below ----
+                //
                 // A worker-roster page (one shared date, many named workers as rows) is the inverse
                 // shape of every other dataModel — extracted and reconciled via a completely
                 // different path (lib/rosterPrompt.ts + lib/reconcile.ts's reconcileRosterAttempts,
@@ -470,7 +814,7 @@ export async function runProcessJob(
 
                     const rosterPrompt = buildRosterPrompt();
                     const rosterResults = await Promise.allSettled(
-                        SCAN_TEMPERATURES.map(({ temperature, seed }) => scanPageImage(pageImage, rosterPrompt, temperature, seed, timesheetModel))
+                        SCAN_TEMPERATURES.map(({ temperature, seed }) => scanPageImage(pageImage, rosterPrompt, temperature, seed, timesheetModel, signal))
                     );
 
                     const rosterAttempts: RosterPageAttempt[] = [];
@@ -584,7 +928,7 @@ export async function runProcessJob(
                     SCAN_TEMPERATURES.map(({ temperature, seed }) => ({ bandImage, b, temperature, seed }))
                 );
                 const results = await Promise.allSettled(
-                    scanJobs.map(({ bandImage, temperature, seed }) => scanPageImage(bandImage, prompt, temperature, seed, timesheetModel))
+                    scanJobs.map(({ bandImage, temperature, seed }) => scanPageImage(bandImage, prompt, temperature, seed, timesheetModel, signal))
                 );
 
                 const attemptsByBand: ParsedEntry[][][] = bands.map(() => []);
@@ -688,7 +1032,7 @@ export async function runProcessJob(
                     .map(e => ({ day: e.day, month: e.month }));
                 if (candidates.length > 0) {
                     try {
-                        const { confirmed, cost } = await verifyDatesOnPage(pageImage, candidates, timesheetModel);
+                        const { confirmed, cost } = await verifyDatesOnPage(pageImage, candidates, timesheetModel, signal);
                         addCost(timesheetModel, cost);
                         markModelUsed(source, timesheetModel);
                         parsed = reconciled.filter(e => {
@@ -729,7 +1073,7 @@ export async function runProcessJob(
                 );
                 if (disputedDates.size > 0) {
                     try {
-                        const { content: fallbackContent, cost: fallbackCost } = await scanPageImage(pageImage, prompt, 0, 42, FALLBACK_VISION_MODEL);
+                        const { content: fallbackContent, cost: fallbackCost } = await scanPageImage(pageImage, prompt, 0, 42, FALLBACK_VISION_MODEL, signal);
                         addCost(FALLBACK_VISION_MODEL, fallbackCost);
                         markModelUsed(source, FALLBACK_VISION_MODEL);
                         const fallbackParsed = JSON.parse(extractJsonBlock(fallbackContent)) as ParsedEntry[];
@@ -911,16 +1255,23 @@ export async function runProcessJob(
             let nextIdx = 0;
             let active = 0;
             function pump() {
-                while (active < pageConcurrencyLimit && nextIdx < pageTasks.length) {
+                // Once cancelled, stop STARTING new pages — in-flight pages notice the same signal
+                // inside their own vision calls (threaded through scanPageImage/verifyDatesOnPage/
+                // runAgentLoop above) and wind down on their own, rather than being hard-killed here.
+                while (!signal?.aborted && active < pageConcurrencyLimit && nextIdx < pageTasks.length) {
                     const orderIndex = nextIdx;
                     const { fi, i } = pageTasks[nextIdx++];
                     active++;
                     processPage(fi, i, orderIndex).finally(() => {
                         active--;
-                        if (nextIdx >= pageTasks.length && active === 0) resolve();
+                        // Also resolves once cancelled and every in-flight page has wound down, even
+                        // though nextIdx never reached pageTasks.length — otherwise a cancel mid-run
+                        // would leave this promise (and the whole job) hanging forever.
+                        if (active === 0 && (nextIdx >= pageTasks.length || signal?.aborted)) resolve();
                         else pump();
                     });
                 }
+                if (active === 0 && (nextIdx >= pageTasks.length || signal?.aborted)) resolve(); // covers "already cancelled before the first page started"
             }
             pump();
         });
@@ -1117,6 +1468,11 @@ export async function runProcessJob(
         costUsd: totalCostUsd,
         costByModel,
         durationMs: Date.now() - startedAt,
+        cancelled: job.status === "cancelled",
     };
-    job.status = "done";
+    // The cancel endpoint (server.ts) may have already flipped status to "cancelled" while this
+    // was still assembling — don't stomp that back to "done". Either way job.result above still
+    // reflects whatever pages actually finished, so a cancelled run still renders a (partial) result
+    // instead of nothing.
+    if (job.status === "running") job.status = "done";
 }

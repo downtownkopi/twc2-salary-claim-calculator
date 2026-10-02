@@ -132,14 +132,19 @@ app.post(
                 }
             }
 
-            let ipaPreview: string | null = null;
+            // Same staging idea as pdfsPreview above — the IPA upload can itself be multi-page (a
+            // cover sheet, the actual approval page, maybe an annex), and extractIpaFields (lib/ipa.ts)
+            // only ever reads ONE of them, so every page is shown here with its own delete button, the
+            // same "attach, then drop the pages you don't need" flow pdfs already has — rather than
+            // silently assuming page 0 is always the right one.
+            const ipaPreview: { pageIndex: number; image: string }[] = [];
             let ipaError: string | null = null;
             if (ipaFile) {
                 try {
                     const images = await loadPagesForFile(ipaFile, path.join(previewDir, "ipa"), MAX_PAGES_PER_JOB);
-                    // Only the first page is ever sent to extractIpaFields (lib/ipa.ts) — previewing
-                    // later pages would invite rotating a page that isn't actually used.
-                    if (images.length > 0) ipaPreview = await resizeForDisplay(await images.get(0), 400);
+                    for (let pi = 0; pi < images.length; pi++) {
+                        ipaPreview.push({ pageIndex: pi, image: await resizeForDisplay(await images.get(pi), 400) });
+                    }
                 } catch (e: any) {
                     ipaError = e.message;
                 }
@@ -269,6 +274,19 @@ app.post(
             // ignore — fall through with no exclusions applied
         }
 
+        // Same idea as excludedPages above, but for the IPA letter's own pages (public/index.html's
+        // IPA staging grid) — the IPA upload can be multi-page, and runProcessJob picks the first
+        // page NOT in this set rather than always assuming page 0.
+        let excludedIpaPages = new Set<number>();
+        try {
+            if (typeof req.body.excludedIpaPages === "string") {
+                const parsed = JSON.parse(req.body.excludedIpaPages);
+                if (Array.isArray(parsed)) excludedIpaPages = new Set(parsed.map(Number));
+            }
+        } catch {
+            // ignore — fall through with no exclusions applied
+        }
+
         // The caseworker's declared standard break (public/index.html's radio group) — used as
         // the assumed break for single-shift days (nothing is actually observed to contradict it
         // there) and as the value a multi-shift day's genuinely observed gap gets compared against
@@ -289,16 +307,17 @@ app.post(
         // GET /api/process/:jobId, which renders each page's card as soon as that page finishes rather
         // than waiting for the entire batch.
         const jobId = randomUUID();
-        processJobs.set(jobId, { status: "running", pages: [], result: null, error: null });
+        const controller = new AbortController();
+        processJobs.set(jobId, { status: "running", pages: [], result: null, error: null, events: [], controller });
         // Cloud Run would just add instances under load; a fixed VPS can't — acquireJobSlot queues
         // this job's actual work (not the response below, which returns immediately either way)
         // until a concurrency slot is free, so peak memory/CPU stays bounded to MAX_CONCURRENT_JOBS
         // regardless of how many caseworkers upload at the same moment.
         acquireJobSlot()
-            .then(() => runProcessJob(jobId, files, ipaFile, rotations, excludedPages, standardBreakHours, fallbackYear))
+            .then(() => runProcessJob(jobId, files, ipaFile, rotations, excludedPages, excludedIpaPages, standardBreakHours, fallbackYear, controller.signal))
             .catch(e => {
                 const job = processJobs.get(jobId);
-                if (job) { job.status = "error"; job.error = e.message; }
+                if (job && job.status === "running") { job.status = "error"; job.error = e.message; }
             })
             .finally(() => {
                 releaseJobSlot();
@@ -329,8 +348,25 @@ app.get("/api/process/:jobId", (req, res) => {
     // job.pages is pre-sized to the page count and written by index (upload order), so a page
     // that hasn't finished yet — or never will, e.g. excluded/failed — leaves a hole. Filtered out
     // here rather than sent as JSON `null`, so the client only ever sees pages that actually
-    // completed, still in upload-order relative to each other.
-    res.json({ ...job, pages: job.pages.filter(p => p !== undefined) });
+    // completed, still in upload-order relative to each other. `controller` is deliberately
+    // excluded — an AbortController isn't meaningfully serializable and the client has no use for it.
+    res.json({ ...job, controller: undefined, pages: job.pages.filter(p => p !== undefined) });
+});
+
+// Lets a caseworker stop a running scan mid-way — most useful now that discovery is agentic
+// (lib/ocr/agentLoop.ts): loop length/cost per page is no longer fixed the way a single prompt
+// call was, so a job that's clearly going sideways (or just taking too long) is worth being able
+// to cut off rather than only ever waiting it out. Already-finished pages are kept; in-flight
+// pages are aborted via the job's AbortController (threaded all the way down to individual vision
+// calls, see lib/ocr/visionClient.ts's signal param) rather than left to finish.
+app.post("/api/process/:jobId/cancel", (req, res) => {
+    const job = processJobs.get(req.params.jobId);
+    if (!job) return res.status(404).json({ error: "job not found" });
+    if (job.status === "running") {
+        job.controller.abort();
+        job.status = "cancelled";
+    }
+    res.json({ status: job.status });
 });
 
 // Standalone cross-check tool: caseworker uploads the worker's own bank statement(s), and every

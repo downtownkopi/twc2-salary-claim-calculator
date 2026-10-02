@@ -50,6 +50,17 @@ function str(v: unknown): string {
     return typeof v === "string" ? v.trim() : "";
 }
 
+// mergeTransactionAttempts below dedups transactions by an exact `${date}|${amount}|${direction}`
+// string key — a model occasionally drops the day (e.g. "2025-07" instead of "2025-07-01") despite
+// the prompt asking for YYYY-MM-DD, which doesn't fail to parse, it just forms a DIFFERENT dedup key
+// from every other attempt's correctly-formatted reading of the exact same transaction. The result
+// is the same real transaction showing up twice in the final list — once correctly dated, once
+// under its malformed date — rather than merging into one row. Same treatment as a transaction with
+// no date at all (already filtered below): drop it from THIS attempt's output rather than letting a
+// malformed reading silently fork into its own phantom entry; a properly-dated reading of the same
+// line from another attempt still comes through normally.
+const FULL_DATE_FORMAT = /^\d{4}-\d{2}-\d{2}$/;
+
 // One independent scan attempt at a given temperature/seed — called several times per page (see
 // server.ts's SCAN_TEMPERATURES) since a single deterministic pass can genuinely miss a line the
 // model would have caught on a second, differently-seeded look, even on a clean printed/digital-
@@ -83,7 +94,7 @@ export async function extractMatchingTransactions(base64Image: string, temperatu
             direction: "credit" as const,
             confirmedByAttempts: null,
         }))
-        .filter(t => t.date); // a match with no date at all isn't usable downstream
+        .filter(t => FULL_DATE_FORMAT.test(t.date)); // no date, or a malformed one, isn't usable downstream — see FULL_DATE_FORMAT comment
 
     return { transactions, cost };
 }

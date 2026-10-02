@@ -155,6 +155,37 @@ export async function cropIntoBands(
     return bands;
 }
 
+// Used by the agent loop's cropRegion tool (lib/ocr/agentLoop.ts) so a model that's unsure about
+// one area of a page can zoom in rather than re-reading the whole image. Coordinates are
+// fractions of the page (0-1), not pixels — the model is only ever shown the rendered image, never
+// told its pixel dimensions, so asking it to reason in pixel space would be guesswork; fractions
+// map directly onto what it can actually see.
+/**
+ * Crops a rectangular region of a page image, specified as fractions (0-1) of the page's width
+ * and height.
+ *
+ * @param base64Image - The page image, base64-encoded.
+ * @param bbox - The region to crop, as fractions of the page's width/height.
+ * @returns The cropped region, base64-encoded PNG.
+ */
+export async function cropRegion(
+    base64Image: string,
+    bbox: { left: number; top: number; width: number; height: number }
+): Promise<string> {
+    const buffer = Buffer.from(base64Image, "base64");
+    const metadata = await sharp(buffer).metadata();
+    const imgWidth = metadata.width!;
+    const imgHeight = metadata.height!;
+
+    const left = Math.max(0, Math.min(imgWidth - 1, Math.round(bbox.left * imgWidth)));
+    const top = Math.max(0, Math.min(imgHeight - 1, Math.round(bbox.top * imgHeight)));
+    const width = Math.max(1, Math.min(imgWidth - left, Math.round(bbox.width * imgWidth)));
+    const height = Math.max(1, Math.min(imgHeight - top, Math.round(bbox.height * imgHeight)));
+
+    const cropped = await sharp(buffer).extract({ left, top, width, height }).png().toBuffer();
+    return cropped.toString("base64");
+}
+
 // The OCR pipeline needs the page rendered at scale 3.0 for legible digits, but shipping that
 // same full-resolution image back to the browser for every page (for the side-by-side review UI)
 // would bloat the JSON response — a single page can be 1-1.5MB at that scale. Downscaled

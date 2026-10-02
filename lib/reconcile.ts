@@ -559,3 +559,109 @@ export function reconcileRosterAttempts(
         warnings,
     };
 }
+
+// A duty-roster GRID page (the shape the agent loop calls "many_workers_many_dates", e.g. a weekly
+// schedule for a whole team) is the combination of both shapes above: many named workers as rows
+// (like reconcileRosterAttempts), each with their OWN multi-date record (like reconcileAttempts).
+// Rather than inventing a third voting algorithm, this reconciler only adds the genuinely new
+// piece — finding which row belongs to the target worker, reusing matchWorker exactly like the
+// roster reconciler — then hands that worker's per-attempt date-cells straight to the existing
+// reconcileAttempts for the actual day-level unanimity/majority voting. No new plausibility checks
+// or vote-counting logic is written here at all.
+export type GridRow = {
+    workerName: string | null;
+    workerIc: string | null;
+    cells: {
+        day: number;
+        month: number;
+        times: number[] | null;
+        hoursWorked: number | null;
+        otHours: number | null;
+        rest_day: boolean | null;
+        notes: string | null;
+    }[];
+};
+
+export type GridPageAttempt = {
+    workers: GridRow[];
+};
+
+/**
+ * Reconciles multiple independent scan attempts of the same duty-roster grid page (many workers ×
+ * many dates) into one worker's `ParsedEntry[]` — finding the target worker's row within each
+ * attempt (via {@link matchWorker}), then reconciling that row's date-cells across attempts using
+ * the same day-level voting {@link reconcileAttempts} already applies to a normal single-worker page.
+ *
+ * @param attempts - One parsed grid-page reading per independent scan attempt.
+ * @param source - Page identifier, used to tag any warnings produced.
+ * @param targetName - The IPA's extracted worker name to match against.
+ * @param targetFin - The IPA's extracted (possibly masked) FIN, or `null`.
+ * @param year - Forwarded to `reconcileAttempts` for its warnings' `date` field.
+ * @returns The target worker's reconciled per-date entries, any warnings, the overall match
+ * confidence, and every worker name seen across attempts (for a manual "pick a different row"
+ * fallback, same purpose as `reconcileRosterAttempts`'s `allRows`).
+ */
+export function reconcileGridAttempts(
+    attempts: GridPageAttempt[],
+    source: string,
+    targetName: string | null,
+    targetFin: string | null,
+    year?: number
+): { entries: ParsedEntry[]; warnings: FillWarning[]; matchConfidence: WorkerMatchConfidence; allWorkerNames: string[] } {
+    const allWorkerNames: string[] = [];
+    const seenNames = new Set<string>();
+    for (const a of attempts) {
+        for (const w of a.workers) {
+            const key = (w.workerName ?? "").trim().toLowerCase();
+            if (key && !seenNames.has(key)) {
+                seenNames.add(key);
+                allWorkerNames.push(w.workerName!);
+            }
+        }
+    }
+
+    // ---- per attempt: find that attempt's best candidate row for the target worker ----
+    const matchedRows: { row: GridRow; confidence: WorkerMatchConfidence }[] = [];
+    for (const a of attempts) {
+        const candidates: RosterCandidate[] = a.workers.map(w => ({ workerName: w.workerName, workerIc: w.workerIc }));
+        const match = matchWorker(candidates, targetName, targetFin);
+        if (match && match.confidence === "high") {
+            matchedRows.push({ row: a.workers[match.index], confidence: match.confidence });
+        }
+    }
+
+    if (matchedRows.length === 0) {
+        return {
+            entries: [],
+            warnings: [
+                {
+                    source,
+                    reason: "duty-roster grid page: no scan attempt confidently matched the target worker by name/IC — please check this page manually",
+                    category: "flagged_review",
+                },
+            ],
+            matchConfidence: "none",
+            allWorkerNames,
+        };
+    }
+
+    // ---- flatten each matched row's date-cells into the same ParsedEntry[] shape a normal
+    // single-worker page produces, then reuse reconcileAttempts wholesale for day-level voting ----
+    const perAttemptEntries: ParsedEntry[][] = matchedRows.map(({ row }) =>
+        row.cells.map(c => ({
+            day: c.day,
+            month: c.month,
+            times: c.times,
+            hoursWorked: c.hoursWorked,
+            otHours: c.otHours,
+            noBreak: null,
+            guessed: null,
+            rest_day: c.rest_day,
+            notes: c.notes,
+        }))
+    );
+
+    const { entries, warnings } = reconcileAttempts(perAttemptEntries, source, true, year, true);
+
+    return { entries, warnings, matchConfidence: matchedRows[0].confidence, allWorkerNames };
+}

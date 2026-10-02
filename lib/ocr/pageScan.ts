@@ -8,6 +8,7 @@ import { sendVisionRequest, extractJsonBlock, PRIMARY_VISION_MODEL } from "./vis
  * @param temperature - Model sampling temperature for this attempt.
  * @param seed - Model sampling seed for this attempt.
  * @param model - Which model to call; defaults to {@link PRIMARY_VISION_MODEL}.
+ * @param signal - Optional abort signal (e.g. a job cancellation); cuts off an in-flight call.
  * @returns The model's raw reply text, whether it was truncated, and this call's cost in USD.
  */
 export async function scanPageImage(
@@ -15,7 +16,8 @@ export async function scanPageImage(
     prompt: string,
     temperature = 0,
     seed = 42,
-    model: string = PRIMARY_VISION_MODEL
+    model: string = PRIMARY_VISION_MODEL,
+    signal?: AbortSignal
 ): Promise<{ content: string; truncated: boolean; cost: number }> {
     // Was 8000 — a dense page (e.g. a full-month calendar grid, or one with lots of per-day notes)
     // can still burn through that on reasoning alone before the JSON array is even done, truncating
@@ -23,7 +25,7 @@ export async function scanPageImage(
     // truncated attempt silently missing a trailing row is enough to drop a genuinely-covered date
     // as "not unanimous". Same reasoning-overhead-eats-the-budget failure mode extractIpaFields and
     // extractPageContext were already bumped for, just landing here too.
-    return sendVisionRequest(base64Image, prompt, temperature, seed, 16000, model);
+    return sendVisionRequest(base64Image, prompt, temperature, seed, 16000, model, signal);
 }
 
 export type PageDataModel = "clock_times" | "hours_total" | "punch_log" | "worker_roster" | "unclear";
@@ -65,7 +67,8 @@ export type PageDataModel = "clock_times" | "hours_total" | "punch_log" | "worke
  */
 export async function extractPageContext(
     base64Image: string,
-    model: string = PRIMARY_VISION_MODEL
+    model: string = PRIMARY_VISION_MODEL,
+    signal?: AbortSignal
 ): Promise<{ context: string; isTimesheet: boolean; dataModel: PageDataModel; year: number | null; cost: number }> {
     const prompt = `Look at this ENTIRE page of a worker's daily time/attendance record. It may be handwritten or typed, in any language, and in any layout — a row-per-day table, a calendar grid, a free-form list, a punch card, etc.
 
@@ -82,7 +85,7 @@ Output ONLY a JSON object: {"context": string, "isTimesheet": boolean, "dataMode
     // reasoning effort set to "none" — truncating with EMPTY content and no error, which cascaded
     // into every page on a job failing year detection with zero diagnostic trail. Matches the same
     // failure class verifyDatesOnPage was bumped 2000->4000 for earlier; same fix here.
-    const { content, cost } = await sendVisionRequest(base64Image, prompt, 0, 42, 1200, model);
+    const { content, cost } = await sendVisionRequest(base64Image, prompt, 0, 42, 1200, model, signal);
     try {
         const parsed = JSON.parse(extractJsonBlock(content));
         const dataModel: PageDataModel =
@@ -129,7 +132,8 @@ Output ONLY a JSON object: {"context": string, "isTimesheet": boolean, "dataMode
 export async function verifyDatesOnPage(
     base64Image: string,
     candidates: { day: number; month: number }[],
-    model: string = PRIMARY_VISION_MODEL
+    model: string = PRIMARY_VISION_MODEL,
+    signal?: AbortSignal
 ): Promise<{ confirmed: Set<string>; cost: number }> {
     if (candidates.length === 0) return { confirmed: new Set(), cost: 0 };
 
@@ -149,7 +153,7 @@ Genuine content includes not just clock times, but ANY deliberate mark — a das
 
 After going through every date individually, end your reply with a JSON array with exactly one object per date in the list, in the same order, as {day, month, confirmed}, where confirmed is true only if you found genuine handwritten content for that date's row. You may write your brief per-date notes first; put the JSON array last, in a \`\`\`json code fence.`;
 
-    const { content, cost } = await sendVisionRequest(base64Image, prompt, 0, 42, 4000, model);
+    const { content, cost } = await sendVisionRequest(base64Image, prompt, 0, 42, 4000, model, signal);
     const parsed = JSON.parse(extractJsonBlock(content)) as { day: number; month: number; confirmed: boolean }[];
 
     const confirmed = new Set<string>();

@@ -36,6 +36,13 @@ export const SCAN_TEMPERATURES: { temperature: number; seed: number }[] = [
 // cleanly.
 export const BANDS_PER_PAGE = 1;
 
+// Gates the agentic discovery loop (lib/ocr/agentLoop.ts) that replaces extractPageContext's fixed
+// dataModel classification in lib/jobs/timesheetJob.ts. Kept behind a flag (rather than deleting
+// the old classify-then-branch path outright) so the proven, deterministic path stays one env var
+// away from instantly reinstated while the new path is validated against real samples. Flip to
+// `false` (or set env USE_AGENTIC_DISCOVERY=false) to fall back to the old behavior.
+export const USE_AGENTIC_DISCOVERY = process.env.USE_AGENTIC_DISCOVERY !== "false";
+
 // Caps how many pages one job scans at once. Previously uncapped (every page started
 // simultaneously, on the theory that most real uploads were small) — fine on Cloud Run's elastic
 // instances, but on a fixed-RAM VPS a large upload (e.g. ~159 pages) firing all at once means up to
