@@ -94,6 +94,13 @@ const REQUEST_TIMEOUT_MS = 90_000;
 async function sendChatRequestWithRetry(chatRequest: any, signal?: AbortSignal): Promise<any> {
     const MAX_ATTEMPTS = 3;
     const model: string = chatRequest.model ?? "unknown";
+    // OpenRouter load-balances a single model id across several hosting providers by default —
+    // confirmed via logs/vision-debug.log that most calls land around a 14s median but a handful
+    // spike past 200s, the classic symptom of occasionally landing on a slower backend behind the
+    // same model name. "sort: latency" disables that load balancing and always prefers whichever
+    // provider has been fastest, trading a little routing diversity for fewer of those outliers.
+    // Only set if the caller didn't already specify provider preferences.
+    if (!chatRequest.provider) chatRequest.provider = { sort: "latency" };
     // Cheap proxy for request size (dominated by the base64 image) — avoids walking the message
     // array just to measure it on every single attempt.
     const requestBytes = JSON.stringify(chatRequest).length;
