@@ -652,7 +652,7 @@ export function reconcileGridAttempts(
     targetName: string | null,
     targetFin: string | null,
     year?: number
-): { entries: ParsedEntry[]; warnings: FillWarning[]; matchConfidence: WorkerMatchConfidence; allWorkerNames: string[] } {
+): { entries: ParsedEntry[]; warnings: FillWarning[]; matchConfidence: WorkerMatchConfidence; allWorkerNames: string[]; matchedRowIndex: number | null } {
     const allWorkerNames: string[] = [];
     const seenNames = new Set<string>();
     for (const a of attempts) {
@@ -701,6 +701,7 @@ export function reconcileGridAttempts(
             ],
             matchConfidence: "none",
             allWorkerNames,
+            matchedRowIndex: null,
         };
     }
 
@@ -722,5 +723,11 @@ export function reconcileGridAttempts(
 
     const { entries, warnings } = reconcileAttempts(perAttemptEntries, source, true, year, true);
 
-    return { entries, warnings, matchConfidence: matchedRows[0].confidence, allWorkerNames };
+    // allWorkerNames is deduped by normalized name (built above) — find the matched worker's row
+    // by that same key, so the caller (public/index.html) can highlight it, same pattern as
+    // reconcileRosterAttempts's indexInAllRows.
+    const matchedNameKey = (matchedRows[0].row.workerName ?? "").trim().toLowerCase();
+    const matchedRowIndex = allWorkerNames.findIndex(n => (n ?? "").trim().toLowerCase() === matchedNameKey);
+
+    return { entries, warnings, matchConfidence: matchedRows[0].confidence, allWorkerNames, matchedRowIndex: matchedRowIndex === -1 ? null : matchedRowIndex };
 }

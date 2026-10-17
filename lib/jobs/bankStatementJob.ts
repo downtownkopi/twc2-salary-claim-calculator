@@ -95,7 +95,7 @@ export async function runBankStatementJob(
         const pageImage = await images.get(pi);
 
         const source = `${file.originalname} p${pi + 1}`;
-        const page: BankStatementPageResult = { source, image: await resizeForDisplay(pageImage, 500), transactions: [] };
+        const page: BankStatementPageResult = { source, image: await resizeForDisplay(pageImage, 1400), transactions: [] };
         // Same SCAN_TEMPERATURES multi-attempt pattern as timesheet scanning — a single pass here
         // can genuinely miss a page's transaction entirely (the bug this was added to fix: one
         // deterministic attempt skipped 2 of 3 real payments on a page, understating what the

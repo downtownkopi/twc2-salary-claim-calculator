@@ -125,7 +125,7 @@ app.post(
                 try {
                     const images = await loadPagesForFile(file, path.join(previewDir, `pdfs-${fi}`), MAX_PAGES_PER_JOB);
                     for (let pi = 0; pi < images.length; pi++) {
-                        pdfsPreview.push({ fileIndex: fi, pageIndex: pi, fileName: file.originalname, image: await resizeForDisplay(await images.get(pi), 400) });
+                        pdfsPreview.push({ fileIndex: fi, pageIndex: pi, fileName: file.originalname, image: await resizeForDisplay(await images.get(pi), 800) });
                     }
                 } catch (e: any) {
                     pdfsErrors.push({ fileName: file.originalname, error: e.message });
@@ -143,7 +143,7 @@ app.post(
                 try {
                     const images = await loadPagesForFile(ipaFile, path.join(previewDir, "ipa"), MAX_PAGES_PER_JOB);
                     for (let pi = 0; pi < images.length; pi++) {
-                        ipaPreview.push({ pageIndex: pi, image: await resizeForDisplay(await images.get(pi), 400) });
+                        ipaPreview.push({ pageIndex: pi, image: await resizeForDisplay(await images.get(pi), 800) });
                     }
                 } catch (e: any) {
                     ipaError = e.message;
@@ -159,7 +159,7 @@ app.post(
                 try {
                     const images = await loadPagesForFile(file, path.join(previewDir, `bankStatement-${fi}`), MAX_PAGES_PER_JOB);
                     for (let pi = 0; pi < images.length; pi++) {
-                        bankStatementPreview.push({ fileIndex: fi, pageIndex: pi, fileName: file.originalname, image: await resizeForDisplay(await images.get(pi), 400) });
+                        bankStatementPreview.push({ fileIndex: fi, pageIndex: pi, fileName: file.originalname, image: await resizeForDisplay(await images.get(pi), 800) });
                     }
                 } catch (e: any) {
                     bankStatementErrors.push({ fileName: file.originalname, error: e.message });
@@ -175,7 +175,7 @@ app.post(
                 try {
                     const images = await loadPagesForFile(file, path.join(previewDir, `medicalBills-${fi}`), MAX_PAGES_PER_JOB);
                     for (let pi = 0; pi < images.length; pi++) {
-                        medicalBillsPreview.push({ fileIndex: fi, pageIndex: pi, fileName: file.originalname, image: await resizeForDisplay(await images.get(pi), 400) });
+                        medicalBillsPreview.push({ fileIndex: fi, pageIndex: pi, fileName: file.originalname, image: await resizeForDisplay(await images.get(pi), 800) });
                     }
                 } catch (e: any) {
                     medicalBillsErrors.push({ fileName: file.originalname, error: e.message });
@@ -192,7 +192,7 @@ app.post(
                 try {
                     const images = await loadPagesForFile(file, path.join(previewDir, `medicalCertificates-${fi}`), MAX_PAGES_PER_JOB);
                     for (let pi = 0; pi < images.length; pi++) {
-                        medicalCertificatesPreview.push({ fileIndex: fi, pageIndex: pi, fileName: file.originalname, image: await resizeForDisplay(await images.get(pi), 400) });
+                        medicalCertificatesPreview.push({ fileIndex: fi, pageIndex: pi, fileName: file.originalname, image: await resizeForDisplay(await images.get(pi), 800) });
                     }
                 } catch (e: any) {
                     medicalCertificatesErrors.push({ fileName: file.originalname, error: e.message });
@@ -208,7 +208,7 @@ app.post(
                 try {
                     const images = await loadPagesForFile(file, path.join(previewDir, `payslips-${fi}`), MAX_PAGES_PER_JOB);
                     for (let pi = 0; pi < images.length; pi++) {
-                        payslipsPreview.push({ fileIndex: fi, pageIndex: pi, fileName: file.originalname, image: await resizeForDisplay(await images.get(pi), 400) });
+                        payslipsPreview.push({ fileIndex: fi, pageIndex: pi, fileName: file.originalname, image: await resizeForDisplay(await images.get(pi), 800) });
                     }
                 } catch (e: any) {
                     payslipsErrors.push({ fileName: file.originalname, error: e.message });

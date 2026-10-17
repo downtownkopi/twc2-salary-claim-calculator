@@ -91,7 +91,7 @@ export async function runMedicalBillsJob(
         const pageImage = await images.get(pi);
 
         const source = `${file.originalname} p${pi + 1}`;
-        const page: MedicalBillsPageResult = { source, image: await resizeForDisplay(pageImage, 500), entries: [] };
+        const page: MedicalBillsPageResult = { source, image: await resizeForDisplay(pageImage, 1400), entries: [] };
         const results = await Promise.allSettled(
             SCAN_TEMPERATURES.map(({ temperature, seed }) => extractMedicalBillEntries(pageImage, temperature, seed))
         );

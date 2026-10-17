@@ -284,7 +284,7 @@ export async function runProcessJob(
                 const rawPage = await images.get(pageIdx);
                 const rotationDeg = rotations.ipa?.[String(pageIdx)];
                 const image = rotationDeg ? await rotateImage(rawPage, rotationDeg) : rawPage;
-                ipaImage = await resizeForDisplay(image, 500);
+                ipaImage = await resizeForDisplay(image, 1400);
                 const { fields, cost } = await extractIpaFields(image);
                 addCost(PRIMARY_VISION_MODEL, cost);
                 return fields;
@@ -856,13 +856,13 @@ export async function runProcessJob(
                     dataModel = "worker_roster"; // reuses the same label so the UI's existing picker-fallback check also covers a grid page
                     pageMeta.set(source, { dataModel, pageContext });
                     const attempts: GridPageAttempt[] = winning.map(r => (r as Extract<AgentLoopResult, { shapeFamily: "many_workers_many_dates" }>).rows);
-                    const { entries, warnings: w, matchConfidence, allWorkerNames } = reconcileGridAttempts(attempts, source, targetWorker.name, targetWorker.fin, pageYear);
+                    const { entries, warnings: w, matchConfidence, allWorkerNames, matchedRowIndex } = reconcileGridAttempts(attempts, source, targetWorker.name, targetWorker.fin, pageYear);
                     warnings.push(...w);
                     pageRosterMeta.set(source, {
                         confidence: matchConfidence,
                         allRows: allWorkerNames.map(name => ({ workerName: name, workerIc: null, actualTimeIn: null, actualTimeOut: null, mealBreakHours: null, struckThrough: false, notes: null })),
                         date: null,
-                        matchedRowIndex: null,
+                        matchedRowIndex,
                     });
                     applyParsedEntries(entries, source, pageYear);
                     return;
