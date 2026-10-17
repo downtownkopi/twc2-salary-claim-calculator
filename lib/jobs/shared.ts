@@ -50,6 +50,12 @@ export const USE_AGENTIC_DISCOVERY = process.env.USE_AGENTIC_DISCOVERY !== "fals
 // PagedImages.get, held only until that page's own scan finishes), plus a burst of concurrent
 // vision-API requests that risks the provider's own rate limits. A fixed cap bounds the peak to a
 // known size regardless of how large the upload is.
+// Tried lowering this to 5 on the theory that 10 pages x SCAN_TEMPERATURES.length (3) attempts =
+// 30 simultaneous calls was congesting the provider. Disproven by logs/vision-debug.log: median
+// per-call latency was ~14s at BOTH 10 and 5 (62s/54s averages were just a couple of outlier calls
+// spiking past 200s at either setting, not systemic queueing) — and the real scan got slower at 5
+// (45min vs 38min), since less parallelism with no latency improvement just does less work at once.
+// Back to 10; the actual driver of long scans is those rare 200s+ outlier calls, not concurrency.
 export const MAX_PAGE_CONCURRENCY = 10;
 
 // Jobs are only needed long enough for the client to poll the final "done" state once — not

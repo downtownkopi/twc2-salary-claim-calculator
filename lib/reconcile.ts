@@ -463,7 +463,10 @@ export function reconcileRosterAttempts(
     const dateStr = year ? `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}` : undefined;
 
     // ---- per attempt: find that attempt's best candidate row for the target worker ----
-    const votes: { row: RosterRow; confidence: WorkerMatchConfidence }[] = [];
+    // Every attempt's match is kept (not just "high") so a repetition-based corroboration pass
+    // below has something to work with — only a true "none" (score under even the low bar) is
+    // noise-filtered out immediately.
+    const perAttemptMatches: { row: RosterRow; confidence: WorkerMatchConfidence; nameKey: string }[] = [];
     const seenNames = new Set<string>();
     const allRows: RosterRow[] = [];
     for (const a of attempts) {
@@ -477,8 +480,9 @@ export function reconcileRosterAttempts(
         }
         const candidates: RosterCandidate[] = usableRows.map(w => ({ workerName: w.workerName, workerIc: w.workerIc }));
         const match = matchWorker(candidates, targetName, targetFin);
-        if (match && match.confidence === "high") {
-            votes.push({ row: usableRows[match.index], confidence: match.confidence });
+        if (match && match.confidence !== "none") {
+            const row = usableRows[match.index];
+            perAttemptMatches.push({ row, confidence: match.confidence, nameKey: (row.workerName ?? "").trim().toLowerCase() });
         }
     }
     // allRows is deduped by normalized name (built above) — this finds a matched vote's row by that
@@ -488,10 +492,25 @@ export function reconcileRosterAttempts(
         return allRows.findIndex(r => (r.workerName ?? "").trim().toLowerCase() === key);
     }
 
+    // A single attempt scoring "high" alone is trusted immediately, same as before. If none did,
+    // fall back to corroboration: a "low"-scoring row that at least 2 independent attempts landed
+    // on anyway is itself strong evidence (the same principle matchWorker's own FIN-corroboration
+    // branch already uses — a weak signal backed by a second, independent one is trustworthy even
+    // though neither alone would be) — this is what actually recovers the "same name misread the
+    // same way on every attempt" case that a bare threshold change can't distinguish from "one
+    // attempt randomly guessed low."
+    let votes: { row: RosterRow; confidence: WorkerMatchConfidence }[] = perAttemptMatches.filter(m => m.confidence === "high");
+    if (votes.length === 0) {
+        const countsByName = new Map<string, number>();
+        for (const m of perAttemptMatches) countsByName.set(m.nameKey, (countsByName.get(m.nameKey) ?? 0) + 1);
+        const corroborated = perAttemptMatches.filter(m => (countsByName.get(m.nameKey) ?? 0) >= 2);
+        if (corroborated.length > 0) votes = corroborated.map(m => ({ row: m.row, confidence: "low" as WorkerMatchConfidence }));
+    }
+
     if (votes.length === 0) {
         warnings.push({
             source,
-            reason: "worker-roster page: no scan attempt confidently matched the target worker by name/IC — please pick the correct row manually from this page",
+            reason: "worker-roster page: no scan attempt confidently matched the target worker by name/IC (even with cross-attempt corroboration) — please pick the correct row manually from this page",
             category: "flagged_review",
             date: dateStr,
         });
@@ -647,13 +666,27 @@ export function reconcileGridAttempts(
     }
 
     // ---- per attempt: find that attempt's best candidate row for the target worker ----
-    const matchedRows: { row: GridRow; confidence: WorkerMatchConfidence }[] = [];
+    // Same corroboration approach as reconcileRosterAttempts above: a single "high" match alone
+    // is trusted immediately; failing that, a "low" match that at least 2 independent attempts
+    // landed on the same name for is accepted too — a grid page's miss costs a whole week of
+    // dates at once (every date column on the page), so recovering this case matters more here
+    // than on a single-date roster page.
+    const perAttemptMatches: { row: GridRow; confidence: WorkerMatchConfidence; nameKey: string }[] = [];
     for (const a of attempts) {
         const candidates: RosterCandidate[] = a.workers.map(w => ({ workerName: w.workerName, workerIc: w.workerIc }));
         const match = matchWorker(candidates, targetName, targetFin);
-        if (match && match.confidence === "high") {
-            matchedRows.push({ row: a.workers[match.index], confidence: match.confidence });
+        if (match && match.confidence !== "none") {
+            const row = a.workers[match.index];
+            perAttemptMatches.push({ row, confidence: match.confidence, nameKey: (row.workerName ?? "").trim().toLowerCase() });
         }
+    }
+
+    let matchedRows: { row: GridRow; confidence: WorkerMatchConfidence }[] = perAttemptMatches.filter(m => m.confidence === "high");
+    if (matchedRows.length === 0) {
+        const countsByName = new Map<string, number>();
+        for (const m of perAttemptMatches) countsByName.set(m.nameKey, (countsByName.get(m.nameKey) ?? 0) + 1);
+        const corroborated = perAttemptMatches.filter(m => (countsByName.get(m.nameKey) ?? 0) >= 2);
+        if (corroborated.length > 0) matchedRows = corroborated.map(m => ({ row: m.row, confidence: "low" as WorkerMatchConfidence }));
     }
 
     if (matchedRows.length === 0) {
@@ -662,7 +695,7 @@ export function reconcileGridAttempts(
             warnings: [
                 {
                     source,
-                    reason: "duty-roster grid page: no scan attempt confidently matched the target worker by name/IC — please check this page manually",
+                    reason: "duty-roster grid page: no scan attempt confidently matched the target worker by name/IC (even with cross-attempt corroboration) — please check this page manually",
                     category: "flagged_review",
                 },
             ],

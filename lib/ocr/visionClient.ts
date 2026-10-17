@@ -1,5 +1,6 @@
 import { OpenRouter } from "@openrouter/sdk";
 import { traceable } from "langsmith/traceable";
+import { logVisionEvent } from "../visionDebugLog";
 
 // The default model every call uses unless a caller explicitly overrides it (see the `model`
 // param on sendVisionRequest/scanPageImage/extractPageContext/verifyDatesOnPage). IPA extraction
@@ -52,10 +53,16 @@ function sleep(ms: number): Promise<void> {
 // A malformed/truncated upstream response can make the OpenRouter SDK throw from deep inside its
 // own internals (confirmed live: a JSON.parse failure inside the SDK's matchFunc/chatSend),
 // detached from the promise this function returns — that promise then never resolves or rejects
-// on its own, hanging forever. Racing it against a plain timeout doesn't cancel the underlying
-// request (the SDK's own unhandled rejection, already logged and swallowed by server.ts's
-// process-level handler, still fires later) but it stops THIS call from blocking whatever awaited
-// it — e.g. one hung attempt no longer blocks an entire page's Promise.allSettled batch forever.
+// on its own, hanging forever. Previously this raced the send() call against a plain timeout
+// promise — but racing doesn't cancel the underlying HTTP request, it just stops THIS call from
+// blocking whatever awaited it. The abandoned request kept running on OpenRouter's side (the SDK's
+// own unhandled rejection, already logged and swallowed by server.ts's process-level handler,
+// still fires later) and — critically — can still complete and get billed there, even though we
+// retried with a brand-new request and never read the abandoned one's usage.cost. That silently
+// dropped real spend out of every job's reported cost total (confirmed: a scan whose on-screen
+// total was $0.0626 actually billed ~$0.25 on OpenRouter — the gap tracks with timeout/retry
+// volume). Aborting the request via AbortController instead actually tears down the in-flight
+// fetch on timeout, so it can't keep running (and billing) after we've given up on it.
 //
 // A timeout here is retried (bounded, see MAX_ATTEMPTS below), unlike the original no-retry
 // design. Reasoning: a pending request can be in one of two states we can't tell apart while
@@ -70,11 +77,6 @@ function sleep(ms: number): Promise<void> {
 class TimeoutError extends Error {}
 
 const REQUEST_TIMEOUT_MS = 90_000;
-
-/** Rejects with a {@link TimeoutError} after `ms` milliseconds. */
-function requestTimeout(ms: number): Promise<never> {
-    return new Promise((_, reject) => setTimeout(() => reject(new TimeoutError(`OpenRouter request timed out after ${ms}ms`)), ms));
-}
 
 // Shared by sendVisionRequest and sendVisionRequestWithTools — same rate-limit/timeout retry
 // behavior (see the comment above TimeoutError for why timeouts are retried, not just rate
@@ -91,21 +93,60 @@ function requestTimeout(ms: number): Promise<never> {
  */
 async function sendChatRequestWithRetry(chatRequest: any, signal?: AbortSignal): Promise<any> {
     const MAX_ATTEMPTS = 3;
+    const model: string = chatRequest.model ?? "unknown";
+    // Cheap proxy for request size (dominated by the base64 image) — avoids walking the message
+    // array just to measure it on every single attempt.
+    const requestBytes = JSON.stringify(chatRequest).length;
     for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+        // One AbortController per attempt, wired to BOTH the caller's own cancellation signal
+        // (e.g. a job stop) and our own timeout — either reason actually aborts the in-flight
+        // fetch now, instead of just abandoning a promise and letting the request run to
+        // completion (and get billed) unseen.
+        const controller = new AbortController();
+        const onExternalAbort = () => controller.abort(signal!.reason);
+        if (signal) {
+            if (signal.aborted) controller.abort(signal.reason);
+            else signal.addEventListener("abort", onExternalAbort);
+        }
+        const timeoutId = setTimeout(
+            () => controller.abort(new TimeoutError(`OpenRouter request timed out after ${REQUEST_TIMEOUT_MS}ms`)),
+            REQUEST_TIMEOUT_MS
+        );
+        const startedAt = Date.now();
+        logVisionEvent({ type: "attempt_start", model, attempt, requestBytes });
         try {
-            return await Promise.race([
-                getClient().chat.send({ chatRequest }, signal ? { signal } : undefined),
-                requestTimeout(REQUEST_TIMEOUT_MS),
-            ]);
+            const response = await getClient().chat.send({ chatRequest }, { signal: controller.signal });
+            logVisionEvent({
+                type: "attempt_success",
+                model,
+                attempt,
+                elapsedMs: Date.now() - startedAt,
+                cost: (response as any)?.usage?.cost ?? 0,
+                truncated: (response as any)?.choices?.[0]?.finishReason === "length",
+            });
+            return response;
         } catch (err) {
+            const elapsedMs = Date.now() - startedAt;
             if (isRateLimited(err) && attempt < MAX_ATTEMPTS) {
+                logVisionEvent({ type: "attempt_rate_limited", model, attempt, elapsedMs, willRetry: true });
                 await sleep(1000 * 2 ** (attempt - 1)); // 1s, 2s backoff
                 continue;
             }
-            if (err instanceof TimeoutError && attempt < MAX_ATTEMPTS) {
-                continue; // no backoff — a hung/slow request just needs a fresh attempt, not a wait
+            // Only our own timeout abort gets retried — an externally-aborted request (job
+            // stopped by the caller) falls through to the throw below instead, same as before.
+            if (controller.signal.aborted && controller.signal.reason instanceof TimeoutError) {
+                const willRetry = attempt < MAX_ATTEMPTS;
+                logVisionEvent({ type: "attempt_timeout", model, attempt, elapsedMs, willRetry });
+                if (willRetry) continue; // no backoff — a hung/slow request just needs a fresh attempt, not a wait
+            } else if (controller.signal.aborted) {
+                logVisionEvent({ type: "attempt_aborted_external", model, attempt, elapsedMs });
+            } else {
+                logVisionEvent({ type: "attempt_error", model, attempt, elapsedMs, message: err instanceof Error ? err.message : String(err) });
             }
             throw err;
+        } finally {
+            clearTimeout(timeoutId);
+            signal?.removeEventListener("abort", onExternalAbort);
         }
     }
     throw new Error("unreachable"); // satisfies TS control-flow analysis
