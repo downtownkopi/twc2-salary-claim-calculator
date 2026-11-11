@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { reconcileAttempts, reconcileRosterAttempts, type ParsedEntry, type RosterPageAttempt, type RosterRow } from "../lib/reconcile";
 
 function times(day: number, month: number, t: number[], overrides: Partial<ParsedEntry> = {}): ParsedEntry {
-    return { day, month, times: t, hoursWorked: null, otHours: null, noBreak: null, guessed: null, rest_day: null, notes: null, ...overrides };
+    return { day, month, times: t, hoursWorked: null, otHours: null, noBreak: null, guessed: null, rest_day: null, notes: null, bbox: null, ...overrides };
 }
 
 function rosterRow(overrides: Partial<RosterRow> = {}): RosterRow {
@@ -14,11 +14,11 @@ function rosterAttempt(workers: RosterRow[], day: number | null = 14, month: num
 }
 
 function rest(day: number, month: number, notes: string | null = null): ParsedEntry {
-    return { day, month, times: null, hoursWorked: null, otHours: null, noBreak: null, guessed: null, rest_day: true, notes };
+    return { day, month, times: null, hoursWorked: null, otHours: null, noBreak: null, guessed: null, rest_day: true, notes, bbox: null };
 }
 
 function hours(day: number, month: number, hoursWorked: number, otHours: number | null = null): ParsedEntry {
-    return { day, month, times: null, hoursWorked, otHours, noBreak: null, guessed: null, rest_day: null, notes: null };
+    return { day, month, times: null, hoursWorked, otHours, noBreak: null, guessed: null, rest_day: null, notes: null, bbox: null };
 }
 
 describe("reconcileAttempts", () => {
@@ -28,6 +28,20 @@ describe("reconcileAttempts", () => {
         expect(entries).toHaveLength(1);
         expect(entries[0]).toMatchObject({ day: 1, month: 6, times: [800, 1700], guessed: false, rest_day: false });
         expect(warnings).toHaveLength(0);
+    });
+
+    it("treats a trailing 0 as equivalent to 2400 (both mean shift ends at midnight)", () => {
+        const attempts = [[times(3, 3, [800, 2400])], [times(3, 3, [800, 0])], [times(3, 3, [800, 2400])]];
+        const { entries, warnings } = reconcileAttempts(attempts, "test");
+        expect(entries).toHaveLength(1);
+        expect(entries[0]).toMatchObject({ day: 3, month: 3, times: [800, 2400], guessed: false });
+        expect(warnings).toHaveLength(0);
+    });
+
+    it("does not normalize a leading 0 (a genuine midnight shift START is a different claim)", () => {
+        const attempts = [[times(3, 3, [0, 800])], [times(3, 3, [0, 800])], [times(3, 3, [0, 800])]];
+        const { entries } = reconcileAttempts(attempts, "test");
+        expect(entries[0].times).toEqual([0, 800]);
     });
 
     it("only marks noBreak when every attempt that agreed on times also reported it", () => {

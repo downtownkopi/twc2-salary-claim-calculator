@@ -412,11 +412,13 @@ app.post(
         } catch {
             // ignore — fall through with no exclusions applied
         }
+        // Same single-page "Rescan" popup hint as /api/process — see that route's comment.
+        const interpretationHint = typeof req.body.interpretationHint === "string" && req.body.interpretationHint.trim() ? req.body.interpretationHint.trim() : undefined;
 
         const jobId = randomUUID();
         bankJobs.set(jobId, { status: "running", pages: [], result: null, error: null });
         acquireJobSlot()
-            .then(() => runBankStatementJob(jobId, files, rotations, excludedPages))
+            .then(() => runBankStatementJob(jobId, files, rotations, excludedPages, interpretationHint))
             .catch(e => {
                 const job = bankJobs.get(jobId);
                 if (job) { job.status = "error"; job.error = e.message; }
@@ -480,11 +482,13 @@ app.post(
         } catch {
             // ignore — fall through with no exclusions applied
         }
+        // Same single-page "Rescan" popup hint as /api/process — see that route's comment.
+        const interpretationHint = typeof req.body.interpretationHint === "string" && req.body.interpretationHint.trim() ? req.body.interpretationHint.trim() : undefined;
 
         const jobId = randomUUID();
         medicalJobs.set(jobId, { status: "running", pages: [], result: null, error: null });
         acquireJobSlot()
-            .then(() => runMedicalBillsJob(jobId, files, rotations, excludedPages))
+            .then(() => runMedicalBillsJob(jobId, files, rotations, excludedPages, interpretationHint))
             .catch(e => {
                 const job = medicalJobs.get(jobId);
                 if (job) { job.status = "error"; job.error = e.message; }
@@ -541,11 +545,13 @@ app.post(
         } catch {
             // ignore — fall through with no exclusions applied
         }
+        // Same single-page "Rescan" popup hint as /api/process — see that route's comment.
+        const interpretationHint = typeof req.body.interpretationHint === "string" && req.body.interpretationHint.trim() ? req.body.interpretationHint.trim() : undefined;
 
         const jobId = randomUUID();
         medicalCertJobs.set(jobId, { status: "running", pages: [], result: null, error: null });
         acquireJobSlot()
-            .then(() => runMedicalCertificateJob(jobId, files, rotations, excludedPages))
+            .then(() => runMedicalCertificateJob(jobId, files, rotations, excludedPages, interpretationHint))
             .catch(e => {
                 const job = medicalCertJobs.get(jobId);
                 if (job) { job.status = "error"; job.error = e.message; }
@@ -602,11 +608,13 @@ app.post(
         } catch {
             // ignore — fall through with no exclusions applied
         }
+        // Same single-page "Rescan" popup hint as /api/process — see that route's comment.
+        const interpretationHint = typeof req.body.interpretationHint === "string" && req.body.interpretationHint.trim() ? req.body.interpretationHint.trim() : undefined;
 
         const jobId = randomUUID();
         payslipJobs.set(jobId, { status: "running", pages: [], result: null, error: null });
         acquireJobSlot()
-            .then(() => runPayslipJob(jobId, files, rotations, excludedPages))
+            .then(() => runPayslipJob(jobId, files, rotations, excludedPages, interpretationHint))
             .catch(e => {
                 const job = payslipJobs.get(jobId);
                 if (job) { job.status = "error"; job.error = e.message; }

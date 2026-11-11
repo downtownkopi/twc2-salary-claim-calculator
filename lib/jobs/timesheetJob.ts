@@ -13,7 +13,7 @@ import {
     type PagedImages,
 } from "../ocr";
 import { buildReviewRows, MONTH_ABBR, type TimeEntry, type FillWarning, type RestDay } from "../xlsx";
-import { reconcileAttempts, reconcileRosterAttempts, reconcileGridAttempts, type ParsedEntry, type RosterPageAttempt, type RosterRow, type RosterReconciledEntry, type GridPageAttempt } from "../reconcile";
+import { reconcileAttempts, reconcileRosterAttempts, reconcileGridAttempts, coerceBbox, type ParsedEntry, type RosterPageAttempt, type RosterRow, type RosterReconciledEntry, type GridPageAttempt } from "../reconcile";
 import { extractIpaFields, type IpaFields } from "../ipa";
 import { buildPrompt } from "../timesheetPrompt";
 import { buildRosterPrompt } from "../rosterPrompt";
@@ -133,11 +133,11 @@ export function scheduleJobCleanup(jobId: string) {
  * on its own even after being rescanned (e.g. the rotation fix was needed for the date header
  * itself). A normal full-batch job never passes this — every page there can still borrow from a
  * real neighbor.
- * @param interpretationHint - Only set by the post-scan "resolve this document's reading
- * convention" rescan flow (public/index.html) — a caseworker's answer to a structural
- * interpretation question the agentic loop flagged (see `detectInterpretationDisagreement` below),
- * e.g. "Qty/Amount columns are clock in/out times, not hours+dollars". Forwarded into every
- * agentic-path page this request scans (see lib/ocr/agentLoop.ts's `interpretationHint` param).
+ * @param interpretationHint - Either a caseworker's answer to a structural interpretation question
+ * the agentic loop flagged (see `detectInterpretationDisagreement` below), e.g. "Qty/Amount columns
+ * are clock in/out times, not hours+dollars", or free text typed into the single-page "Rescan"
+ * popup (public/index.html). Forwarded into every agentic-path page this request scans (see
+ * lib/ocr/agentLoop.ts's `interpretationHint` param) and into the IPA extraction below.
  */
 export async function runProcessJob(
     jobId: string,
@@ -285,7 +285,7 @@ export async function runProcessJob(
                 const rotationDeg = rotations.ipa?.[String(pageIdx)];
                 const image = rotationDeg ? await rotateImage(rawPage, rotationDeg) : rawPage;
                 ipaImage = await resizeForDisplay(image, 1400);
-                const { fields, cost } = await extractIpaFields(image);
+                const { fields, cost } = await extractIpaFields(image, interpretationHint);
                 addCost(PRIMARY_VISION_MODEL, cost);
                 return fields;
             } catch (e: any) {
@@ -427,6 +427,35 @@ export async function runProcessJob(
         }
     }
     let pageConcurrencyLimit = Math.min(MAX_PAGE_CONCURRENCY, Math.max(1, pageTasks.length));
+
+    // Per-file "is this whole file hard for the primary model" state (agentic path only). The
+    // file's FIRST scanned page decides: if PRIMARY_VISION_MODEL comes back with zero rows there
+    // (the empty-array bail-out failure mode — see the escalation logic in processPage below), the
+    // rest of that SAME file skips straight to FALLBACK_VISION_MODEL (run with its own normal 2-3
+    // attempt vote, not a single unvoted reading) instead of paying for a primary-model attempt
+    // that's very likely to fail again — observed in practice: a dense page's failure is a property
+    // of the whole document's layout, not a one-off per-page fluke (every page of
+    // sample-data/137X/137X_Timesheets.pdf failed identically). A later file in the same upload
+    // batch starts fresh on primary — this is scoped per uploaded file, not job-wide.
+    const fileModelMode = new Map<number, "primary" | "fallback">();
+    // Resolves once a file's first page has decided fileModelMode for it, so every other page of
+    // that file can await it before choosing which model to scan with. Built eagerly for every file
+    // that has at least one page task, not lazily on first access, so a later page's first-run
+    // doesn't race the gate's own creation.
+    const fileGates = new Map<number, { promise: Promise<void>; resolve: () => void }>();
+    for (const fi of new Set(pageTasks.map(t => t.fi))) {
+        let resolveGate!: () => void;
+        const promise = new Promise<void>(r => { resolveGate = r; });
+        fileGates.set(fi, { promise, resolve: resolveGate });
+    }
+    // pageTasks is built file-by-file (see the loop just above), so the first occurrence of each fi
+    // is that file's first scanned page — not necessarily image index 0 (a human may have excluded
+    // page 0 in the staging preview).
+    const firstPageOrderIndexByFile = new Map<number, number>();
+    pageTasks.forEach((t, idx) => {
+        if (!firstPageOrderIndexByFile.has(t.fi)) firstPageOrderIndexByFile.set(t.fi, idx);
+    });
+
     // Index into this array (rather than push) is each task's position here — i.e. upload order.
     pageImages.length = pageTasks.length;
     // Same fix applied to the LIVE progress array clients poll mid-job (see the GET handler, which
@@ -511,7 +540,7 @@ export async function runProcessJob(
                 continue;
             }
             if (entry.rest_day === true) {
-                restDays.push({ year: pageYear, month: entry.month, day: entry.day, source, notes: entry.notes });
+                restDays.push({ year: pageYear, month: entry.month, day: entry.day, source, notes: entry.notes, bbox: entry.bbox });
                 continue;
             }
             const entryDate = `${pageYear}-${String(entry.month).padStart(2, "0")}-${String(entry.day).padStart(2, "0")}`;
@@ -532,7 +561,7 @@ export async function runProcessJob(
                 continue;
             }
             if (!entry.times || entry.times.length === 0) {
-                restDays.push({ year: pageYear, month: entry.month, day: entry.day, source, notes: entry.notes ? `unclear mark: ${entry.notes} — please verify` : "unclear mark — please verify" });
+                restDays.push({ year: pageYear, month: entry.month, day: entry.day, source, notes: entry.notes ? `unclear mark: ${entry.notes} — please verify` : "unclear mark — please verify", bbox: entry.bbox });
                 warnings.push({
                     source,
                     reason: `day=${entry.day} month=${entry.month}: has a mark but no clock times/hours/leave-code could be determined${entry.notes ? ` (${entry.notes})` : ""} — recorded as unworked so it isn't auto-filled as a missing day, please verify against the source PDF`,
@@ -567,6 +596,7 @@ export async function runProcessJob(
                     source,
                     guessed: entry.guessed === true,
                     noBreak: entry.noBreak === true,
+                    bbox: entry.bbox,
                 });
             }
         }
@@ -602,6 +632,7 @@ export async function runProcessJob(
                 source,
                 guessed: entry.guessed,
                 noBreak: entry.mealBreakHours === 0,
+                bbox: null, // roster pages aren't wired up for hover-highlight yet
             });
             if (entry.guessed) {
                 warnings.push({
@@ -618,6 +649,7 @@ export async function runProcessJob(
                 day: entry.day,
                 source,
                 notes: entry.notes ? `roster match, unclear time: ${entry.notes}` : "roster match, unclear actual time in/out — please verify",
+                bbox: null,
             });
             warnings.push({
                 source,
@@ -635,8 +667,19 @@ export async function runProcessJob(
             let displayImage = "";
             let pageContext = "";
             let dataModel: PageDataModel = "unclear";
+            // Computed once, up front, so both the USE_AGENTIC_DISCOVERY branch below AND the
+            // top-level `finally`'s gate-resolution safety net (further down) agree on whether this
+            // is the page deciding fileModelMode for the rest of its file.
+            const isFileFirstPage = firstPageOrderIndexByFile.get(fi) === orderIndex;
             if (signal?.aborted) {
                 warnings.push({ source, reason: "cancelled by user before this page started", category: "system" });
+                // Not wrapped in the try/finally below (it returns before that starts) — resolve the
+                // gate here too, or a cancelled first page would permanently hang every sibling page
+                // already awaiting it.
+                if (isFileFirstPage && !fileModelMode.has(fi)) {
+                    fileModelMode.set(fi, "primary");
+                    fileGates.get(fi)!.resolve();
+                }
                 return;
             }
             // Wrapped in try/finally (rather than checking success at every one of this block's
@@ -736,9 +779,19 @@ export async function runProcessJob(
                         markModelUsed(source, m);
                     };
 
+                    // This file's first scanned page decides fileModelMode for every other page of
+                    // the same file (see its declaration above) — every page but that first one
+                    // waits here for that decision before picking which model to scan with. A no-op
+                    // wait for the common case (primary model works fine): the gate resolves the
+                    // moment the first page's own primary attempts finish, not after its whole
+                    // escalation flow completes, so later pages aren't held up by cases they don't
+                    // need to wait on.
+                    if (!isFileFirstPage) await fileGates.get(fi)!.promise;
+                    const modelForThisPage = !isFileFirstPage && fileModelMode.get(fi) === "fallback" ? FALLBACK_VISION_MODEL : timesheetModel;
+
                     const runAttempt = (idx: number) => {
                         const { temperature, seed } = SCAN_TEMPERATURES[idx];
-                        return runAgentLoop(pageImage, source, idx, temperature, seed, targetWorker, onEvent, onCost, signal, 8, timesheetModel, interpretationHint);
+                        return runAgentLoop(pageImage, source, idx, temperature, seed, targetWorker, onEvent, onCost, signal, 8, modelForThisPage, interpretationHint);
                     };
 
                     // Run the first two attempts, then check whether they already agree — both the
@@ -793,6 +846,14 @@ export async function runProcessJob(
 
                     if (settled.length === 0) {
                         warnings.push({ source, reason: "all agentic discovery attempts for this page failed — page was skipped entirely", category: "scan_quality" });
+                        // Every early return below this point must still resolve this file's gate if
+                        // it's the first page — otherwise sibling pages awaiting fileGates.get(fi)
+                        // above hang forever. Treated as "fallback" (the conservative default) since
+                        // primary clearly didn't produce anything usable here either.
+                        if (isFileFirstPage) {
+                            fileModelMode.set(fi, "fallback");
+                            fileGates.get(fi)!.resolve();
+                        }
                         return;
                     }
 
@@ -817,6 +878,10 @@ export async function runProcessJob(
                         });
                         dataModel = "unclear";
                         pageMeta.set(source, { dataModel, pageContext });
+                        if (isFileFirstPage) {
+                            fileModelMode.set(fi, "fallback");
+                            fileGates.get(fi)!.resolve();
+                        }
                         return;
                     }
 
@@ -825,6 +890,10 @@ export async function runProcessJob(
                         warnings.push({ source, reason: `flagged for human review: ${reasons.join("; ")}`, category: "flagged_review" });
                         dataModel = "unclear";
                         pageMeta.set(source, { dataModel, pageContext });
+                        if (isFileFirstPage) {
+                            fileModelMode.set(fi, "fallback");
+                            fileGates.get(fi)!.resolve();
+                        }
                         return;
                     }
 
@@ -833,10 +902,67 @@ export async function runProcessJob(
                     if (winningFamily === "one_worker_many_dates") {
                         dataModel = "clock_times"; // closest existing label — only used for display/picker gating
                         pageMeta.set(source, { dataModel, pageContext });
-                        const attempts = winning.map(r => (r as Extract<AgentLoopResult, { shapeFamily: "one_worker_many_dates" }>).rows);
+                        let attempts = winning.map(r => (r as Extract<AgentLoopResult, { shapeFamily: "one_worker_many_dates" }>).rows);
+                        // Every agreeing attempt independently called emitRows with zero rows — a
+                        // majority-vote "confident" answer that is indistinguishable, to the voting
+                        // logic above, from a genuinely blank page. Seen in practice on dense
+                        // multi-table pages: the model correctly identifies the shape/worker/dates but
+                        // bails on transcribing dozens of rows in one call, and an empty array is
+                        // schema-valid so nothing upstream rejects it.
+                        const primaryEmpty = attempts.every(a => a.length === 0);
+                        // This file's first scanned page decides fileModelMode for the rest of the
+                        // file (see its declaration above) — resolved as soon as this is known, before
+                        // the (possibly slow) escalation call below, so sibling pages already waiting
+                        // on the gate aren't held up by it.
+                        if (isFileFirstPage) {
+                            fileModelMode.set(fi, primaryEmpty ? "fallback" : "primary");
+                            fileGates.get(fi)!.resolve();
+                        }
+                        // Set when attempts ends up holding a single unvoted fallback-model reading —
+                        // reconcileAttempts' requireFullParticipation demands >=2 agreeing attempts
+                        // per day ("sufficientRedundancy"), which a lone reading can never satisfy;
+                        // every entry would otherwise get silently dropped as "not enough redundancy",
+                        // defeating the whole point of the escalation. NOT set when modelForThisPage
+                        // was already FALLBACK_VISION_MODEL (the sticky file-mode case) — there,
+                        // `attempts` holds 2-3 independently voted fallback readings, same as a normal
+                        // primary-model page, so the strict redundancy check is exactly right.
+                        let usedFallbackRecovery = false;
+                        if (primaryEmpty) {
+                            if (modelForThisPage === FALLBACK_VISION_MODEL) {
+                                // This page already ran its OWN 2-3 attempt vote using the fallback
+                                // model (this file switched after its first page's primary attempts
+                                // came back empty) and still got nothing — no further model to escalate
+                                // to.
+                                warnings.push({ source, reason: `this file switched to the fallback model (${FALLBACK_VISION_MODEL}) after an earlier page's primary-model attempts came back empty, but even the fallback model's own voted attempts extracted zero entries for this page — likely genuinely illegible; please check the source PDF directly`, category: "scan_quality" });
+                            } else {
+                                // Single-shot escalation: either this IS the file's first page
+                                // (deciding fileModelMode for the rest of the file), or a later page
+                                // that's still on primary (the file's first page succeeded) but
+                                // independently failed anyway. PRIMARY_VISION_MODEL consistently
+                                // bailed on this page with a schema-valid empty answer rather than
+                                // doing the (genuinely large) read — a capability gap, not a one-off
+                                // fluke, so retrying the same model gets the same result. One attempt
+                                // with FALLBACK_VISION_MODEL instead, on the full page (not
+                                // bands/cropped) — only runs on a page that's already come back empty,
+                                // so the extra cost is bounded to the failure case.
+                                try {
+                                    const fb = await runAgentLoop(pageImage, `${source} fallback`, 0, 0, 42, targetWorker, onEvent, onCost, signal, 8, FALLBACK_VISION_MODEL, interpretationHint);
+                                    if (fb.shapeFamily === "one_worker_many_dates" && fb.rows.length > 0) {
+                                        attempts = [fb.rows];
+                                        usedFallbackRecovery = true;
+                                        warnings.push({ source, reason: `primary model (${timesheetModel}) extracted zero entries for this page; recovered entries using the fallback model (${FALLBACK_VISION_MODEL}) instead — this reading is not independently voted, please double-check against the source PDF`, category: "scan_quality" });
+                                    } else {
+                                        warnings.push({ source, reason: `agentic discovery classified this page as having clock-time data, but both the primary model (${timesheetModel}) and the fallback model (${FALLBACK_VISION_MODEL}) extracted zero entries — likely a genuinely illegible or ambiguous page; please check the source PDF directly`, category: "scan_quality" });
+                                    }
+                                } catch (e: any) {
+                                    console.error(`${source} fallback-model escalation failed —`, e);
+                                    warnings.push({ source, reason: `agentic discovery classified this page as having clock-time data, but extracted zero entries, and the fallback-model escalation itself failed (${e?.message ?? e}) — please check the source PDF directly`, category: "scan_quality" });
+                                }
+                            }
+                        }
                         const disagreement = detectInterpretationDisagreement(attempts);
                         if (disagreement) pageInterpretationDisagreement.set(source, disagreement);
-                        const { entries, warnings: w } = reconcileAttempts(attempts, source, true, pageYear, true);
+                        const { entries, warnings: w } = reconcileAttempts(attempts, source, !usedFallbackRecovery, pageYear, true);
                         warnings.push(...w);
                         applyParsedEntries(entries, source, pageYear);
                         return;
@@ -845,7 +971,31 @@ export async function runProcessJob(
                     if (winningFamily === "one_date_many_workers") {
                         dataModel = "worker_roster";
                         pageMeta.set(source, { dataModel, pageContext });
-                        const attempts = winning.map(r => (r as Extract<AgentLoopResult, { shapeFamily: "one_date_many_workers" }>).rows);
+                        let attempts = winning.map(r => (r as Extract<AgentLoopResult, { shapeFamily: "one_date_many_workers" }>).rows);
+                        // See the one_worker_many_dates branch above — same empty-but-"agreeing" failure mode.
+                        const primaryEmptyRoster = attempts.every(a => a.workers.length === 0);
+                        if (isFileFirstPage) {
+                            fileModelMode.set(fi, primaryEmptyRoster ? "fallback" : "primary");
+                            fileGates.get(fi)!.resolve();
+                        }
+                        if (primaryEmptyRoster) {
+                            if (modelForThisPage === FALLBACK_VISION_MODEL) {
+                                warnings.push({ source, reason: `this file switched to the fallback model (${FALLBACK_VISION_MODEL}) after an earlier page's primary-model attempts came back empty, but even the fallback model's own voted attempts extracted zero worker rows for this page — likely genuinely illegible; please check the source PDF directly`, category: "scan_quality" });
+                            } else {
+                                try {
+                                    const fb = await runAgentLoop(pageImage, `${source} fallback`, 0, 0, 42, targetWorker, onEvent, onCost, signal, 8, FALLBACK_VISION_MODEL, interpretationHint);
+                                    if (fb.shapeFamily === "one_date_many_workers" && fb.rows.workers.length > 0) {
+                                        attempts = [fb.rows];
+                                        warnings.push({ source, reason: `primary model (${timesheetModel}) extracted zero worker rows for this page; recovered rows using the fallback model (${FALLBACK_VISION_MODEL}) instead — this reading is not independently voted, please double-check against the source PDF`, category: "scan_quality" });
+                                    } else {
+                                        warnings.push({ source, reason: `agentic discovery classified this page as a worker-roster page, but both the primary model (${timesheetModel}) and the fallback model (${FALLBACK_VISION_MODEL}) extracted zero worker rows — likely a genuinely illegible or ambiguous page; please check the source PDF directly`, category: "scan_quality" });
+                                    }
+                                } catch (e: any) {
+                                    console.error(`${source} fallback-model escalation failed —`, e);
+                                    warnings.push({ source, reason: `agentic discovery classified this page as a worker-roster page, but extracted zero worker rows, and the fallback-model escalation itself failed (${e?.message ?? e}) — please check the source PDF directly`, category: "scan_quality" });
+                                }
+                            }
+                        }
                         const { date, entry, allRows, warnings: w } = reconcileRosterAttempts(attempts, source, targetWorker.name, targetWorker.fin, pageYear);
                         applyRosterResult(pageYear, source, date, entry, allRows, w);
                         return;
@@ -855,7 +1005,29 @@ export async function runProcessJob(
                     // for at all (e.g. sample-data/745X_Timesheets.pdf's duty-roster grid).
                     dataModel = "worker_roster"; // reuses the same label so the UI's existing picker-fallback check also covers a grid page
                     pageMeta.set(source, { dataModel, pageContext });
-                    const attempts: GridPageAttempt[] = winning.map(r => (r as Extract<AgentLoopResult, { shapeFamily: "many_workers_many_dates" }>).rows);
+                    let attempts: GridPageAttempt[] = winning.map(r => (r as Extract<AgentLoopResult, { shapeFamily: "many_workers_many_dates" }>).rows);
+                    // See the one_worker_many_dates branch above — same empty-but-"agreeing" failure mode.
+                    const primaryEmptyGrid = attempts.every(a => a.workers.length === 0);
+                    if (isFileFirstPage) {
+                        fileModelMode.set(fi, primaryEmptyGrid ? "fallback" : "primary");
+                        fileGates.get(fi)!.resolve();
+                    }
+                    if (primaryEmptyGrid && modelForThisPage === FALLBACK_VISION_MODEL) {
+                        warnings.push({ source, reason: `this file switched to the fallback model (${FALLBACK_VISION_MODEL}) after an earlier page's primary-model attempts came back empty, but even the fallback model's own voted attempts extracted zero worker rows for this page — likely genuinely illegible; please check the source PDF directly`, category: "scan_quality" });
+                    } else if (primaryEmptyGrid) {
+                        try {
+                            const fb = await runAgentLoop(pageImage, `${source} fallback`, 0, 0, 42, targetWorker, onEvent, onCost, signal, 8, FALLBACK_VISION_MODEL, interpretationHint);
+                            if (fb.shapeFamily === "many_workers_many_dates" && fb.rows.workers.length > 0) {
+                                attempts = [fb.rows];
+                                warnings.push({ source, reason: `primary model (${timesheetModel}) extracted zero worker rows for this page; recovered rows using the fallback model (${FALLBACK_VISION_MODEL}) instead — this reading is not independently voted, please double-check against the source PDF`, category: "scan_quality" });
+                            } else {
+                                warnings.push({ source, reason: `agentic discovery classified this page as a worker-grid page, but both the primary model (${timesheetModel}) and the fallback model (${FALLBACK_VISION_MODEL}) extracted zero worker rows — likely a genuinely illegible or ambiguous page; please check the source PDF directly`, category: "scan_quality" });
+                            }
+                        } catch (e: any) {
+                            console.error(`${source} fallback-model escalation failed —`, e);
+                            warnings.push({ source, reason: `agentic discovery classified this page as a worker-grid page, but extracted zero worker rows, and the fallback-model escalation itself failed (${e?.message ?? e}) — please check the source PDF directly`, category: "scan_quality" });
+                        }
+                    }
                     const { entries, warnings: w, matchConfidence, allWorkerNames, matchedRowIndex } = reconcileGridAttempts(attempts, source, targetWorker.name, targetWorker.fin, pageYear);
                     warnings.push(...w);
                     pageRosterMeta.set(source, {
@@ -957,6 +1129,7 @@ export async function runProcessJob(
                                 source,
                                 guessed: entry.guessed,
                                 noBreak: entry.mealBreakHours === 0,
+                                bbox: null, // roster pages aren't wired up for hover-highlight yet
                             });
                             if (entry.guessed) {
                                 warnings.push({
@@ -977,6 +1150,7 @@ export async function runProcessJob(
                                 day: entry.day,
                                 source,
                                 notes: entry.notes ? `roster match, unclear time: ${entry.notes}` : "roster match, unclear actual time in/out — please verify",
+                                bbox: null,
                             });
                             warnings.push({
                                 source,
@@ -1024,6 +1198,7 @@ export async function runProcessJob(
                     try {
                         const parsed = JSON.parse(extractJsonBlock(content));
                         if (!Array.isArray(parsed)) throw new Error("not a JSON array");
+                        for (const entry of parsed) if (entry && typeof entry === "object") entry.bbox = coerceBbox(entry.bbox);
                         attemptsByBand[b].push(parsed);
                     } catch (e: any) {
                         failedCount++;
@@ -1132,9 +1307,7 @@ export async function runProcessJob(
                 // FALLBACK_VISION_MODEL (real side-by-side testing found it meaningfully more accurate
                 // on hard cases, but ~5x the cost), ONE extra full-page call resolves just the disputed
                 // dates. Most pages never trigger this at all — the added cost only lands on pages that
-                // actually needed it. NOTE: currently redundant while timesheetModel is itself pointed
-                // at FALLBACK_VISION_MODEL (see its declaration above) — escalating to the same model
-                // that already produced the disagreement won't recover anything new.
+                // actually needed it.
                 const disputedDates = new Set(
                     warnings
                         .filter(w => w.source === source && w.category === "dropped_disagreement" && w.date)
@@ -1149,6 +1322,7 @@ export async function runProcessJob(
                         addCost(FALLBACK_VISION_MODEL, fallbackCost);
                         markModelUsed(source, FALLBACK_VISION_MODEL);
                         const fallbackParsed = JSON.parse(extractJsonBlock(fallbackContent)) as ParsedEntry[];
+                        for (const e of fallbackParsed) e.bbox = coerceBbox(e.bbox);
                         for (const fbEntry of fallbackParsed) {
                             if (fbEntry.day === null || fbEntry.month === null) continue;
                             const key = `${fbEntry.month}-${fbEntry.day}`;
@@ -1215,7 +1389,7 @@ export async function runProcessJob(
                         continue;
                     }
                     if (entry.rest_day === true) {
-                        restDays.push({ year: pageYear, month: entry.month, day: entry.day, source, notes: entry.notes });
+                        restDays.push({ year: pageYear, month: entry.month, day: entry.day, source, notes: entry.notes, bbox: entry.bbox });
                         continue;
                     }
                     const entryDate = `${pageYear}-${String(entry.month).padStart(2, "0")}-${String(entry.day).padStart(2, "0")}`;
@@ -1249,7 +1423,7 @@ export async function runProcessJob(
                         // rest_day — recorded here (not dropped) so the review UI shows a row for it
                         // instead of the missing-day auto-insert fabricating a default-shift workday
                         // over a day that plainly has SOMETHING written on it.
-                        restDays.push({ year: pageYear, month: entry.month, day: entry.day, source, notes: entry.notes ? `unclear mark: ${entry.notes} — please verify` : "unclear mark — please verify" });
+                        restDays.push({ year: pageYear, month: entry.month, day: entry.day, source, notes: entry.notes ? `unclear mark: ${entry.notes} — please verify` : "unclear mark — please verify", bbox: entry.bbox });
                         warnings.push({
                             source,
                             reason: `day=${entry.day} month=${entry.month}: has a mark but no clock times/hours/leave-code could be determined${entry.notes ? ` (${entry.notes})` : ""} — recorded as unworked so it isn't auto-filled as a missing day, please verify against the source PDF`,
@@ -1291,10 +1465,23 @@ export async function runProcessJob(
                             source,
                             guessed: entry.guessed === true,
                             noBreak: entry.noBreak === true,
+                            bbox: entry.bbox,
                         });
                     }
                 }
             } finally {
+                // Safety net: every code path above that decides fileModelMode for this file (the
+                // agentic branch's per-shape checks, and its own early returns) also resolves
+                // fileGates.get(fi) itself — but a handful of returns BEFORE that branch even starts
+                // (not a timesheet page, no resolvable year) and any thrown exception don't. Since
+                // every later page of this file awaits that gate, leaving it unresolved would hang
+                // them forever. Defaults to "primary" (not "fallback") here — these exits aren't
+                // evidence the primary model itself can't read the document, just that this
+                // particular first page didn't get far enough to say either way.
+                if (isFileFirstPage && !fileModelMode.has(fi)) {
+                    fileModelMode.set(fi, "primary");
+                    fileGates.get(fi)!.resolve();
+                }
                 // Live progress — pushed into the polled job as soon as this page's own processing
                 // reaches any exit point (success, non-timesheet skip, or total scan failure), so
                 // public/index.html can render "page N done" without waiting for the whole batch.

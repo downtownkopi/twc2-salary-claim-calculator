@@ -38,12 +38,16 @@ export function scheduleMedicalJobCleanup(jobId: string) {
  * @param files - The uploaded medical bill files.
  * @param rotations - Human-confirmed page rotations, keyed `"<fileIndex>-<pageIndex>"`.
  * @param excludedPages - Pages dropped by the caseworker in staging, same keying as `rotations`.
+ * @param interpretationHint - Free text typed into the single-page "Rescan" popup
+ * (public/index.html) — forwarded into every page this request scans. See
+ * lib/ocr/visionClient.ts's `withRescanHint`.
  */
 export async function runMedicalBillsJob(
     jobId: string,
     files: Express.Multer.File[],
     rotations: Record<string, number>,
-    excludedPages: Set<string>
+    excludedPages: Set<string>,
+    interpretationHint?: string
 ) {
     const job = medicalJobs.get(jobId);
     if (!job) return;
@@ -93,7 +97,7 @@ export async function runMedicalBillsJob(
         const source = `${file.originalname} p${pi + 1}`;
         const page: MedicalBillsPageResult = { source, image: await resizeForDisplay(pageImage, 1400), entries: [] };
         const results = await Promise.allSettled(
-            SCAN_TEMPERATURES.map(({ temperature, seed }) => extractMedicalBillEntries(pageImage, temperature, seed))
+            SCAN_TEMPERATURES.map(({ temperature, seed }) => extractMedicalBillEntries(pageImage, temperature, seed, interpretationHint))
         );
         const attempts: MedicalBillEntry[][] = [];
         let failedCount = 0;

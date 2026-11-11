@@ -10,6 +10,7 @@ function entry(overrides: Partial<PayslipEntry>): PayslipEntry {
         yearMonth: null,
         overtimeHours: 0,
         hourlyRate: null,
+        bbox: null,
         confirmedByAttempts: null,
         ...overrides,
     };

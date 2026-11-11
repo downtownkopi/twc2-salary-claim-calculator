@@ -609,6 +609,28 @@
       cursor: zoom-in;
     }
 
+    /* Tints the row itself on hover, same color as the source-image highlight box below, so it
+       reads as one hover state across both sides of the page-review split. */
+    .payslip-row:hover,
+    .bt-row:hover,
+    .mb-row:hover,
+    .mc-row:hover,
+    .review-row:hover {
+      background: rgba(255, 82, 82, 0.18);
+    }
+
+    /* Hover highlight showing roughly where an extracted row came from on the source page image —
+       positioned/sized in JS (containedImageRect) since object-fit:contain can letterbox the img. */
+    .row-source-highlight {
+      display: none;
+      position: absolute;
+      border: 2px solid #ff5252;
+      background: rgba(255, 82, 82, 0.18);
+      border-radius: 3px;
+      pointer-events: none;
+      box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.6);
+    }
+
     /* Per-page "forgot to rotate this one" fix — rotate the source image and re-scan just this
      page, without redoing the whole batch. Sits under the image, same sticky column. */
     .page-rescan-controls {
@@ -618,7 +640,8 @@
     }
 
     .page-rotate-btn,
-    .page-rescan-btn {
+    .page-rescan-btn,
+    .page-revert-btn {
       background: var(--panel);
       color: var(--text);
       border: 1px solid var(--border);
@@ -728,6 +751,23 @@
 
     .inline-review-row.missing-day-row {
       background: rgba(220, 80, 80, 0.08);
+    }
+
+    /* Marks a field the reviewer has hand-edited away from its scanned value (red outline), and
+     tints whichever row/field-group contains it (red tint) — same idea as the yellow flagged-row
+     tint above, but for human edits rather than scan guesses. Applied via a single delegated
+     listener (see wireEditHighlighting) rather than per-row-type code, so it works across every
+     editable table (timesheet, bank, medical bills, medical cert, payslip, IPA) without touching
+     each one's render function. */
+    .field-edited {
+      outline: 2px solid #d33 !important;
+      outline-offset: -1px;
+    }
+
+    tr.row-edited,
+    li.row-edited,
+    .ipa-field-group.row-edited {
+      background: rgba(211, 51, 51, 0.12) !important;
     }
 
     .inline-review-row .field-group {
@@ -1010,6 +1050,33 @@
       font-size: 12px;
     }
 
+    /* Compact per-page note for a date the scan saw something on but couldn't confidently read
+       (reconciliation disagreement, structurally invalid data, or a coverage gap) — collapsed by
+       default (<details>) rather than a standing wall of text, since every other date on the page
+       that WAS read fine doesn't need a line here too. */
+    .page-dropped-dates {
+      margin: 8px 0;
+      font-size: 12px;
+      border: 1px solid var(--warn-text);
+      border-radius: 6px;
+      padding: 6px 10px;
+      color: var(--warn-text);
+    }
+
+    .page-dropped-dates summary {
+      cursor: pointer;
+      font-weight: 600;
+    }
+
+    .page-dropped-dates ul {
+      margin: 6px 0 0;
+      padding-left: 18px;
+    }
+
+    .page-dropped-dates li {
+      margin-bottom: 3px;
+    }
+
     /* Worker-roster page card: the extracted worker table + "Use this row" picker, shown instead
        of / alongside the normal per-date editable rows when a page is one shared date with many
        named workers (see PageDataModel "worker_roster"). */
@@ -1027,37 +1094,15 @@
     .roster-confidence-low { color: #9a6700; }
     .roster-confidence-none { color: #cf222e; }
 
-    .roster-worker-table {
+    .roster-worker-select {
       width: 100%;
-      border-collapse: collapse;
-      font-size: 12px;
-      margin-bottom: 8px;
-    }
-
-    .roster-worker-table th, .roster-worker-table td {
+      background: var(--bg);
+      color: var(--text);
       border: 1px solid var(--border);
-      padding: 4px 6px;
-      text-align: left;
-    }
-
-    .roster-worker-table tr.roster-row-matched td {
-      background: #eaf6ec;
-      font-weight: 600;
-    }
-
-    .roster-pick-btn {
-      background: var(--accent);
-      color: white;
-      border: 1px solid var(--accent);
-      border-radius: 4px;
-      padding: 3px 8px;
-      font-size: 11px;
-      font-weight: 600;
-      cursor: pointer;
-    }
-
-    .roster-pick-btn:hover {
-      opacity: 0.85;
+      border-radius: 6px;
+      padding: 6px 8px;
+      font-size: 13px;
+      margin-bottom: 8px;
     }
 
     .ipa-review {
@@ -1907,6 +1952,63 @@
     }
     document.querySelectorAll('.radio-group').forEach(wireRadioGroupHighlight);
 
+    // Red outline/row-tint for any hand-edited field, across every editable review table
+    // (timesheet rows, bank/medical-bill/medical-cert/payslip rows, IPA fields) — one delegated
+    // listener instead of wiring each row-builder separately. Compares against the input's
+    // defaultValue/defaultChecked (the value React-free HTML gives an element from its initial
+    // `value`/`checked` attribute), so no extra bookkeeping is needed when rows are built or
+    // rebuilt (e.g. a rescan resets defaultValue along with value, clearing the edited mark).
+    // Asks the caseworker for an optional free-text hint before any single-page "Rescan" button
+    // actually fires — e.g. "the Qty column is clock-out time, not hours". Threaded as
+    // `interpretationHint` into every rescan request (see server.ts/lib/ocr/visionClient.ts's
+    // withRescanHint), reusing the same mechanism the post-scan "resolve this document's reading
+    // convention" flow already relies on. A plain window.prompt rather than a custom modal — no new
+    // markup needed, and Cancel naturally aborts the rescan (returns null here).
+    /** Prompts for a rescan hint; returns null if the caseworker cancelled (abort the rescan), else a (possibly empty) string. */
+    function promptRescanHint() {
+      return window.prompt('Anything this scan should look out for? (optional — leave blank and click OK to rescan as-is)', '');
+    }
+    /** True if `el`'s current value differs from the value it was rendered with. */
+    function isFieldHandEdited(el) {
+      if (el.type === 'checkbox' || el.type === 'radio') return el.checked !== el.defaultChecked;
+      return el.value !== el.defaultValue;
+    }
+    /** Re-checks `el` and tints whichever row/field-group contains it based on ANY edited field inside. */
+    function refreshEditHighlight(el) {
+      const row = el.closest('tr, li, .ipa-field-group');
+      if (!row) return;
+      el.classList.toggle('field-edited', isFieldHandEdited(el));
+      const rowEdited = [...row.querySelectorAll('input, textarea')].some(isFieldHandEdited);
+      row.classList.toggle('row-edited', rowEdited);
+    }
+    for (const evt of ['input', 'change']) {
+      document.addEventListener(evt, (e) => {
+        const el = e.target;
+        if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) refreshEditHighlight(el);
+      }, true);
+    }
+
+    // "Revert" button beside each page's "Rescan this page" button — restores every field on that
+    // page back to its defaultValue/defaultChecked (the last-scanned value, same thing
+    // isFieldHandEdited compares against) without an actual rescan. Dispatches real input/change
+    // events rather than just writing .value, so every per-row listener that already exists
+    // (guardrail recompute, break-mismatch check, bank/medical/payslip summary refresh, the
+    // field-edited/row-edited highlight above) re-runs exactly as if the reviewer had typed the
+    // old value back in — no need to know which page type's own refresh function to call. Only
+    // undoes value edits, not added/removed rows (those aren't tracked by defaultValue).
+    document.addEventListener('click', (e) => {
+      const btn = e.target.closest('.page-revert-btn');
+      if (!btn) return;
+      const cardRoot = btn.closest('.page-review-row');
+      if (!cardRoot) return;
+      for (const el of cardRoot.querySelectorAll('input, textarea')) {
+        if (el.type === 'checkbox' || el.type === 'radio') el.checked = el.defaultChecked;
+        else el.value = el.defaultValue;
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+        el.dispatchEvent(new Event('change', { bubbles: true }));
+      }
+    });
+
     pdfsInput.addEventListener('change', () => {
       updateFileListLabel();
       refreshPdfsPreview();
@@ -2556,31 +2658,10 @@
             for (const row of matching) appendReviewRow(container, row);
           }
 
-          // Worker-roster page: "Use this row" replaces whatever's currently in this page's own
-          // list with the manually picked worker's reading — same "edit fields, get picked up at
-          // Generate time" model every other row already uses, just constructed fresh rather than
-          // edited in place, since a picked row may not correspond to any row currently shown.
-          if (page.dataModel === 'worker_roster' && page.rosterMatch) {
-            const cardRoot = container.closest('.page-review-row');
-            cardRoot?.querySelectorAll('.roster-pick-btn').forEach(btn => {
-              btn.addEventListener('click', () => {
-                const picked = page.rosterMatch.allRows[Number(btn.dataset.idx)];
-                if (!picked || !page.rosterMatch.date) return;
-                container.querySelectorAll('.review-row').forEach(li => li.remove());
-                appendReviewRow(container, {
-                  date: page.rosterMatch.date,
-                  clockIn: picked.actualTimeIn,
-                  clockOut: picked.actualTimeOut,
-                  breakHours: picked.mealBreakHours ?? 1,
-                  restDay: false,
-                  guessed: true,
-                  notes: `manually picked from roster: ${picked.workerName || 'unnamed row'}${picked.notes ? ` — ${picked.notes}` : ''}`,
-                  source: page.source,
-                });
-                recomputeMonthlyOtCap();
-              });
-            });
-          }
+          const droppedSlot = container.closest('.page-review-row')?.querySelector('.page-dropped-dates-slot');
+          if (droppedSlot) droppedSlot.innerHTML = renderDroppedDatesNote(page, matching);
+
+          wireRosterPicker(container, page);
         });
         // Each page card also got its own "+ Add day" button (see renderPageReview) — wire each one
         // to append into ITS OWN mini-list (same position-matching as above), so a manually-added
@@ -2870,6 +2951,7 @@
       // recomputeRowGuardrails/collectAllReviewRows/buildCorrectedEntries below instead of a live
       // checkbox state.
       li.dataset.restDay = row.restDay ? '1' : '';
+      li.dataset.bbox = row.bbox ? JSON.stringify(row.bbox) : '';
       const rowId = reviewRowCounter++;
       li.innerHTML = `
     <div class="field-group weekday-group"><span class="weekday-label">${weekdayAbbr(row.date)}</span></div>
@@ -2919,6 +3001,8 @@
       wireRadioGroupHighlight(restInitGroup); // dynamically added after page load, so not covered by the initial document.querySelectorAll('.radio-group') pass
       restInitGroup.addEventListener('change', () => recomputeRowGuardrails(li));
       li.querySelector('.row-delete-btn').addEventListener('click', () => { li.remove(); recomputeMonthlyOtCap(); });
+      li.addEventListener('mouseenter', () => showRowSourceHighlight(li));
+      li.addEventListener('mouseleave', () => hideRowSourceHighlight(li));
       container.insertBefore(li, beforeEl || null);
       onRowChanged();
     }
@@ -4374,6 +4458,78 @@
       }));
     }
 
+    /** Short "3 Mar" label for a YYYY-MM-DD date string, for the dropped-dates note below. */
+    function formatDateShort(dateStr) {
+      const [y, m, d] = (dateStr || '').split('-').map(Number);
+      if (!y || !m || !d) return dateStr || '';
+      return `${d} ${MONTH_ABBR[m - 1]}`;
+    }
+
+    // Categories where "nothing is shown for this date at all" is the defining trait — a
+    // flagged_review warning is already visible (the row itself is shown, marked guessed, with its
+    // own inline note), so repeating it here would be exactly the standing wall of text a past
+    // caseworker asked to have removed. scan_quality is page/attempt-level, not usually tied to
+    // one date. Only these three genuinely mean "there's a real date here and the page would
+    // otherwise show nothing for it, with nothing to explain why."
+    const SILENT_DROP_CATEGORIES = new Set(['dropped_disagreement', 'missing_data', 'skipped_invalid']);
+
+    // Reconciliation is strict-unanimity by design (lib/reconcile.ts) — a date the scan attempts
+    // disagreed on gets dropped rather than guessed, which is the right call, but it used to drop
+    // SILENTLY: page.warnings already carried the reason, it just never reached the caseworker (the
+    // only other reader of page.warnings is detectAndInsertMissingDays' auto-fill skip logic). This
+    // surfaces exactly the dates that fell through that gap — collapsed by default, not expanded,
+    // so a normal page with nothing wrong stays exactly as quiet as before.
+    /** Builds a collapsed "N date(s) need a look" note for any date this page flagged but produced NO row for. */
+    function renderDroppedDatesNote(page, matching) {
+      const coveredDates = new Set((matching || []).map(r => r.date));
+      const reasonByDate = new Map();
+      for (const w of (page.warnings || [])) {
+        if (!w.date || !SILENT_DROP_CATEGORIES.has(w.category) || coveredDates.has(w.date)) continue;
+        if (!reasonByDate.has(w.date)) reasonByDate.set(w.date, w.reason);
+      }
+      if (reasonByDate.size === 0) return '';
+      const items = [...reasonByDate.entries()]
+        .sort((a, b) => a[0].localeCompare(b[0]))
+        .map(([date, reason]) => `<li><strong>${formatDateShort(date)}</strong> — ${escapeHtml(reason)}</li>`)
+        .join('');
+      const n = reasonByDate.size;
+      return `
+        <details class="page-dropped-dates">
+          <summary>⚠ ${n} date${n > 1 ? 's' : ''} on this page couldn't be confidently read — nothing's shown below for ${n > 1 ? 'them' : 'it'}, please check the source and add manually if it's a real work day</summary>
+          <ul>${items}</ul>
+        </details>`;
+    }
+
+    // Worker-roster page: picking a different name from the dropdown replaces whatever's currently
+    // in this page's own list with that worker's reading — same "edit fields, get picked up at
+    // Generate time" model every other row already uses, just constructed fresh rather than edited
+    // in place, since a picked row may not correspond to any row currently shown. Shared by the
+    // initial batch render AND spliceRescannedPage (a rescanned worker-roster page gets a brand new
+    // <select> element each time, which needs its own listener — reusing this one place means the
+    // two call sites can never drift out of sync on how picking a worker is handled.
+    /** Wires a worker-roster page card's dropdown so picking a worker rebuilds its editable row. */
+    function wireRosterPicker(container, page) {
+      if (page.dataModel !== 'worker_roster' || !page.rosterMatch) return;
+      const cardRoot = container.closest('.page-review-row');
+      const select = cardRoot?.querySelector('.roster-worker-select');
+      select?.addEventListener('change', () => {
+        const picked = page.rosterMatch.allRows[Number(select.value)];
+        if (!picked || !page.rosterMatch.date) return;
+        container.querySelectorAll('.review-row').forEach(li => li.remove());
+        appendReviewRow(container, {
+          date: page.rosterMatch.date,
+          clockIn: picked.actualTimeIn,
+          clockOut: picked.actualTimeOut,
+          breakHours: picked.mealBreakHours ?? 1,
+          restDay: false,
+          guessed: true,
+          notes: `manually picked from roster: ${picked.workerName || 'unnamed row'}${picked.notes ? ` — ${picked.notes}` : ''}`,
+          source: page.source,
+        });
+        recomputeMonthlyOtCap();
+      });
+    }
+
     // ===== Timesheet page-by-page review, rescan =====
     /**
      * Renders one timesheet page's review card (image, extracted rows list, rescan controls).
@@ -4406,36 +4562,33 @@
         ? `<div class="row-notes">Models used: ${page.modelsUsed.map(escapeHtml).join(', ')} (fallback model used because the primary model's attempts disagreed on at least one date)</div>`
         : '';
 
-      // A worker-roster page (one shared date, many named workers) shows the extracted worker
-      // table instead of the usual per-date rows — the auto-matched worker's row (if any) is
-      // highlighted and already reflected below as a normal editable row; "Use this row" lets the
-      // caseworker override the match. Wired up after this card lands in the DOM (see the
-      // /api/process success handler), same two-pass pattern as review-target-list's rows.
+      // A worker-roster page (one shared date, many named workers) shows a dropdown of every
+      // extracted worker instead of a big table — the auto-matched worker is preselected (and
+      // already reflected below as a normal editable row); picking a different name from the
+      // dropdown swaps which row feeds that editable row. Wired up after this card lands in the
+      // DOM (see the /api/process success handler), same two-pass pattern as review-target-list's
+      // rows.
       const rosterHtml = page.dataModel === 'worker_roster' && page.rosterMatch ? (() => {
         const rm = page.rosterMatch;
         const confidenceText = rm.confidence === 'high'
           ? 'High-confidence match found — please still confirm below.'
           : rm.confidence === 'low'
-            ? 'Low-confidence match — please verify against the list below.'
+            ? 'Low-confidence match — please verify below.'
             : 'No confident match found — please pick the correct worker below.';
-        const rowsHtml = rm.allRows.length === 0
-          ? '<tr><td colspan="6" class="empty">No worker rows extracted from this page.</td></tr>'
-          : rm.allRows.map((r, idx) => `
-              <tr class="${idx === rm.matchedRowIndex ? 'roster-row-matched' : ''}">
-                <td>${escapeHtml(r.workerName || '—')}</td>
-                <td>${escapeHtml(r.workerIc || '—')}</td>
-                <td>${r.actualTimeIn !== null ? hhmmToTimeInput(r.actualTimeIn) : '—'}</td>
-                <td>${r.actualTimeOut !== null ? hhmmToTimeInput(r.actualTimeOut) : '—'}</td>
-                <td>${r.mealBreakHours ?? '—'}</td>
-                <td><button type="button" class="roster-pick-btn" data-idx="${idx}">Use this row</button></td>
-              </tr>`).join('');
+        const optionsHtml = rm.allRows.length === 0
+          ? ''
+          : rm.allRows.map((r, idx) => {
+              const inOut = `${r.actualTimeIn !== null ? hhmmToTimeInput(r.actualTimeIn) : '—'}–${r.actualTimeOut !== null ? hhmmToTimeInput(r.actualTimeOut) : '—'}`;
+              const label = `${r.workerName || 'Unnamed'}${r.workerIc ? ` (${r.workerIc})` : ''} — ${inOut}`;
+              return `<option value="${idx}"${idx === rm.matchedRowIndex ? ' selected' : ''}>${escapeHtml(label)}</option>`;
+            }).join('');
+        const selectHtml = rm.allRows.length === 0
+          ? '<div class="review-hint">No worker rows extracted from this page.</div>'
+          : `<select class="roster-worker-select">${optionsHtml}</select>`;
         return `
         <div class="roster-match-block">
           <div class="roster-confidence-note roster-confidence-${rm.confidence}">${escapeHtml(confidenceText)}</div>
-          <table class="roster-worker-table">
-            <thead><tr><th>Name</th><th>IC</th><th>In</th><th>Out</th><th>Break</th><th></th></tr></thead>
-            <tbody>${rowsHtml}</tbody>
-          </table>
+          ${selectHtml}
         </div>`;
       })() : '';
 
@@ -4446,6 +4599,7 @@
         <div class="page-rescan-controls" data-file-index="${key.split('-')[0]}" data-page-index="${key.split('-')[1]}" data-key="${escapeHtml(key)}">
           <button type="button" class="page-rotate-btn" title="Rotate this page before rescanning">⟳ Rotate</button>
           <button type="button" class="page-rescan-btn">Rescan this page</button>
+          <button type="button" class="page-revert-btn" title="Revert this page's fields to their last-scanned values">↺ Revert</button>
         </div>
         <div class="page-rescan-status"></div>` : '';
 
@@ -4460,6 +4614,7 @@
         ${modelsUsedHtml}
         ${rosterHtml}
         <ul class="inline-review-list review-target-list"></ul>
+        <div class="page-dropped-dates-slot"></div>
         <div class="page-add-day">
           <div class="review-hint">Add a date this page's scan didn't pick up.</div>
           <ul class="inline-review-list page-extra-list"></ul>
@@ -4550,6 +4705,8 @@
           statusEl.textContent = 'IPA letter no longer attached (selection changed since the scan ran) — re-attach it before rescanning a single page.';
           return;
         }
+        const hint = promptRescanHint();
+        if (hint === null) return;
         rescanBtn.disabled = true;
         statusEl.className = 'page-rescan-status';
         statusEl.textContent = 'Rescanning…';
@@ -4567,6 +4724,7 @@
         formData.append('excludedPages', JSON.stringify(excluded));
         formData.append('excludedIpaPages', JSON.stringify([...excludedIpaPages]));
         formData.append('standardBreakHours', getStandardBreakHours());
+        if (hint) formData.append('interpretationHint', hint);
         // Isolating this page from its neighbors (excludedPages above) means it can't borrow a year
         // from an adjacent page the way the original full-batch scan could — see runProcessJob's
         // fallbackYear param. Best available fallback: the first year the original scan detected
@@ -4625,6 +4783,10 @@
         appendReviewRow(extraList, { date: '', clockIn: null, clockOut: null, breakHours: 1, restDay: false, guessed: false, notes: null, source: 'manually added' });
       });
 
+      const droppedSlot = newRowEl.querySelector('.page-dropped-dates-slot');
+      if (droppedSlot) droppedSlot.innerHTML = renderDroppedDatesNote(newPage, matching);
+
+      wireRosterPicker(container, newPage);
       newRowEl.querySelectorAll('.page-rescan-controls').forEach(wireTimesheetRescanControls);
       const newStatusEl = newRowEl.querySelector('.page-rescan-status');
       if (newStatusEl) {
@@ -4825,6 +4987,7 @@
           <div class="page-rescan-controls">
             <button type="button" class="page-rotate-btn" title="Rotate this page before rescanning">⟳ Rotate</button>
             <button type="button" class="page-rescan-btn">Rescan IPA</button>
+            <button type="button" class="page-revert-btn" title="Revert this page's fields to their last-scanned values">↺ Revert</button>
           </div>
           <div class="page-rescan-status"></div>
         </div>` : ''}
@@ -4872,6 +5035,8 @@
           statusEl.textContent = 'IPA letter no longer attached (selection changed since the scan ran) — re-attach it before rescanning.';
           return;
         }
+        const hint = promptRescanHint();
+        if (hint === null) return;
         rescanBtn.disabled = true;
         statusEl.className = 'page-rescan-status';
         statusEl.textContent = 'Rescanning IPA…';
@@ -4884,6 +5049,7 @@
         formData.append('rotations', JSON.stringify({ pdfs: {}, ipa: ipaRotations }));
         formData.append('excludedIpaPages', JSON.stringify([...excludedIpaPages]));
         formData.append('standardBreakHours', getStandardBreakHours());
+        if (hint) formData.append('interpretationHint', hint);
         // With no timesheet page in this request there's nothing for /api/process to infer a claim
         // year from — it still needs SOME year to avoid erroring out before it ever reaches IPA
         // extraction, even though the IPA itself doesn't need one. Same 3-tier fallback chain as the
@@ -5223,7 +5389,7 @@
         ? `<input type="text" class="bt-desc-input" placeholder="Description" value="${escapeHtml(t.description || '')}">`
         : escapeHtml(t.description);
       return `
-    <tr class="bt-row" data-source="${escapeHtml(t.source)}" data-date="${escapeHtml(t.date || '')}" data-description="${escapeHtml(t.description || '')}" data-direction="${t.direction || 'credit'}" data-confirmed-seen="${t.confirmedByAttempts ? t.confirmedByAttempts.seen : ''}" data-confirmed-total="${t.confirmedByAttempts ? t.confirmedByAttempts.total : ''}">
+    <tr class="bt-row" data-source="${escapeHtml(t.source)}" data-date="${escapeHtml(t.date || '')}" data-description="${escapeHtml(t.description || '')}" data-direction="${t.direction || 'credit'}" data-confirmed-seen="${t.confirmedByAttempts ? t.confirmedByAttempts.seen : ''}" data-confirmed-total="${t.confirmedByAttempts ? t.confirmedByAttempts.total : ''}" data-bbox="${t.bbox ? escapeHtml(JSON.stringify(t.bbox)) : ''}">
       <td>${dateCell}</td>
       <td>
         ${descCell}
@@ -5279,6 +5445,8 @@
         tr.remove();
         refreshBankSummary();
       });
+      tr.addEventListener('mouseenter', () => showRowSourceHighlight(tr));
+      tr.addEventListener('mouseleave', () => hideRowSourceHighlight(tr));
     }
 
     /** Rebuilds the Summary section's bank-results table/total from the live editable rows, and cascades to owed-vs-paid. */
@@ -5316,7 +5484,7 @@
         // First manual add on a page the scan found nothing on — swap the "no matches" hint for an
         // actual (empty) table so there's a tbody to append into.
         if (!container.querySelector('tbody')) container.innerHTML = formatBankTransactionsTableEditable([]);
-        const row = { date: '', description: '', amount: 0, direction: 'credit', source: addBtn.dataset.source, confirmedByAttempts: null };
+        const row = { date: '', description: '', amount: 0, direction: 'credit', bbox: null, source: addBtn.dataset.source, confirmedByAttempts: null };
         container.querySelector('tbody').insertAdjacentHTML('beforeend', formatBankTransactionRow(row, true));
         wireBankRow(container.querySelector('tbody').lastElementChild);
         refreshBankSummary();
@@ -5332,6 +5500,7 @@
         <div class="page-rescan-controls" data-file-index="${key.split('-')[0]}" data-page-index="${key.split('-')[1]}" data-key="${escapeHtml(key)}">
           <button type="button" class="page-rotate-btn" title="Rotate this page before rescanning">⟳ Rotate</button>
           <button type="button" class="page-rescan-btn">Rescan this page</button>
+          <button type="button" class="page-revert-btn" title="Revert this page's fields to their last-scanned values">↺ Revert</button>
         </div>
         <div class="page-rescan-status"></div>` : '';
       return `
@@ -5431,6 +5600,8 @@
           statusEl.textContent = 'Original file no longer attached (selection changed since the scan ran) — re-upload and rescan the whole batch instead.';
           return;
         }
+        const hint = promptRescanHint();
+        if (hint === null) return;
         rescanBtn.disabled = true;
         statusEl.className = 'page-rescan-status';
         statusEl.textContent = 'Rescanning…';
@@ -5443,6 +5614,7 @@
         formData.append('statements', file);
         formData.append('rotations', JSON.stringify({ [`0-${pageIndex}`]: bankStatementRotations[key] || 0 }));
         formData.append('excludedPages', JSON.stringify(excluded));
+        if (hint) formData.append('interpretationHint', hint);
 
         try {
           const res = await fetch('/api/bank-statement', { method: 'POST', body: formData });
@@ -5629,7 +5801,7 @@
         ? `<input type="text" class="mb-desc-input" placeholder="Description" value="${escapeHtml(t.description || '')}">`
         : escapeHtml(t.description || '—');
       return `
-    <tr class="mb-row" data-source="${escapeHtml(t.source)}" data-description="${escapeHtml(t.description || '')}" data-confirmed-seen="${t.confirmedByAttempts ? t.confirmedByAttempts.seen : ''}" data-confirmed-total="${t.confirmedByAttempts ? t.confirmedByAttempts.total : ''}">
+    <tr class="mb-row" data-source="${escapeHtml(t.source)}" data-description="${escapeHtml(t.description || '')}" data-confirmed-seen="${t.confirmedByAttempts ? t.confirmedByAttempts.seen : ''}" data-confirmed-total="${t.confirmedByAttempts ? t.confirmedByAttempts.total : ''}" data-bbox="${t.bbox ? escapeHtml(JSON.stringify(t.bbox)) : ''}">
       <td><input type="date" class="mb-date-input" value="${escapeHtml(t.date || '')}"></td>
       <td><input type="number" step="0.01" class="mb-amount-input" value="${t.amount ?? 0}"></td>
       <td>${descCell}${t.confirmedByAttempts && t.confirmedByAttempts.seen < t.confirmedByAttempts.total ? `<div class="pay-total-sub">⚠ only ${t.confirmedByAttempts.seen}/${t.confirmedByAttempts.total} scan passes caught this — worth double-checking against the source page</div>` : ''}</td>
@@ -5674,6 +5846,8 @@
         tr.remove();
         refreshMedicalBillsClaim();
       });
+      tr.addEventListener('mouseenter', () => showRowSourceHighlight(tr));
+      tr.addEventListener('mouseleave', () => hideRowSourceHighlight(tr));
     }
 
     /** Wires one medical-bill page card's editable rows and "+ Add bill" button. */
@@ -5684,7 +5858,7 @@
       addBtn.addEventListener('click', () => {
         const container = card.querySelector('.mb-table-container');
         if (!container.querySelector('tbody')) container.innerHTML = formatMedicalEntriesTableEditable([]);
-        const row = { date: '', amount: 0, description: '', reimbursed: false, source: addBtn.dataset.source, confirmedByAttempts: null };
+        const row = { date: '', amount: 0, description: '', reimbursed: false, bbox: null, source: addBtn.dataset.source, confirmedByAttempts: null };
         container.querySelector('tbody').insertAdjacentHTML('beforeend', formatMedicalEntryRow(row, true));
         wireMedicalRow(container.querySelector('tbody').lastElementChild);
         refreshMedicalBillsClaim();
@@ -5699,6 +5873,7 @@
         <div class="page-rescan-controls" data-file-index="${key.split('-')[0]}" data-page-index="${key.split('-')[1]}" data-key="${escapeHtml(key)}">
           <button type="button" class="page-rotate-btn" title="Rotate this page before rescanning">⟳ Rotate</button>
           <button type="button" class="page-rescan-btn">Rescan this page</button>
+          <button type="button" class="page-revert-btn" title="Revert this page's fields to their last-scanned values">↺ Revert</button>
         </div>
         <div class="page-rescan-status"></div>` : '';
       return `
@@ -5763,6 +5938,8 @@
           statusEl.textContent = 'Original file no longer attached (selection changed since the scan ran) — re-upload and rescan the whole batch instead.';
           return;
         }
+        const hint = promptRescanHint();
+        if (hint === null) return;
         rescanBtn.disabled = true;
         statusEl.className = 'page-rescan-status';
         statusEl.textContent = 'Rescanning…';
@@ -5775,6 +5952,7 @@
         formData.append('medicalBills', file);
         formData.append('rotations', JSON.stringify({ [`0-${pageIndex}`]: medicalBillsRotations[key] || 0 }));
         formData.append('excludedPages', JSON.stringify(excluded));
+        if (hint) formData.append('interpretationHint', hint);
 
         try {
           const res = await fetch('/api/medical-bills', { method: 'POST', body: formData });
@@ -5998,7 +6176,7 @@
         ? `<input type="text" class="mc-desc-input" placeholder="Diagnosis / reason" value="${escapeHtml(t.description || '')}">`
         : escapeHtml(t.description || '—');
       return `
-    <tr class="mc-row" data-source="${escapeHtml(t.source)}" data-description="${escapeHtml(t.description || '')}" data-confirmed-seen="${t.confirmedByAttempts ? t.confirmedByAttempts.seen : ''}" data-confirmed-total="${t.confirmedByAttempts ? t.confirmedByAttempts.total : ''}">
+    <tr class="mc-row" data-source="${escapeHtml(t.source)}" data-description="${escapeHtml(t.description || '')}" data-confirmed-seen="${t.confirmedByAttempts ? t.confirmedByAttempts.seen : ''}" data-confirmed-total="${t.confirmedByAttempts ? t.confirmedByAttempts.total : ''}" data-bbox="${t.bbox ? escapeHtml(JSON.stringify(t.bbox)) : ''}">
       <td><input type="date" class="mc-leave-from-input" value="${escapeHtml(t.leaveFrom || '')}"></td>
       <td><input type="date" class="mc-leave-to-input" value="${escapeHtml(t.leaveTo || '')}"></td>
       <td>${descCell}${t.confirmedByAttempts && t.confirmedByAttempts.seen < t.confirmedByAttempts.total ? `<div class="pay-total-sub">⚠ only ${t.confirmedByAttempts.seen}/${t.confirmedByAttempts.total} scan passes caught this — worth double-checking against the source page</div>` : ''}</td>
@@ -6049,6 +6227,8 @@
         tr.remove();
         refreshMedicalCertGuardrails();
       });
+      tr.addEventListener('mouseenter', () => showRowSourceHighlight(tr));
+      tr.addEventListener('mouseleave', () => hideRowSourceHighlight(tr));
     }
 
     /** Wires one medical-certificate page card's editable rows and "+ Add certificate" button. */
@@ -6059,7 +6239,7 @@
       addBtn.addEventListener('click', () => {
         const container = card.querySelector('.mc-table-container');
         if (!container.querySelector('tbody')) container.innerHTML = formatMedicalCertEntriesTableEditable([]);
-        const row = { leaveFrom: '', leaveTo: '', description: '', source: addBtn.dataset.source, confirmedByAttempts: null };
+        const row = { leaveFrom: '', leaveTo: '', description: '', bbox: null, source: addBtn.dataset.source, confirmedByAttempts: null };
         container.querySelector('tbody').insertAdjacentHTML('beforeend', formatMedicalCertEntryRow(row, true));
         wireMedicalCertRow(container.querySelector('tbody').lastElementChild);
         refreshMedicalCertGuardrails();
@@ -6074,6 +6254,7 @@
         <div class="page-rescan-controls" data-file-index="${key.split('-')[0]}" data-page-index="${key.split('-')[1]}" data-key="${escapeHtml(key)}">
           <button type="button" class="page-rotate-btn" title="Rotate this page before rescanning">⟳ Rotate</button>
           <button type="button" class="page-rescan-btn">Rescan this page</button>
+          <button type="button" class="page-revert-btn" title="Revert this page's fields to their last-scanned values">↺ Revert</button>
         </div>
         <div class="page-rescan-status"></div>` : '';
       return `
@@ -6138,6 +6319,8 @@
           statusEl.textContent = 'Original file no longer attached (selection changed since the scan ran) — re-upload and rescan the whole batch instead.';
           return;
         }
+        const hint = promptRescanHint();
+        if (hint === null) return;
         rescanBtn.disabled = true;
         statusEl.className = 'page-rescan-status';
         statusEl.textContent = 'Rescanning…';
@@ -6150,6 +6333,7 @@
         formData.append('medicalCertificates', file);
         formData.append('rotations', JSON.stringify({ [`0-${pageIndex}`]: medicalCertificatesRotations[key] || 0 }));
         formData.append('excludedPages', JSON.stringify(excluded));
+        if (hint) formData.append('interpretationHint', hint);
 
         try {
           const res = await fetch('/api/medical-certificates', { method: 'POST', body: formData });
@@ -6338,7 +6522,7 @@
     /** Renders one editable payslip row for the page-by-page review (scanned or manually-added). */
     function formatPayslipEntryRow(t, manual) {
       return `
-    <tr class="payslip-row" data-source="${escapeHtml(t.source)}" data-confirmed-seen="${t.confirmedByAttempts ? t.confirmedByAttempts.seen : ''}" data-confirmed-total="${t.confirmedByAttempts ? t.confirmedByAttempts.total : ''}">
+    <tr class="payslip-row" data-source="${escapeHtml(t.source)}" data-confirmed-seen="${t.confirmedByAttempts ? t.confirmedByAttempts.seen : ''}" data-confirmed-total="${t.confirmedByAttempts ? t.confirmedByAttempts.total : ''}" data-bbox="${t.bbox ? escapeHtml(JSON.stringify(t.bbox)) : ''}">
       <td>
         <select class="payslip-granularity-select">
           <option value="day"${t.granularity === 'day' ? ' selected' : ''}>Day</option>
@@ -6657,6 +6841,49 @@
         tr.remove();
         refreshPayslipDerivedTotals();
       });
+      tr.addEventListener('mouseenter', () => showRowSourceHighlight(tr));
+      tr.addEventListener('mouseleave', () => hideRowSourceHighlight(tr));
+    }
+
+    // Lets a caseworker hover an extracted row and see roughly where on the source page image it
+    // came from — the model reports bbox as a fraction (0-1) of the full image, but the <img> is
+    // shown with object-fit:contain, which can letterbox it, so the highlight box's pixel position
+    // has to be computed from the image's actual rendered content rect, not its element box.
+    /** Returns the rendered content rect (in px, relative to the img element's own box) of an object-fit:contain image. */
+    function containedImageRect(img) {
+      const cw = img.clientWidth, ch = img.clientHeight;
+      const nw = img.naturalWidth, nh = img.naturalHeight;
+      if (!nw || !nh || !cw || !ch) return { left: 0, top: 0, width: cw, height: ch };
+      const scale = Math.min(cw / nw, ch / nh);
+      const width = nw * scale, height = nh * scale;
+      return { left: (cw - width) / 2, top: (ch - height) / 2, width, height };
+    }
+
+    /** Shows a highlight box over a row's source page image at its reported bbox, if it has one. */
+    function showRowSourceHighlight(tr) {
+      if (!tr.dataset.bbox) return;
+      let bbox;
+      try { bbox = JSON.parse(tr.dataset.bbox); } catch { return; }
+      const imageWrap = tr.closest('.page-review-row')?.querySelector('.page-review-image');
+      const img = imageWrap?.querySelector('img');
+      if (!imageWrap || !img) return;
+      const rect = containedImageRect(img);
+      let box = imageWrap.querySelector('.row-source-highlight');
+      if (!box) {
+        box = document.createElement('div');
+        box.className = 'row-source-highlight';
+        imageWrap.appendChild(box);
+      }
+      box.style.left = `${rect.left + bbox.x * rect.width}px`;
+      box.style.top = `${rect.top + bbox.y * rect.height}px`;
+      box.style.width = `${bbox.w * rect.width}px`;
+      box.style.height = `${bbox.h * rect.height}px`;
+      box.style.display = 'block';
+    }
+
+    /** Hides the source-highlight box for a row's page, if shown. */
+    function hideRowSourceHighlight(tr) {
+      tr.closest('.page-review-row')?.querySelector('.row-source-highlight')?.style.setProperty('display', 'none');
     }
 
     /** Wires one payslip page card's editable rows and "+ Add entry" button. */
@@ -6667,7 +6894,7 @@
       addBtn.addEventListener('click', () => {
         const container = card.querySelector('.payslip-table-container');
         if (!container.querySelector('tbody')) container.innerHTML = formatPayslipEntriesTableEditable([]);
-        const row = { granularity: 'month', date: null, weekStart: null, weekEnd: null, yearMonth: '', overtimeHours: 0, hourlyRate: null, source: addBtn.dataset.source, confirmedByAttempts: null };
+        const row = { granularity: 'month', date: null, weekStart: null, weekEnd: null, yearMonth: '', overtimeHours: 0, hourlyRate: null, bbox: null, source: addBtn.dataset.source, confirmedByAttempts: null };
         container.querySelector('tbody').insertAdjacentHTML('beforeend', formatPayslipEntryRow(row, true));
         wirePayslipRow(container.querySelector('tbody').lastElementChild);
         refreshPayslipDerivedTotals();
@@ -6682,6 +6909,7 @@
         <div class="page-rescan-controls" data-file-index="${key.split('-')[0]}" data-page-index="${key.split('-')[1]}" data-key="${escapeHtml(key)}">
           <button type="button" class="page-rotate-btn" title="Rotate this page before rescanning">⟳ Rotate</button>
           <button type="button" class="page-rescan-btn">Rescan this page</button>
+          <button type="button" class="page-revert-btn" title="Revert this page's fields to their last-scanned values">↺ Revert</button>
         </div>
         <div class="page-rescan-status"></div>` : '';
       return `
@@ -6746,6 +6974,8 @@
           statusEl.textContent = 'Original file no longer attached (selection changed since the scan ran) — re-upload and rescan the whole batch instead.';
           return;
         }
+        const hint = promptRescanHint();
+        if (hint === null) return;
         rescanBtn.disabled = true;
         statusEl.className = 'page-rescan-status';
         statusEl.textContent = 'Rescanning…';
@@ -6758,6 +6988,7 @@
         formData.append('payslips', file);
         formData.append('rotations', JSON.stringify({ [`0-${pageIndex}`]: payslipsRotations[key] || 0 }));
         formData.append('excludedPages', JSON.stringify(excluded));
+        if (hint) formData.append('interpretationHint', hint);
 
         try {
           const res = await fetch('/api/payslips', { method: 'POST', body: formData });

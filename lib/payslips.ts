@@ -1,4 +1,4 @@
-import { sendVisionRequest, extractJsonBlock } from "./ocr";
+import { sendVisionRequest, extractJsonBlock, withRescanHint } from "./ocr";
 
 export type PayslipGranularity = "day" | "week" | "month";
 
@@ -15,6 +15,10 @@ export type PayslipEntry = {
     // elsewhere in this app). Display/reference only: never substituted into the actual claim math,
     // since a wrong (too-low) rate here could well be the very thing the claim is about.
     hourlyRate: number | null;
+    // Where on the page image this figure was read from, as fractions (0-1) of the image's
+    // width/height — lets the review UI draw a highlight box over the source image on hover.
+    // null if the model didn't return a usable box; this is best-effort, not pixel-exact.
+    bbox: { x: number; y: number; w: number; h: number } | null;
     // Set only by mergePayslipEntries below — same "how many independent scan attempts on this
     // page actually reported this" pattern as lib/bankstatement.ts's BankTransaction.
     confirmedByAttempts: { seen: number; total: number } | null;
@@ -38,6 +42,7 @@ For each OT-hours figure found, report:
 - yearMonth: YYYY-MM, ONLY if granularity is "month", otherwise null
 - overtimeHours: the number of overtime hours stated for that period (a plain number, not a dollar amount)
 - hourlyRate: the per-hour overtime RATE, if one is printed alongside the hours (e.g. "68 hrs x $5.63" -> hourlyRate 5.63, or a column/field literally labeled "OT rate" or "hourly rate"). A plain number, no dollar sign. null if no such rate is printed anywhere near the overtime hours figure — do not compute it yourself by dividing a total by the hours.
+- bbox: the location of the overtime-hours figure on the page, as an object {x, y, w, h} where each value is a FRACTION of the full image's width/height (0 = left/top edge, 1 = right/bottom edge) — e.g. a figure in the exact center would be roughly {x: 0.45, y: 0.45, w: 0.1, h: 0.03}. Box it tight around just that figure (and its row/line if it's part of a table row), not the whole table or page. Omit this field (or use null) if you can't estimate a location.
 
 Do not compute or infer any date math yourself (e.g. don't work out which date a month starts or ends on) — just report the dates/month exactly as printed.
 
@@ -56,6 +61,17 @@ function numOrNull(v: unknown): number | null {
     return Number.isFinite(n) ? n : null;
 }
 
+/** Coerces a model-reported bbox to `{x,y,w,h}` (all finite, in [0,1]), or `null` if it isn't usable. */
+function bboxOrNull(v: unknown): PayslipEntry["bbox"] {
+    if (typeof v !== "object" || v === null) return null;
+    const o = v as Record<string, unknown>;
+    const x = numOrNull(o.x), y = numOrNull(o.y), w = numOrNull(o.w), h = numOrNull(o.h);
+    if (x === null || y === null || w === null || h === null) return null;
+    const inRange = (n: number) => n >= 0 && n <= 1;
+    if (![x, y, w, h].every(inRange)) return null;
+    return { x, y, w, h };
+}
+
 // One independent scan attempt at a given temperature/seed — called several times per page (see
 // server.ts's SCAN_TEMPERATURES), same "a single deterministic pass can genuinely miss/misread a
 // figure" reasoning as extractMedicalCertificateEntries in lib/medicalCertificates.ts.
@@ -65,11 +81,12 @@ function numOrNull(v: unknown): number | null {
  * @param base64Image - The page image, base64-encoded (no data URL prefix).
  * @param temperature - Model sampling temperature for this attempt.
  * @param seed - Model sampling seed for this attempt.
+ * @param hint - Optional caseworker rescan hint (see {@link withRescanHint}).
  * @returns The OT entries found on the page, and this call's cost in USD.
  * @throws If the model's reply can't be parsed as a JSON array.
  */
-export async function extractPayslipEntries(base64Image: string, temperature = 0, seed = 42): Promise<{ entries: PayslipEntry[]; cost: number }> {
-    const { content, cost } = await sendVisionRequest(base64Image, PROMPT, temperature, seed, 2000);
+export async function extractPayslipEntries(base64Image: string, temperature = 0, seed = 42, hint?: string): Promise<{ entries: PayslipEntry[]; cost: number }> {
+    const { content, cost } = await sendVisionRequest(base64Image, withRescanHint(PROMPT, hint), temperature, seed, 2000);
     let parsed: unknown;
     try {
         parsed = JSON.parse(extractJsonBlock(content));
@@ -89,6 +106,7 @@ export async function extractPayslipEntries(base64Image: string, temperature = 0
             yearMonth: strOrNull(t.yearMonth),
             overtimeHours: numOrNull(t.overtimeHours) ?? 0,
             hourlyRate: numOrNull(t.hourlyRate),
+            bbox: bboxOrNull(t.bbox),
             confirmedByAttempts: null,
         }))
         // An entry with no valid granularity, or missing the field(s) that granularity requires,

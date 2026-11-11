@@ -12,6 +12,11 @@ export type TimeEntry = {
     // not knowing (false), which lets buildReviewRows fall back to the caseworker's declared
     // standard break as usual.
     noBreak: boolean;
+    // Where on the page image this entry was read from, as fractions (0-1) of the image's
+    // width/height — lets the review UI draw a highlight box over the source image on hover. null
+    // if the scan didn't return a usable box (or this entry didn't come from a bbox-aware path,
+    // e.g. the worker-roster branch).
+    bbox: { x: number; y: number; w: number; h: number } | null;
 };
 
 // Every warning is tagged with a category so the UI can group a long, otherwise-flat list into
@@ -49,7 +54,15 @@ function toLocalDateString(d: Date): string {
 // notes carries through the literal leave-type text (e.g. "MC", "-") server.ts's buildPrompt asks
 // the model to transcribe for a non-plain-rest-day mark, so a caseworker sees WHY a day has no
 // hours instead of a bare unlabeled rest day. null for an actual plain rest day.
-export type RestDay = { year: number; month: number; day: number; source: string; notes: string | null }; // month is 1-12
+export type RestDay = {
+    year: number;
+    month: number;
+    day: number;
+    source: string;
+    notes: string | null;
+    // Same best-effort hover-highlight box as TimeEntry.bbox above.
+    bbox: { x: number; y: number; w: number; h: number } | null;
+}; // month is 1-12
 
 // One row per calendar date, already collapsed to a single start/end/break — the shape the
 // human-review step (public/index.html) edits before generating the final spreadsheet. Multi-shift
@@ -65,6 +78,9 @@ export type ReviewRow = {
     guessed: boolean; // true if any underlying shift was a model guess or an implausible reading — surfaced as a "please double-check" hint, not enforced
     notes: string | null;
     source: string;
+    // Same best-effort hover-highlight box as TimeEntry.bbox — for a multi-shift day, the first
+    // (chronologically earliest) shift's box, since the whole span collapses into one row anyway.
+    bbox: { x: number; y: number; w: number; h: number } | null;
 };
 
 export const MONTH_ABBR = [
@@ -191,7 +207,7 @@ function shiftHours(clockIn: number, clockOut: number): number {
     return minutes / 60;
 }
 
-type Shift = { clockIn: number; clockOut: number; source: string; guessed: boolean; implausible?: boolean; noBreak: boolean };
+type Shift = { clockIn: number; clockOut: number; source: string; guessed: boolean; implausible?: boolean; noBreak: boolean; bbox: ReviewRow["bbox"] };
 
 // A day with 2+ distinct shifts (e.g. a morning block and an evening block) collapses to one
 // row: full span = first clock-in to last clock-out, and the gap(s) between shifts become the
@@ -263,7 +279,7 @@ export function buildReviewRows(entries: TimeEntry[], restDays: RestDay[], stand
         const cell = byDate.get(key) ?? { date: entry.date, shifts: [], source: entry.source };
         const isDuplicate = cell.shifts.some(s => s.clockIn === entry.clockIn && s.clockOut === entry.clockOut);
         if (!isDuplicate) {
-            cell.shifts.push({ clockIn: entry.clockIn, clockOut: entry.clockOut, source: entry.source, guessed: entry.guessed, noBreak: entry.noBreak });
+            cell.shifts.push({ clockIn: entry.clockIn, clockOut: entry.clockOut, source: entry.source, guessed: entry.guessed, noBreak: entry.noBreak, bbox: entry.bbox });
         }
         byDate.set(key, cell);
     }
@@ -295,6 +311,7 @@ export function buildReviewRows(entries: TimeEntry[], restDays: RestDay[], stand
                         ? "no break/lunch indicated on source — break set to 0h, please verify"
                         : null,
                 source: sourceList,
+                bbox: shifts[0].bbox,
             });
         } else {
             const sorted = [...shifts].sort((a, b) => toMinutes(a.clockIn) - toMinutes(b.clockIn));
@@ -309,6 +326,9 @@ export function buildReviewRows(entries: TimeEntry[], restDays: RestDay[], stand
                 guessed: true, // a multi-shift collapse always needs a human glance, even when internally consistent
                 notes: `${shifts.length} shifts originally scanned (${sorted.map(s => `${s.clockIn}-${s.clockOut}`).join(", ")}) collapsed into one span — please verify`,
                 source: sourceList,
+                // The earliest shift's box — the whole span collapses into one row anyway, so this
+                // just points the reviewer at roughly the right area rather than a precise span.
+                bbox: sorted[0].bbox,
             });
         }
     }
@@ -323,6 +343,7 @@ export function buildReviewRows(entries: TimeEntry[], restDays: RestDay[], stand
             guessed: false,
             notes: r.notes,
             source: r.source,
+            bbox: r.bbox,
         });
     }
 

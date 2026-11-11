@@ -1,4 +1,4 @@
-import { sendVisionRequest, extractJsonBlock } from "./ocr";
+import { sendVisionRequest, extractJsonBlock, withRescanHint } from "./ocr";
 
 export type IpaAmount = { type: string; amount: number };
 
@@ -134,18 +134,19 @@ function fixFinDigitB(fin: string | null): string | null {
  * Extracts a Work Permit IPA letter's declared employment terms from a single page image.
  *
  * @param base64Image - The IPA letter's first page image, base64-encoded (no data URL prefix).
+ * @param hint - Optional caseworker rescan hint (see {@link withRescanHint}).
  * @returns The extracted fields (each `null` if not printed on the document — never inferred),
  * and this call's cost in USD.
  * @throws If the model's reply can't be parsed as a JSON object.
  */
-export async function extractIpaFields(base64Image: string): Promise<{ fields: IpaFields; cost: number }> {
+export async function extractIpaFields(base64Image: string, hint?: string): Promise<{ fields: IpaFields; cost: number }> {
     // 2000 was enough for qwen/gemini but produced "Unexpected end of JSON input" (mid-object
     // truncation, not empty output) once the default model moved to xiaomi/mimo-v2.5 — same
     // reasoning-overhead-eats-the-budget failure mode extractPageContext and verifyDatesOnPage were
     // already bumped for, just landing here too now that this 15-field object (including two
     // variable-length allowance/deduction arrays) gives it more to genuinely say. Bumped with real
     // headroom rather than the smallest number that happened to pass one test.
-    const { content, cost } = await sendVisionRequest(base64Image, PROMPT, 0, 42, 4000);
+    const { content, cost } = await sendVisionRequest(base64Image, withRescanHint(PROMPT, hint), 0, 42, 4000);
     let parsed: any;
     try {
         parsed = JSON.parse(extractJsonBlock(content));

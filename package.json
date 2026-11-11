@@ -9,7 +9,8 @@
   "scripts": {
     "server": "node --max-old-space-size=4096 --require tsx/cjs --env-file=.env server.ts",
     "start": "node --max-old-space-size=1536 --require tsx/cjs server.ts",
-    "test": "vitest run"
+    "test": "vitest run",
+    "eval": "node --require tsx/cjs --env-file=.env scripts/eval.ts"
   },
   "dependencies": {
     "@google-cloud/firestore": "^8.7.0",

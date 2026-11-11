@@ -1,9 +1,13 @@
-import { sendVisionRequest, extractJsonBlock } from "./ocr";
+import { sendVisionRequest, extractJsonBlock, withRescanHint } from "./ocr";
 
 export type MedicalCertificateEntry = {
     leaveFrom: string; // YYYY-MM-DD — first day of medical leave granted
     leaveTo: string; // YYYY-MM-DD — last day of medical leave granted (inclusive); same as leaveFrom for a single-day MC
     description: string; // diagnosis/reason given on the certificate, verbatim if given
+    // Where on the page image this leave period was read from, as fractions (0-1) of the image's
+    // width/height — lets the review UI draw a highlight box over the source image on hover. null
+    // if the model didn't return a usable box; this is best-effort, not pixel-exact.
+    bbox: { x: number; y: number; w: number; h: number } | null;
     // Set only by mergeMedicalCertificateEntries below — same "how many independent scan attempts
     // on this page actually reported this" pattern as lib/bankstatement.ts's BankTransaction.
     confirmedByAttempts: { seen: number; total: number } | null;
@@ -22,6 +26,7 @@ For each period of leave, report:
 - leaveFrom: YYYY-MM-DD, the first day of leave granted (infer the year from the document's own date header if it only shows day/month)
 - leaveTo: YYYY-MM-DD, the last day of leave granted (inclusive) — same as leaveFrom if only one day of leave was given
 - description: the diagnosis or reason given, verbatim if stated, otherwise an empty string
+- bbox: the location of the leave period on the page, as an object {x, y, w, h} where each value is a FRACTION of the full image's width/height (0 = left/top edge, 1 = right/bottom edge) — e.g. a figure in the exact center would be roughly {x: 0.45, y: 0.45, w: 0.1, h: 0.03}. Box it tight around just the stated dates/period, not the whole document. Omit this field (or use null) if you can't estimate a location.
 
 Look for phrasing like "is granted leave from ... to ...", "unfit for work from/to", "hospitalisation leave", or a single date.
 
@@ -30,6 +35,23 @@ Output ONLY a valid JSON array, no markdown fences, no other text. If this page 
 /** Coerces a value to a trimmed string, or `""` if it isn't a string at all. */
 function str(v: unknown): string {
     return typeof v === "string" ? v.trim() : "";
+}
+
+/** Coerces a value to a finite number, or `null` if it can't be. */
+function num(v: unknown): number | null {
+    const n = typeof v === "number" ? v : typeof v === "string" ? Number(v) : NaN;
+    return Number.isFinite(n) ? n : null;
+}
+
+/** Coerces a model-reported bbox to `{x,y,w,h}` (all finite, in [0,1]), or `null` if it isn't usable. */
+function bboxOrNull(v: unknown): MedicalCertificateEntry["bbox"] {
+    if (typeof v !== "object" || v === null) return null;
+    const o = v as Record<string, unknown>;
+    const x = num(o.x), y = num(o.y), w = num(o.w), h = num(o.h);
+    if (x === null || y === null || w === null || h === null) return null;
+    const inRange = (n: number) => n >= 0 && n <= 1;
+    if (![x, y, w, h].every(inRange)) return null;
+    return { x, y, w, h };
 }
 
 // One independent scan attempt at a given temperature/seed — called several times per page (see
@@ -41,11 +63,12 @@ function str(v: unknown): string {
  * @param base64Image - The page image, base64-encoded (no data URL prefix).
  * @param temperature - Model sampling temperature for this attempt.
  * @param seed - Model sampling seed for this attempt.
+ * @param hint - Optional caseworker rescan hint (see {@link withRescanHint}).
  * @returns The leave periods found on the page, and this call's cost in USD.
  * @throws If the model's reply can't be parsed as a JSON array.
  */
-export async function extractMedicalCertificateEntries(base64Image: string, temperature = 0, seed = 42): Promise<{ entries: MedicalCertificateEntry[]; cost: number }> {
-    const { content, cost } = await sendVisionRequest(base64Image, PROMPT, temperature, seed, 2000);
+export async function extractMedicalCertificateEntries(base64Image: string, temperature = 0, seed = 42, hint?: string): Promise<{ entries: MedicalCertificateEntry[]; cost: number }> {
+    const { content, cost } = await sendVisionRequest(base64Image, withRescanHint(PROMPT, hint), temperature, seed, 2000);
     let parsed: unknown;
     try {
         parsed = JSON.parse(extractJsonBlock(content));
@@ -61,6 +84,7 @@ export async function extractMedicalCertificateEntries(base64Image: string, temp
             leaveFrom: str(t.leaveFrom),
             leaveTo: str(t.leaveTo) || str(t.leaveFrom), // a single-day MC may only state one date
             description: str(t.description),
+            bbox: bboxOrNull(t.bbox),
             confirmedByAttempts: null,
         }))
         .filter(t => t.leaveFrom); // an entry with no leave-start date at all isn't usable downstream

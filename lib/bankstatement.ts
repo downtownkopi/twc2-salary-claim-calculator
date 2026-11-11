@@ -1,10 +1,14 @@
-import { sendVisionRequest, extractJsonBlock } from "./ocr";
+import { sendVisionRequest, extractJsonBlock, withRescanHint } from "./ocr";
 
 export type BankTransaction = {
     date: string; // YYYY-MM-DD
     description: string; // verbatim from the statement
     amount: number;
     direction: "credit" | "debit" | null;
+    // Where on the page image this transaction was read from, as fractions (0-1) of the image's
+    // width/height — lets the review UI draw a highlight box over the source image on hover. null
+    // if the model didn't return a usable box; this is best-effort, not pixel-exact.
+    bbox: { x: number; y: number; w: number; h: number } | null;
     // Set only by mergeTransactionAttempts below — how many of the independent scan attempts on
     // this page actually reported this transaction. null for anything not produced by the
     // multi-attempt path (e.g. a manually-added row in public/index.html, which was never "seen"
@@ -29,6 +33,7 @@ For each incoming transaction, report:
 - description: the transaction description exactly as printed/written on the statement
 - amount: the dollar amount as a plain number (no currency symbol, no commas)
 - direction: always "credit" (this list is credits only, per the instructions above)
+- bbox: the location of this transaction's row on the page, as an object {x, y, w, h} where each value is a FRACTION of the full image's width/height (0 = left/top edge, 1 = right/bottom edge) — e.g. a row in the exact center would be roughly {x: 0.1, y: 0.45, w: 0.8, h: 0.03}. Box it tight around just that transaction's row, not the whole table. Omit this field (or use null) if you can't estimate a location.
 
 Output ONLY a valid JSON array of transactions, no markdown fences, no other text. If this page has no incoming transactions, output exactly [].`;
 
@@ -52,6 +57,17 @@ function str(v: unknown): string {
     return typeof v === "string" ? v.trim() : "";
 }
 
+/** Coerces a model-reported bbox to `{x,y,w,h}` (all finite, in [0,1]), or `null` if it isn't usable. */
+function bboxOrNull(v: unknown): BankTransaction["bbox"] {
+    if (typeof v !== "object" || v === null) return null;
+    const o = v as Record<string, unknown>;
+    const x = num(o.x), y = num(o.y), w = num(o.w), h = num(o.h);
+    if (x === null || y === null || w === null || h === null) return null;
+    const inRange = (n: number) => n >= 0 && n <= 1;
+    if (![x, y, w, h].every(inRange)) return null;
+    return { x, y, w, h };
+}
+
 // mergeTransactionAttempts below dedups transactions by an exact `${date}|${amount}|${direction}`
 // string key — a model occasionally drops the day (e.g. "2025-07" instead of "2025-07-01") despite
 // the prompt asking for YYYY-MM-DD, which doesn't fail to parse, it just forms a DIFFERENT dedup key
@@ -73,10 +89,11 @@ const FULL_DATE_FORMAT = /^\d{4}-\d{2}-\d{2}$/;
  * @param base64Image - The page image, base64-encoded (no data URL prefix).
  * @param temperature - Model sampling temperature for this attempt.
  * @param seed - Model sampling seed for this attempt.
+ * @param hint - Optional caseworker rescan hint (see {@link withRescanHint}).
  * @returns The credit transactions found on the page, and this call's cost in USD.
  * @throws If the model's reply can't be parsed as a JSON array.
  */
-export async function extractMatchingTransactions(base64Image: string, temperature = 0, seed = 42): Promise<{ transactions: BankTransaction[]; cost: number }> {
+export async function extractMatchingTransactions(base64Image: string, temperature = 0, seed = 42, hint?: string): Promise<{ transactions: BankTransaction[]; cost: number }> {
     // Was 3000 — a dense statement page (20+ transaction lines) needing a JSON object per line can
     // burn through that on reasoning alone before any output is emitted, truncating to a completely
     // EMPTY response rather than a partial one (same "reasoning eats the budget" failure mode
@@ -85,7 +102,7 @@ export async function extractMatchingTransactions(base64Image: string, temperatu
     // leaving only 1 attempt's reading with zero redundancy to catch a misclassified transaction —
     // mergeTransactionAttempts unions attempts rather than voting, so a lone bad attempt with no
     // competing reads to disagree with survives straight into the final result.
-    const { content, cost } = await sendVisionRequest(base64Image, PROMPT, temperature, seed, 10000);
+    const { content, cost } = await sendVisionRequest(base64Image, withRescanHint(PROMPT, hint), temperature, seed, 10000);
     let parsed: unknown;
     try {
         parsed = JSON.parse(extractJsonBlock(content));
@@ -102,6 +119,7 @@ export async function extractMatchingTransactions(base64Image: string, temperatu
             description: str(t.description),
             amount: num(t.amount) ?? 0,
             direction: "credit" as const,
+            bbox: bboxOrNull(t.bbox),
             confirmedByAttempts: null,
         }))
         .filter(t => FULL_DATE_FORMAT.test(t.date)); // no date, or a malformed one, isn't usable downstream — see FULL_DATE_FORMAT comment

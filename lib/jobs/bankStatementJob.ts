@@ -39,12 +39,16 @@ export function scheduleBankJobCleanup(jobId: string) {
  * @param files - The uploaded bank statement files.
  * @param rotations - Human-confirmed page rotations, keyed `"<fileIndex>-<pageIndex>"`.
  * @param excludedPages - Pages dropped by the caseworker in staging, same keying as `rotations`.
+ * @param interpretationHint - Free text typed into the single-page "Rescan" popup
+ * (public/index.html) — forwarded into every page this request scans. See
+ * lib/ocr/visionClient.ts's `withRescanHint`.
  */
 export async function runBankStatementJob(
     jobId: string,
     files: Express.Multer.File[],
     rotations: Record<string, number>,
-    excludedPages: Set<string>
+    excludedPages: Set<string>,
+    interpretationHint?: string
 ) {
     const job = bankJobs.get(jobId);
     if (!job) return;
@@ -101,7 +105,7 @@ export async function runBankStatementJob(
         // deterministic attempt skipped 2 of 3 real payments on a page, understating what the
         // worker was actually paid). mergeTransactionAttempts unions whatever each attempt caught.
         const results = await Promise.allSettled(
-            SCAN_TEMPERATURES.map(({ temperature, seed }) => extractMatchingTransactions(pageImage, temperature, seed))
+            SCAN_TEMPERATURES.map(({ temperature, seed }) => extractMatchingTransactions(pageImage, temperature, seed, interpretationHint))
         );
         const attempts: BankTransaction[][] = [];
         let failedCount = 0;

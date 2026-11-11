@@ -1,9 +1,13 @@
-import { sendVisionRequest, extractJsonBlock } from "./ocr";
+import { sendVisionRequest, extractJsonBlock, withRescanHint } from "./ocr";
 
 export type MedicalBillEntry = {
     date: string; // YYYY-MM-DD — invoice/service date
     amount: number; // amount billed/due, as a plain number
     description: string; // what the bill was for, verbatim if given
+    // Where on the page image this amount was read from, as fractions (0-1) of the image's
+    // width/height — lets the review UI draw a highlight box over the source image on hover. null
+    // if the model didn't return a usable box; this is best-effort, not pixel-exact.
+    bbox: { x: number; y: number; w: number; h: number } | null;
     // Set only by mergeMedicalBillEntries below — same "how many independent scan attempts on this
     // page actually reported this" pattern as lib/bankstatement.ts's BankTransaction.
     confirmedByAttempts: { seen: number; total: number } | null;
@@ -21,6 +25,7 @@ For each billed amount, report:
 - date: YYYY-MM-DD, the invoice date or date of service (infer the year from the document's own date header if it only shows day/month)
 - amount: the total amount due/billed, as a plain number (no currency symbol, no commas)
 - description: what the bill/invoice was for (e.g. "consultation", "medication", diagnosis), verbatim if given, otherwise an empty string
+- bbox: the location of the billed amount on the page, as an object {x, y, w, h} where each value is a FRACTION of the full image's width/height (0 = left/top edge, 1 = right/bottom edge) — e.g. a figure in the exact center would be roughly {x: 0.45, y: 0.45, w: 0.1, h: 0.03}. Box it tight around just that figure, not the whole document. Omit this field (or use null) if you can't estimate a location.
 
 Output ONLY a valid JSON array, no markdown fences, no other text. If this page has no billed amount stated on it at all, output exactly [].`;
 
@@ -41,6 +46,17 @@ function num(v: unknown): number | null {
     return null;
 }
 
+/** Coerces a model-reported bbox to `{x,y,w,h}` (all finite, in [0,1]), or `null` if it isn't usable. */
+function bboxOrNull(v: unknown): MedicalBillEntry["bbox"] {
+    if (typeof v !== "object" || v === null) return null;
+    const o = v as Record<string, unknown>;
+    const x = num(o.x), y = num(o.y), w = num(o.w), h = num(o.h);
+    if (x === null || y === null || w === null || h === null) return null;
+    const inRange = (n: number) => n >= 0 && n <= 1;
+    if (![x, y, w, h].every(inRange)) return null;
+    return { x, y, w, h };
+}
+
 // One independent scan attempt at a given temperature/seed — called several times per page (see
 // server.ts's SCAN_TEMPERATURES), same "a single deterministic pass can genuinely miss/misread a
 // figure" reasoning as extractMatchingTransactions in lib/bankstatement.ts.
@@ -50,11 +66,12 @@ function num(v: unknown): number | null {
  * @param base64Image - The page image, base64-encoded (no data URL prefix).
  * @param temperature - Model sampling temperature for this attempt.
  * @param seed - Model sampling seed for this attempt.
+ * @param hint - Optional caseworker rescan hint (see {@link withRescanHint}).
  * @returns The billed entries found on the page, and this call's cost in USD.
  * @throws If the model's reply can't be parsed as a JSON array.
  */
-export async function extractMedicalBillEntries(base64Image: string, temperature = 0, seed = 42): Promise<{ entries: MedicalBillEntry[]; cost: number }> {
-    const { content, cost } = await sendVisionRequest(base64Image, PROMPT, temperature, seed, 2000);
+export async function extractMedicalBillEntries(base64Image: string, temperature = 0, seed = 42, hint?: string): Promise<{ entries: MedicalBillEntry[]; cost: number }> {
+    const { content, cost } = await sendVisionRequest(base64Image, withRescanHint(PROMPT, hint), temperature, seed, 2000);
     let parsed: unknown;
     try {
         parsed = JSON.parse(extractJsonBlock(content));
@@ -70,6 +87,7 @@ export async function extractMedicalBillEntries(base64Image: string, temperature
             date: str(t.date),
             amount: num(t.amount) ?? 0,
             description: str(t.description),
+            bbox: bboxOrNull(t.bbox),
             confirmedByAttempts: null,
         }))
         .filter(t => t.date); // an entry with no date at all isn't usable downstream

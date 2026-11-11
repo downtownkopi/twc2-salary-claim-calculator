@@ -1,6 +1,34 @@
 import type { FillWarning } from "./xlsx";
 import { matchWorker, type RosterCandidate, type WorkerMatchConfidence } from "./workerMatch";
 
+// Coerces a model-reported bbox into {x,y,w,h} (all finite, in [0,1]), or null if it isn't usable.
+// Unlike e.g. lib/payslips.ts, raw timesheet scan output is otherwise trusted as-is with no
+// coercion layer — bbox gets this one because a model occasionally reports it as a bare
+// [x,y,w,h] array instead of the requested {x,y,w,h} object (observed live on both the agentic and
+// legacy scan paths), which would otherwise silently become `{x: undefined, ...}` wherever it's
+// consumed (the review UI's highlight box) instead of being caught here.
+/**
+ * Coerces a model-reported bbox (object `{x,y,w,h}` or bare array `[x,y,w,h]`) into the canonical
+ * `{x,y,w,h}` shape, or `null` if it isn't usable.
+ *
+ * @param v - The raw `bbox` value from a model's JSON reply.
+ * @returns The coerced bbox, or `null`.
+ */
+export function coerceBbox(v: unknown): { x: number; y: number; w: number; h: number } | null {
+    const inRange = (n: unknown): n is number => typeof n === "number" && Number.isFinite(n) && n >= 0 && n <= 1;
+    if (Array.isArray(v) && v.length === 4 && v.every(inRange)) {
+        const [x, y, w, h] = v as number[];
+        return { x, y, w, h };
+    }
+    if (typeof v === "object" && v !== null) {
+        const o = v as Record<string, unknown>;
+        if (inRange(o.x) && inRange(o.y) && inRange(o.w) && inRange(o.h)) {
+            return { x: o.x, y: o.y, w: o.w, h: o.h };
+        }
+    }
+    return null;
+}
+
 export type ParsedEntry = {
     day: number | null;
     month: number | null;
@@ -27,6 +55,12 @@ export type ParsedEntry = {
     guessed: boolean | null;
     rest_day: boolean | null;
     notes: string | null;
+    // Where on the page image this date's row/cell was read from, as fractions (0-1) of the
+    // image's width/height — lets the review UI draw a highlight box over the source image on
+    // hover. null if the model didn't return a usable box; this is best-effort, not pixel-exact.
+    // Trusted as-is from the model's JSON, same as every other field on this type (no separate
+    // coercion step exists for timesheet rows, unlike e.g. lib/payslips.ts).
+    bbox: { x: number; y: number; w: number; h: number } | null;
 };
 
 // A clock time is stored as a bare HHMM integer (e.g. 800 = 8:00am). The minutes component
@@ -43,7 +77,33 @@ export type ParsedEntry = {
  * @param t - The clock time as a bare HHMM integer, e.g. `800` for 8:00am.
  * @returns Whether `t` could represent a real clock time.
  */
-function isPlausibleTime(t: number): boolean {
+// Both the per-row transcription prompt (lib/timesheetPrompt.ts) and the agentic system prompt
+// (lib/ocr/agentLoop.ts) document 2400 as the ONE sentinel for "shift ends exactly at midnight" —
+// but observed live, independent attempts don't always follow it consistently: the exact same
+// visual "8am to 12am" shift came back as times [800, 2400] from one attempt and [800, 0] from
+// another, in the same reconciliation. Both encode the identical real-world reading; without this,
+// reconcileAttempts' exact-value voting below sees "2400" and "0" as a genuine disagreement and
+// drops an otherwise-unanimous day (confirmed live: this is what was silently dropping 3 March
+// 2026 on sample-data/137X/137X_Timesheets.pdf — the model read it correctly every time, reconcile
+// just couldn't see that). Only the LAST value in a times array is normalized — a 0 earlier in the
+// array (e.g. a shift literally starting at midnight) is a different, much rarer claim that isn't
+// safe to blanket-rewrite the same way.
+/**
+ * Normalizes a trailing `0` (shift-end midnight, a value some attempts report instead of the
+ * documented `2400` sentinel) to `2400`, so two attempts' otherwise-identical readings of a
+ * midnight-ending shift compare equal during reconciliation instead of "disagreeing."
+ *
+ * @param times - The raw times array from one attempt's reading of a date.
+ * @returns The same array with a trailing `0` rewritten to `2400`, or unchanged otherwise.
+ */
+function normalizeMidnightEnd(times: number[] | null): number[] | null {
+    if (!times || times.length === 0) return times;
+    const last = times[times.length - 1];
+    if (last !== 0) return times;
+    return [...times.slice(0, -1), 2400];
+}
+
+export function isPlausibleTime(t: number): boolean {
     // Despite the `number` type, a times array's elements aren't guaranteed to actually be numbers
     // at runtime — the model's JSON output is trusted as-is. A stray `null` (observed live: the
     // agentic loop reading an overnight end-time it couldn't decide how to encode, e.g. "8:00am to
@@ -79,7 +139,7 @@ function isPlausibleTime(t: number): boolean {
  * hoursWorked (a genuine 0 should have come through as a rest day instead).
  * @returns Whether `h` is a plausible single-day hours value.
  */
-function isPlausibleHours(h: number, allowZero: boolean): boolean {
+export function isPlausibleHours(h: number, allowZero: boolean): boolean {
     // Same runtime-type trust-boundary issue as isPlausibleTime above — a null/non-number here
     // would otherwise coerce (`null >= 0` -> `0 >= 0` -> true) and silently pass as plausible.
     if (typeof h !== "number" || !Number.isFinite(h)) return false;
@@ -161,15 +221,22 @@ export function reconcileAttempts(
         const [month, day] = key.split("-").map(Number);
 
         const timesVotes: number[][] = [];
+        // Parallel to timesVotes (same index) — carried through to the final entry so the review
+        // UI can highlight roughly where this date's reading came from on the source page. Not
+        // itself part of agreement/voting (two attempts can agree on the times while estimating
+        // slightly different boxes) — just picked from whichever attempt's reading won.
+        const timesBboxVotes: (ParsedEntry["bbox"])[] = [];
         // hoursWorked is always paired with whatever otHours the same attempt reported (or null),
         // kept together so "8h+2 OT" and "8h+0 OT" from different attempts are correctly treated
         // as disagreeing readings rather than silently averaged/merged.
-        const hoursVotes: { hoursWorked: number; otHours: number | null }[] = [];
+        const hoursVotes: { hoursWorked: number; otHours: number | null; bbox: ParsedEntry["bbox"] }[] = [];
         let restVotes = 0;
         // Notes from attempts that voted rest_day — carries e.g. "MC"/"AL"/"-" (the literal
         // leave-type mark buildPrompt asks the model to transcribe) through to the final merged
         // entry, which the allAgreeOnRest branch below used to discard entirely.
         const restNotes: (string | null)[] = [];
+        // Parallel to restVotes — same best-effort bbox carry-through as timesBboxVotes above.
+        const restBboxVotes: (ParsedEntry["bbox"])[] = [];
         // Parallel to timesVotes (pushed together below, same index) — whether that specific
         // attempt's reading of this day said no break was taken. Requiring EVERY attempt that
         // agreed on the times to also agree noBreak is true (see the unanimous branch below) means
@@ -201,7 +268,7 @@ export function reconcileAttempts(
             // for legitimate overnight-spanning shifts, and is never reordered here).
             const matches = attempt.filter(e => e.day === day && e.month === month);
             if (matches.length === 0) continue;
-            const rowForDay: ParsedEntry =
+            const rawRowForDay: ParsedEntry =
                 matches.length === 1
                     ? matches[0]
                     : {
@@ -216,7 +283,9 @@ export function reconcileAttempts(
                           guessed: matches.some(m => m.guessed === true),
                           rest_day: matches.every(m => m.rest_day === true),
                           notes: matches.map(m => m.notes).filter(Boolean).join("; ") || null,
+                          bbox: matches.find(m => m.bbox)?.bbox ?? null,
                       };
+            const rowForDay: ParsedEntry = { ...rawRowForDay, times: normalizeMidnightEnd(rawRowForDay.times) };
 
             if (rowForDay.times && rowForDay.times.length > 0) {
                 const bad = rowForDay.times.filter(t => !isPlausibleTime(t));
@@ -231,11 +300,13 @@ export function reconcileAttempts(
                 }
                 attemptsThatMentionedDay++;
                 timesVotes.push(rowForDay.times);
+                timesBboxVotes.push(rowForDay.bbox);
                 noBreakVotes.push(rowForDay.noBreak === true);
             } else if (rowForDay.rest_day === true) {
                 attemptsThatMentionedDay++;
                 restVotes++;
                 restNotes.push(rowForDay.notes);
+                restBboxVotes.push(rowForDay.bbox);
             } else if (rowForDay.hoursWorked !== null && rowForDay.hoursWorked !== undefined) {
                 // hours_total data model (lib/ocr.ts's PageDataModel) — same "unreadable value,
                 // not a real reading" exclusion as an implausible clock time above.
@@ -246,7 +317,7 @@ export function reconcileAttempts(
                     continue;
                 }
                 attemptsThatMentionedDay++;
-                hoursVotes.push({ hoursWorked: rowForDay.hoursWorked, otHours: rowForDay.otHours ?? null });
+                hoursVotes.push({ hoursWorked: rowForDay.hoursWorked, otHours: rowForDay.otHours ?? null, bbox: rowForDay.bbox });
             } else {
                 noSignalCount++;
             }
@@ -266,17 +337,18 @@ export function reconcileAttempts(
         // still requires every attempt that mentioned the day to have voted on times specifically
         // (no mixing with rest/hours votes), same as the unanimous case. Always ships flagged
         // (guessed: true) rather than as a clean confirmed read — see buildReviewRows/warnings below.
-        let majorityTimes: { times: number[]; agreeCount: number; totalCount: number; noBreak: boolean } | null = null;
+        let majorityTimes: { times: number[]; agreeCount: number; totalCount: number; noBreak: boolean; bbox: ParsedEntry["bbox"] } | null = null;
         if (timesVotes.length > 0 && timesVotes.length === attemptsThatMentionedDay && distinctTimeSignatures.size > 1) {
-            const groups = new Map<string, { times: number[]; count: number; noBreakVotesInGroup: boolean[] }>();
+            const groups = new Map<string, { times: number[]; count: number; noBreakVotesInGroup: boolean[]; bbox: ParsedEntry["bbox"] }>();
             timesVotes.forEach((t, idx) => {
                 const sig = (orderMatters ? t : [...t].sort((a, b) => a - b)).join(",");
-                const group = groups.get(sig) ?? { times: t, count: 0, noBreakVotesInGroup: [] };
+                const group = groups.get(sig) ?? { times: t, count: 0, noBreakVotesInGroup: [], bbox: null };
                 group.count++;
                 group.noBreakVotesInGroup.push(noBreakVotes[idx]);
+                if (!group.bbox) group.bbox = timesBboxVotes[idx];
                 groups.set(sig, group);
             });
-            let best: { times: number[]; count: number; noBreakVotesInGroup: boolean[] } | null = null;
+            let best: { times: number[]; count: number; noBreakVotesInGroup: boolean[]; bbox: ParsedEntry["bbox"] } | null = null;
             for (const g of groups.values()) {
                 if (!best || g.count > best.count) best = g;
             }
@@ -286,6 +358,7 @@ export function reconcileAttempts(
                     agreeCount: best.count,
                     totalCount: timesVotes.length,
                     noBreak: best.noBreakVotesInGroup.every(v => v === true),
+                    bbox: best.bbox,
                 };
             }
         }
@@ -316,14 +389,14 @@ export function reconcileAttempts(
             // declared standard break applies downstream) rather than a single attempt's claim
             // zeroing out the break for everyone.
             const outputNoBreak = noBreakVotes.length > 0 && noBreakVotes.every(v => v === true);
-            entries.push({ day, month, times: outputTimes, hoursWorked: null, otHours: null, noBreak: outputNoBreak, guessed: false, rest_day: false, notes: null });
+            entries.push({ day, month, times: outputTimes, hoursWorked: null, otHours: null, noBreak: outputNoBreak, guessed: false, rest_day: false, notes: null, bbox: timesBboxVotes.find(Boolean) ?? null });
         } else if (unanimous && allAgreeOnRest) {
             // Attempts don't have to agree on the exact wording (one might transcribe "MC", another
             // "M/C") to still unanimously agree it's a leave-type rest day — take whichever non-null
             // note the first attempt that had one wrote, rather than requiring textual unanimity.
-            entries.push({ day, month, times: null, hoursWorked: null, otHours: null, noBreak: null, guessed: false, rest_day: true, notes: restNotes.find(Boolean) ?? null });
+            entries.push({ day, month, times: null, hoursWorked: null, otHours: null, noBreak: null, guessed: false, rest_day: true, notes: restNotes.find(Boolean) ?? null, bbox: restBboxVotes.find(Boolean) ?? null });
         } else if (unanimous && allAgreeOnHours) {
-            entries.push({ day, month, times: null, hoursWorked: hoursVotes[0].hoursWorked, otHours: hoursVotes[0].otHours, noBreak: null, guessed: false, rest_day: false, notes: null });
+            entries.push({ day, month, times: null, hoursWorked: hoursVotes[0].hoursWorked, otHours: hoursVotes[0].otHours, noBreak: null, guessed: false, rest_day: false, notes: null, bbox: hoursVotes.find(v => v.bbox)?.bbox ?? null });
         } else if (fullyParticipated && sufficientRedundancy && majorityTimes) {
             entries.push({
                 day,
@@ -332,6 +405,7 @@ export function reconcileAttempts(
                 hoursWorked: null,
                 otHours: null,
                 noBreak: majorityTimes.noBreak,
+                bbox: majorityTimes.bbox,
                 guessed: true,
                 rest_day: false,
                 notes: `majority reading (${majorityTimes.agreeCount}/${majorityTimes.totalCount} attempts agreed on ${majorityTimes.times.join(",")}) — not unanimous, please verify against the source PDF`,
@@ -624,6 +698,7 @@ export type GridRow = {
         otHours: number | null;
         rest_day: boolean | null;
         notes: string | null;
+        bbox: { x: number; y: number; w: number; h: number } | null;
     }[];
 };
 
@@ -718,6 +793,7 @@ export function reconcileGridAttempts(
             guessed: null,
             rest_day: c.rest_day,
             notes: c.notes,
+            bbox: c.bbox,
         }))
     );
 

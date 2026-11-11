@@ -12,3 +12,7 @@ Timecards/
 learnings.md
 logs/
 sample-data/
+
+# eval fixtures are page images + extracted fields from real wage-claim docs — same PII concern
+# as sample-data/ above, never commit
+test/eval/fixtures/

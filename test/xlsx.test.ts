@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { buildReviewRows, type RestDay, type TimeEntry } from "../lib/xlsx";
 
 function entry(date: string, clockIn: number, clockOut: number, overrides: Partial<TimeEntry> = {}): TimeEntry {
-    return { date: new Date(date), clockIn, clockOut, source: "test.pdf p1", guessed: false, noBreak: false, ...overrides };
+    return { date: new Date(date), clockIn, clockOut, source: "test.pdf p1", guessed: false, noBreak: false, bbox: null, ...overrides };
 }
 
 describe("buildReviewRows", () => {
@@ -65,14 +65,14 @@ describe("buildReviewRows", () => {
     });
 
     it("appends rest days with null clock/break fields", () => {
-        const restDays: RestDay[] = [{ year: 2025, month: 6, day: 2, source: "timesheet.pdf p1", notes: "OFF" }];
+        const restDays: RestDay[] = [{ year: 2025, month: 6, day: 2, source: "timesheet.pdf p1", notes: "OFF", bbox: null }];
         const rows = buildReviewRows([], restDays);
         expect(rows).toHaveLength(1);
         expect(rows[0]).toMatchObject({ date: "2025-06-02", clockIn: null, clockOut: null, breakHours: null, restDay: true, notes: "OFF" });
     });
 
     it("sorts the combined rows by date ascending", () => {
-        const restDays: RestDay[] = [{ year: 2025, month: 6, day: 3, source: "t", notes: null }];
+        const restDays: RestDay[] = [{ year: 2025, month: 6, day: 3, source: "t", notes: null, bbox: null }];
         const rows = buildReviewRows([entry("2025-06-05", 800, 1700), entry("2025-06-01", 800, 1700)], restDays);
         expect(rows.map(r => r.date)).toEqual(["2025-06-01", "2025-06-03", "2025-06-05"]);
     });

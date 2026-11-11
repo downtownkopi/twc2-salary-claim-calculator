@@ -14,12 +14,20 @@ import { logVisionEvent } from "../visionDebugLog";
 // (shapeFamily correct, rows: [] on a page with 28 real dates) already caught in isolated testing
 // before the switch. v2.5 remains the validated default until v2.6-flash (or another candidate) is
 // tested more rigorously at full-document scale, not just a handful of isolated calls, before
-// switching again. FALLBACK_VISION_MODEL is currently identical to PRIMARY_VISION_MODEL, so
-// server.ts's hybrid escalation step (re-asking a disputed date with the fallback model) is a no-op
-// while they match — repoint FALLBACK_VISION_MODEL to a genuinely different model to restore that
-// escalation's value.
+// switching again.
+//
+// FALLBACK_VISION_MODEL repointed to qwen/qwen3-vl-235b-a22b-instruct — validated specifically
+// against PRIMARY_VISION_MODEL's empty-array bail-out failure mode (lib/jobs/timesheetJob.ts's
+// agentic one_worker_many_dates/one_date_many_workers/many_workers_many_dates branches escalate to
+// this model only when every agreeing attempt returned zero rows). Manual test on
+// sample-data/137X/137X_Timesheets.pdf p1 (61 dense handwritten clock-time rows across 4
+// side-by-side monthly sub-tables — the exact page PRIMARY_VISION_MODEL bailed on with rows:[]
+// every time): PRIMARY_VISION_MODEL $0.0063/0 rows vs this model $0.0163/62 rows, matching a manual
+// read of the page. qwen/qwen2.5-vl-72b-instruct was tried first and rejected — no OpenRouter
+// provider serves tool-use for it ("No endpoints found that support tool use"), which this pipeline
+// requires throughout (lib/ocr/agentLoop.ts's tool-calling loop).
 export const PRIMARY_VISION_MODEL = "xiaomi/mimo-v2.5";
-export const FALLBACK_VISION_MODEL = "xiaomi/mimo-v2.5";
+export const FALLBACK_VISION_MODEL = "qwen/qwen3-vl-235b-a22b-instruct";
 
 let client: OpenRouter | null = null;
 
@@ -407,4 +415,19 @@ export function extractJsonBlock(text: string): string {
         return text.slice(objStart, objEnd + 1);
     }
     return text;
+}
+
+/**
+ * Appends a caseworker-supplied rescan hint to a single-shot extraction prompt (bank statement,
+ * medical bill, medical certificate, payslip, IPA letter) — the same "tell the model what to look
+ * out for before it reads again" idea as lib/ocr/agentLoop.ts's `interpretationHint`, just for the
+ * simpler single-call prompts rather than the agentic loop.
+ *
+ * @param prompt - The base extraction prompt.
+ * @param hint - Free text the caseworker typed before clicking Rescan; omitted/blank leaves the
+ * prompt unchanged.
+ */
+export function withRescanHint(prompt: string, hint?: string): string {
+    if (!hint || !hint.trim()) return prompt;
+    return `${prompt}\n\nIMPORTANT — before rescanning, a caseworker reviewing this page left the following note on what to look out for: "${hint.trim()}". Apply this when reading the page.`;
 }

@@ -38,12 +38,16 @@ export function schedulePayslipJobCleanup(jobId: string) {
  * @param files - The uploaded payslip files.
  * @param rotations - Human-confirmed page rotations, keyed `"<fileIndex>-<pageIndex>"`.
  * @param excludedPages - Pages dropped by the caseworker in staging, same keying as `rotations`.
+ * @param interpretationHint - Free text typed into the single-page "Rescan" popup
+ * (public/index.html) — forwarded into every page this request scans. See
+ * lib/ocr/visionClient.ts's `withRescanHint`.
  */
 export async function runPayslipJob(
     jobId: string,
     files: Express.Multer.File[],
     rotations: Record<string, number>,
-    excludedPages: Set<string>
+    excludedPages: Set<string>,
+    interpretationHint?: string
 ) {
     const job = payslipJobs.get(jobId);
     if (!job) return;
@@ -93,7 +97,7 @@ export async function runPayslipJob(
         const source = `${file.originalname} p${pi + 1}`;
         const page: PayslipPageResult = { source, image: await resizeForDisplay(pageImage, 1400), entries: [] };
         const results = await Promise.allSettled(
-            SCAN_TEMPERATURES.map(({ temperature, seed }) => extractPayslipEntries(pageImage, temperature, seed))
+            SCAN_TEMPERATURES.map(({ temperature, seed }) => extractPayslipEntries(pageImage, temperature, seed, interpretationHint))
         );
         const attempts: PayslipEntry[][] = [];
         let failedCount = 0;
