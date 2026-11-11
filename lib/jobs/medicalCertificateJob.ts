@@ -1,6 +1,7 @@
 import * as path from "path";
 import { resizeForDisplay, rotateImage, type PagedImages } from "../ocr";
 import { extractMedicalCertificateEntries, mergeMedicalCertificateEntries, type MedicalCertificateEntry } from "../medicalCertificates";
+import { persistScan } from "../history";
 import {
     loadPagesForFile,
     SCAN_TEMPERATURES,
@@ -21,6 +22,10 @@ export type MedicalCertificateJob = {
     pages: MedicalCertificatesPageResult[];
     result: { entries: (MedicalCertificateEntry & { source: string })[]; costUsd: number; durationMs: number } | null;
     error: string | null;
+    // See BankStatementJob's identical fields (lib/jobs/bankStatementJob.ts) for why these exist.
+    userId: number;
+    userFullname: string;
+    userEmail: string;
 };
 export const medicalCertJobs = new Map<string, MedicalCertificateJob>();
 /** Schedules a medical-certificate job's entry to be evicted from {@link medicalCertJobs} after {@link JOB_TTL_MS}, and reclaims its temp page dir immediately. */
@@ -150,4 +155,16 @@ export async function runMedicalCertificateJob(
     job.pages = orderedPages;
     job.result = { entries, costUsd: totalCostUsd, durationMs: Date.now() - startedAt };
     job.status = "done";
+    persistScan({
+        id: jobId,
+        scanType: "medical_certificates",
+        userId: job.userId,
+        userFullname: job.userFullname,
+        userEmail: job.userEmail,
+        title: null,
+        costUsd: job.result.costUsd,
+        durationMs: job.result.durationMs,
+        result: job.result,
+        pages: job.pages,
+    });
 }

@@ -160,6 +160,35 @@
       color: var(--err);
     }
 
+    /* Same base look as .rules-summary-table (border/padding/header style) without that table's
+       position-based pass/flag coloring (nth-child(2)/(3) green/red) — irrelevant here. */
+    .history-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 12px;
+      margin-top: 4px;
+    }
+
+    .history-table th,
+    .history-table td {
+      text-align: left;
+      padding: 6px 10px 6px 0;
+      border-bottom: 1px solid var(--border);
+      vertical-align: top;
+    }
+
+    .history-table th {
+      color: var(--muted);
+      font-weight: 600;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.02em;
+    }
+
+    .history-table tr:last-child td {
+      border-bottom: none;
+    }
+
     .rules-summary-note {
       margin-top: 10px;
       font-size: 11px;
@@ -418,6 +447,43 @@
       background: var(--border);
       color: var(--muted);
       cursor: not-allowed;
+    }
+
+    .history-nav-row {
+      display: flex;
+      gap: 10px;
+      margin-bottom: 16px;
+    }
+
+    .muted {
+      color: var(--muted);
+    }
+
+    .admin-cost-cards {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+      margin: 12px 0 24px;
+    }
+
+    .admin-cost-card {
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 12px 18px;
+      min-width: 140px;
+    }
+
+    .admin-cost-card-label {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.02em;
+      color: var(--muted);
+      margin-bottom: 4px;
+    }
+
+    .admin-cost-card-value {
+      font-size: 20px;
+      font-weight: 600;
     }
 
     .status {
@@ -1156,7 +1222,16 @@
 
   <div class="container">
     <h1>Salary Claim Calculator</h1>
+    <div class="history-nav-row">
+      <button type="button" class="generate-btn" id="viewHistoryBtn">View scan history</button>
+      <button type="button" class="generate-btn" id="viewAdminDashboardBtn" style="display:none">Admin dashboard</button>
+      <button type="button" class="generate-btn" id="backToFormBtn" style="display:none">&larr; Back to new scan</button>
+      <button type="button" class="generate-btn" id="backToAdminDashboardBtn" style="display:none">&larr; Back to admin dashboard</button>
+      <button type="button" class="generate-btn" id="saveHistoryChangesBtn" style="display:none">Save changes</button>
+      <span class="status" id="saveHistoryChangesStatus"></span>
+    </div>
 
+    <div id="scanFormWrap">
     <div class="rules-summary">
       <div class="rules-summary-row">
         <div>
@@ -1508,6 +1583,91 @@
       <div class="status" id="payslipsStatus"></div>
       <ul class="month-summary" id="otCapWarnings" style="display:none"></ul>
     </form>
+    </div>
+  </div>
+
+  <div id="historyListView" style="display:none">
+    <h2>Scan history</h2>
+    <div class="field" style="margin-bottom:10px;">
+      <label>Filter by type
+        <select id="historyTypeFilter">
+          <option value="">All types</option>
+          <option value="timesheet">Timesheet</option>
+          <option value="bank_statement">Bank statement</option>
+          <option value="medical_bills">Medical bills</option>
+          <option value="medical_certificates">Medical certificates</option>
+          <option value="payslips">Payslips</option>
+        </select>
+      </label>
+    </div>
+    <div class="status" id="historyListStatus"></div>
+    <table class="history-table" id="historyTable" style="display:none">
+      <thead>
+        <tr>
+          <th>Date</th>
+          <th>Type</th>
+          <th>Title</th>
+          <th>Cost</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody id="historyTableBody"></tbody>
+    </table>
+    <div id="historyPagination" style="margin-top: 12px;"></div>
+  </div>
+
+  <div id="adminDashboardView" style="display:none">
+    <h2>Admin dashboard</h2>
+    <div class="sub">Every caseworker's scans and model-cost spend — not editable here, "View" opens the same
+      read-only review a caseworker sees, just without the Save button.</div>
+
+    <div class="admin-cost-cards">
+      <div class="admin-cost-card"><div class="admin-cost-card-label">Today</div><div class="admin-cost-card-value" id="adminCostToday">—</div></div>
+      <div class="admin-cost-card"><div class="admin-cost-card-label">Last 7 days</div><div class="admin-cost-card-value" id="adminCostWeek">—</div></div>
+      <div class="admin-cost-card"><div class="admin-cost-card-label">This month</div><div class="admin-cost-card-value" id="adminCostMonth">—</div></div>
+      <div class="admin-cost-card"><div class="admin-cost-card-label">All-time</div><div class="admin-cost-card-value" id="adminCostAllTime">—</div></div>
+    </div>
+
+    <h3>Cost by day (last 30 days)</h3>
+    <table class="history-table" id="adminCostByDayTable">
+      <thead><tr><th>Date</th><th>Scans</th><th>Cost</th></tr></thead>
+      <tbody id="adminCostByDayBody"></tbody>
+    </table>
+
+    <h3>Cost by month (last 12 months)</h3>
+    <table class="history-table" id="adminCostByMonthTable">
+      <thead><tr><th>Month</th><th>Scans</th><th>Cost</th></tr></thead>
+      <tbody id="adminCostByMonthBody"></tbody>
+    </table>
+
+    <h3>All scans</h3>
+    <div class="field" style="margin-bottom:10px;">
+      <label>Filter by type
+        <select id="adminScanTypeFilter">
+          <option value="">All types</option>
+          <option value="timesheet">Timesheet</option>
+          <option value="bank_statement">Bank statement</option>
+          <option value="medical_bills">Medical bills</option>
+          <option value="medical_certificates">Medical certificates</option>
+          <option value="payslips">Payslips</option>
+        </select>
+      </label>
+    </div>
+    <div class="status" id="adminScansStatus"></div>
+    <table class="history-table" id="adminScansTable" style="display:none">
+      <thead>
+        <tr>
+          <th>Date</th>
+          <th>Type</th>
+          <th>Scanned by</th>
+          <th>Title</th>
+          <th>Cost</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody id="adminScansTableBody"></tbody>
+    </table>
+    <div id="adminScansPagination" style="margin-top: 12px;"></div>
   </div>
 
   <div class="page-reviews" id="pageReviews" style="display:none">
@@ -1754,6 +1914,29 @@
     // multi-page (a cover sheet, the actual approval page, maybe an annex); server.ts's
     // runProcessJob extracts from only the first page NOT in excludedIpaPages below, so a human can
     // attach the whole file and delete whichever pages aren't the actual approval page.
+    // True while the page-by-page review is showing a saved history record rather than a live
+    // scan's own result — a history record's original uploaded files are long gone from temp
+    // storage (see lib/jobs/shared.ts's TTL cleanup), so "Rescan"/"Rotate" (which need to re-attach
+    // the original File object) can never work there; renderIpaCard checks this to hide those
+    // controls. renderPageReview doesn't need this flag — it already gates on whether a `key` was
+    // passed, which loadTimesheetHistoryRecord ensures is always undefined for a history page.
+    let viewingHistoryRecord = false;
+    // Set together whenever a history detail view loads, cleared on returning to the form or the
+    // history list — identifies which saved record (and which scan type's collector function) the
+    // "Save changes" button should act on. null/null means "not viewing a history detail" (a live
+    // scan, the list view, or the blank form), which the button's own visibility already tracks,
+    // but having both explicit avoids relying on DOM visibility as the source of truth.
+    let currentHistoryScanId = null;
+    let currentHistoryScanType = null;
+    // True only when a history detail view was opened from the ADMIN dashboard (openAdminScanDetail)
+    // rather than the caseworker's own history list — hides "Save changes" regardless of who owns
+    // the scan (viewing another caseworker's case data is in scope for the admin dashboard, editing
+    // it is not) and points "Back" at the admin dashboard instead of the personal history list.
+    let viewingAsAdminReadOnly = false;
+    // Populated once from GET /api/me on page load — gates whether the "Admin dashboard" nav button
+    // ever renders. The admin API routes themselves are the real security boundary (403 for a
+    // non-admin); this is purely a UI convenience so a non-admin never sees a dead-end link.
+    let isCurrentUserAdmin = false;
     let ipaRotations = {};
     // Every {fileIndex, pageIndex} pair the staging preview found, in file/page order — same order
     // server.ts's own pageTasks loop walks (see runProcessJob), just without the excluded-page
@@ -2557,7 +2740,7 @@
         return `
       <div class="page-review-row">
         <div class="page-review-image">
-          <img src="data:image/png;base64,${page.image}" alt="${escapeHtml(page.source)}">
+          <img src="${imageSrc(page.image)}" alt="${escapeHtml(page.source)}">
         </div>
         <div class="page-review-details">
           <div class="page-review-source"><span>${escapeHtml(page.source)}</span></div>
@@ -2952,6 +3135,12 @@
       // checkbox state.
       li.dataset.restDay = row.restDay ? '1' : '';
       li.dataset.bbox = row.bbox ? JSON.stringify(row.bbox) : '';
+      // Not read by collectAllReviewRows (the /api/generate export doesn't need page attribution)
+      // but needed by collectAllReviewRowsWithSource (the history "Save changes" path) to persist
+      // the real source back — losing it would silently detach every row from its page on reload
+      // (renderFinalResult matches a page's rows by `source`), and overwriting a special marker
+      // like "auto-inserted (missing day)" with a page source would lose that distinction too.
+      li.dataset.source = row.source || '';
       const rowId = reviewRowCounter++;
       li.innerHTML = `
     <div class="field-group weekday-group"><span class="weekday-label">${weekdayAbbr(row.date)}</span></div>
@@ -4364,6 +4553,44 @@
       }
     }
 
+    // Same field-reading as collectAllReviewRows below, but preserves `source` and `bbox` from the
+    // DOM instead of dropping them — collectAllReviewRows is built for /api/generate's spreadsheet
+    // output, which needs neither; saving a history record back needs both; losing `source` would
+    // silently detach every row from its page the next time this record is opened (renderFinalResult
+    // matches a page's rows by `source`), and losing `bbox` would quietly disable hover-highlight.
+    function collectAllReviewRowsWithSource() {
+      const rows = [];
+      // Walked page-by-page (not a flat document-wide query) so each row can be tagged with its
+      // OWN page's real source — a scanned row's li.dataset.source already equals this, but a
+      // manually-added or auto-inserted-missing-day row's source is a sentinel string ('manually
+      // added' / 'auto-inserted (missing day)', set once at insert time, never a real page source)
+      // that would match no page at all on the next render, silently orphaning it. The sentinel's
+      // meaning isn't lost by this — it only ever drove a one-time CSS class and lives on in `notes`
+      // either way (the ❗ "Auto-inserted..." / "Verify against the source document." text itself),
+      // not in `source`, so retagging it with a real page source here doesn't erase that signal.
+      const pageCards = pageReviewList.querySelectorAll('.page-review-row');
+      pageCards.forEach((card, idx) => {
+        const pageSource = currentPageReviews[idx]?.source;
+        card.querySelectorAll('.review-row').forEach(li => {
+          const date = li.querySelector('.f-date').value;
+          if (!date) return;
+          const restDay = li.dataset.restDay === '1';
+          rows.push({
+            date,
+            clockIn: restDay ? null : timeInputToHHMM(li.querySelector('.f-start').value),
+            clockOut: restDay ? null : timeInputToHHMM(li.querySelector('.f-end').value),
+            breakHours: restDay ? null : (li.querySelector('.f-break').value === '' ? null : Number(li.querySelector('.f-break').value)),
+            restDay,
+            guessed: li.dataset.guessed === '1',
+            notes: li.dataset.notes || null,
+            source: pageSource || li.dataset.source || 'reviewed',
+            bbox: li.dataset.bbox ? JSON.parse(li.dataset.bbox) : null,
+          });
+        });
+      });
+      return rows;
+    }
+
     /** Reads every editable review row currently in the DOM into plain `ReviewRow` objects. */
     function collectAllReviewRows() {
       const rows = [];
@@ -4606,7 +4833,7 @@
       return `
     <div class="page-review-row" data-review-index="${reviewIndex}">
       <div class="page-review-image">
-        <img src="data:image/png;base64,${page.image}" alt="${escapeHtml(page.source)}">${rescanHtml}
+        <img src="${imageSrc(page.image)}" alt="${escapeHtml(page.source)}">${rescanHtml}
       </div>
       <div class="page-review-details">
         <div class="page-review-source"><span>${escapeHtml(page.source)}</span></div>
@@ -4983,13 +5210,13 @@
       return `
       <div class="page-review-row">
         ${ipaImage ? `<div class="page-review-image">
-          <img src="data:image/png;base64,${ipaImage}" alt="IPA letter">
-          <div class="page-rescan-controls">
+          <img src="${imageSrc(ipaImage)}" alt="IPA letter">
+          ${viewingHistoryRecord ? '' : `<div class="page-rescan-controls">
             <button type="button" class="page-rotate-btn" title="Rotate this page before rescanning">⟳ Rotate</button>
             <button type="button" class="page-rescan-btn">Rescan IPA</button>
             <button type="button" class="page-revert-btn" title="Revert this page's fields to their last-scanned values">↺ Revert</button>
           </div>
-          <div class="page-rescan-status"></div>
+          <div class="page-rescan-status"></div>`}
         </div>` : ''}
         <div class="page-review-details">
           <div class="page-review-source"><span>IPA letter</span></div>
@@ -5243,6 +5470,16 @@
       return String(s).replace(/[&<>"']/g, c => ({
         '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
       }[c]));
+    }
+
+    // A page/IPA image field is raw base64 PNG bytes for a live scan, but a URL
+    // (/api/history/:id/image/:ref) for one loaded from history (see lib/history.ts's
+    // rehydrateImageRefs) — both are valid `<img src>` values, just not interchangeably: a URL
+    // string prefixed with "data:image/png;base64," would be mangled into garbage. This picks the
+    // right form for whichever one it actually is.
+    function imageSrc(value) {
+      if (!value) return '';
+      return value.startsWith('/') || value.startsWith('http') ? value : `data:image/png;base64,${value}`;
     }
 
     // ===== Bank statement cross-check — standalone tool, no OCR/xlsx pipeline reuse =====
@@ -5505,7 +5742,7 @@
         <div class="page-rescan-status"></div>` : '';
       return `
     <div class="page-review-row"${reviewIndex !== undefined ? ` data-review-index="${reviewIndex}"` : ''}>
-      <div class="page-review-image"><img src="data:image/png;base64,${p.image}" alt="${escapeHtml(p.source)}">${rescanHtml}</div>
+      <div class="page-review-image"><img src="${imageSrc(p.image)}" alt="${escapeHtml(p.source)}">${rescanHtml}</div>
       <div class="page-review-details">
         <div class="page-review-source"><span>${escapeHtml(p.source)}</span></div>
         <div class="bt-table-container">${p.transactions.length === 0
@@ -5878,7 +6115,7 @@
         <div class="page-rescan-status"></div>` : '';
       return `
     <div class="page-review-row"${reviewIndex !== undefined ? ` data-review-index="${reviewIndex}"` : ''}>
-      <div class="page-review-image"><img src="data:image/png;base64,${p.image}" alt="${escapeHtml(p.source)}">${rescanHtml}</div>
+      <div class="page-review-image"><img src="${imageSrc(p.image)}" alt="${escapeHtml(p.source)}">${rescanHtml}</div>
       <div class="page-review-details">
         <div class="page-review-source"><span>${escapeHtml(p.source)}</span></div>
         <div class="mb-table-container">${p.entries.length === 0
@@ -6259,7 +6496,7 @@
         <div class="page-rescan-status"></div>` : '';
       return `
     <div class="page-review-row"${reviewIndex !== undefined ? ` data-review-index="${reviewIndex}"` : ''}>
-      <div class="page-review-image"><img src="data:image/png;base64,${p.image}" alt="${escapeHtml(p.source)}">${rescanHtml}</div>
+      <div class="page-review-image"><img src="${imageSrc(p.image)}" alt="${escapeHtml(p.source)}">${rescanHtml}</div>
       <div class="page-review-details">
         <div class="page-review-source"><span>${escapeHtml(p.source)}</span></div>
         <div class="mc-table-container">${p.entries.length === 0
@@ -6914,7 +7151,7 @@
         <div class="page-rescan-status"></div>` : '';
       return `
     <div class="page-review-row"${reviewIndex !== undefined ? ` data-review-index="${reviewIndex}"` : ''}>
-      <div class="page-review-image"><img src="data:image/png;base64,${p.image}" alt="${escapeHtml(p.source)}">${rescanHtml}</div>
+      <div class="page-review-image"><img src="${imageSrc(p.image)}" alt="${escapeHtml(p.source)}">${rescanHtml}</div>
       <div class="page-review-details">
         <div class="page-review-source"><span>${escapeHtml(p.source)}</span></div>
         <div class="payslip-table-container">${p.entries.length === 0
@@ -7072,6 +7309,415 @@
         payslipsStatusEl.className = 'status error';
         payslipsStatusEl.textContent = 'Error: ' + err.message;
       }
+    }
+
+    // ===== Scan history =====
+    // Lists every past scan the logged-in caseworker has run (see lib/history.ts, GET /api/history)
+    // and lets them reopen one in the exact same review UI a live scan uses (see
+    // loadHistoryRecordAsLive, wired per scan type as each one is built out).
+    const historyListViewEl = document.getElementById('historyListView');
+    const historyListStatusEl = document.getElementById('historyListStatus');
+    const historyTableEl = document.getElementById('historyTable');
+    const historyTableBodyEl = document.getElementById('historyTableBody');
+    const historyPaginationEl = document.getElementById('historyPagination');
+    const HISTORY_PAGE_SIZE = 25;
+    let historyOffset = 0;
+
+    const HISTORY_SCAN_TYPE_LABELS = {
+      timesheet: 'Timesheet',
+      bank_statement: 'Bank statement',
+      medical_bills: 'Medical bills',
+      medical_certificates: 'Medical certificates',
+      payslips: 'Payslips',
+    };
+
+    /** Hides the scan form and any currently-shown live/history review, shows the history list, and loads it. */
+    function showHistoryListView() {
+      document.getElementById('scanFormWrap').style.display = 'none';
+      document.getElementById('adminDashboardView').style.display = 'none';
+      pageReviewsEl.style.display = 'none';
+      historyListViewEl.style.display = 'block';
+      document.getElementById('backToFormBtn').style.display = '';
+      document.getElementById('backToAdminDashboardBtn').style.display = 'none';
+      currentHistoryScanId = null;
+      currentHistoryScanType = null;
+      viewingAsAdminReadOnly = false;
+      document.getElementById('saveHistoryChangesBtn').style.display = 'none';
+      historyOffset = 0;
+      loadHistoryList();
+    }
+
+    /** Returns to the blank scan form — hides the history list, admin dashboard, and any history/live review currently showing. */
+    function showScanFormView() {
+      historyListViewEl.style.display = 'none';
+      document.getElementById('adminDashboardView').style.display = 'none';
+      pageReviewsEl.style.display = 'none';
+      document.getElementById('scanFormWrap').style.display = '';
+      document.getElementById('backToFormBtn').style.display = 'none';
+      document.getElementById('backToAdminDashboardBtn').style.display = 'none';
+      currentHistoryScanId = null;
+      currentHistoryScanType = null;
+      viewingAsAdminReadOnly = false;
+      document.getElementById('saveHistoryChangesBtn').style.display = 'none';
+      viewingHistoryRecord = false;
+    }
+
+    document.getElementById('viewHistoryBtn').addEventListener('click', showHistoryListView);
+    document.getElementById('backToFormBtn').addEventListener('click', showScanFormView);
+    document.getElementById('backToAdminDashboardBtn').addEventListener('click', showAdminDashboardView);
+    document.getElementById('historyTypeFilter').addEventListener('change', () => { historyOffset = 0; loadHistoryList(); });
+
+    /** Fetches one page of the current user's scan history and renders it as a table. */
+    async function loadHistoryList() {
+      historyListStatusEl.className = 'status loading';
+      historyListStatusEl.textContent = 'Loading…';
+      historyTableEl.style.display = 'none';
+      try {
+        const type = document.getElementById('historyTypeFilter').value;
+        const typeParam = type ? `&type=${encodeURIComponent(type)}` : '';
+        const res = await fetch(`/api/history?limit=${HISTORY_PAGE_SIZE}&offset=${historyOffset}${typeParam}`);
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || `Server returned ${res.status}`);
+        renderHistoryTable(data);
+      } catch (err) {
+        historyListStatusEl.className = 'status error';
+        historyListStatusEl.textContent = 'Error: ' + err.message;
+      }
+    }
+
+    function renderHistoryTable(data) {
+      if (data.rows.length === 0) {
+        historyListStatusEl.className = 'status';
+        historyListStatusEl.textContent = historyOffset === 0 ? 'No past scans yet.' : 'No more scans.';
+        historyTableEl.style.display = 'none';
+        historyPaginationEl.innerHTML = '';
+        return;
+      }
+      historyListStatusEl.textContent = '';
+      historyTableEl.style.display = '';
+      historyTableBodyEl.innerHTML = data.rows.map(row => {
+        const date = new Date(row.created_at).toLocaleString();
+        const typeLabel = HISTORY_SCAN_TYPE_LABELS[row.scan_type] || row.scan_type;
+        const cost = row.cost_usd != null ? `$${row.cost_usd.toFixed(4)}` : '';
+        return `<tr>
+          <td>${date}</td>
+          <td>${typeLabel}</td>
+          <td>${row.title ? escapeHtml(row.title) : '<span class="muted">—</span>'}</td>
+          <td>${cost}</td>
+          <td><button type="button" class="generate-btn" data-history-view="${row.id}" data-history-type="${row.scan_type}">View</button></td>
+        </tr>`;
+      }).join('');
+      historyTableBodyEl.querySelectorAll('[data-history-view]').forEach(btn => {
+        btn.addEventListener('click', () => openHistoryDetail(btn.dataset.historyView, btn.dataset.historyType));
+      });
+
+      const hasPrev = historyOffset > 0;
+      const hasNext = historyOffset + data.rows.length < data.total;
+      historyPaginationEl.innerHTML = `
+        <button type="button" class="generate-btn" id="historyPrevBtn" ${hasPrev ? '' : 'disabled'}>&larr; Newer</button>
+        <button type="button" class="generate-btn" id="historyNextBtn" ${hasNext ? '' : 'disabled'}>Older &rarr;</button>
+        <span style="margin-left:10px" class="muted">${historyOffset + 1}-${historyOffset + data.rows.length} of ${data.total}</span>
+      `;
+      if (hasPrev) document.getElementById('historyPrevBtn').addEventListener('click', () => { historyOffset = Math.max(0, historyOffset - HISTORY_PAGE_SIZE); loadHistoryList(); });
+      if (hasNext) document.getElementById('historyNextBtn').addEventListener('click', () => { historyOffset += HISTORY_PAGE_SIZE; loadHistoryList(); });
+    }
+
+    /** Fetches one saved scan's full record and hands it to the right scan type's loader. */
+    async function openHistoryDetail(scanId, scanType) {
+      // Whichever list is currently on screen — the caseworker's own history list, or (if
+      // viewingAsAdminReadOnly was just set by openAdminScanDetail) the admin dashboard's scans
+      // table — gets the loading/error message; writing it to the other, hidden one would leave
+      // the visible view showing no feedback at all.
+      const statusEl = viewingAsAdminReadOnly ? adminScansStatusEl : historyListStatusEl;
+      statusEl.className = 'status loading';
+      statusEl.textContent = 'Loading…';
+      try {
+        const res = await fetch(`/api/history/${scanId}`);
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || `Server returned ${res.status}`);
+        const loaders = {
+          timesheet: loadTimesheetHistoryRecord,
+          bank_statement: loadBankHistoryRecord,
+          medical_bills: loadMedicalBillsHistoryRecord,
+          medical_certificates: loadMedicalCertificatesHistoryRecord,
+          payslips: loadPayslipsHistoryRecord,
+        };
+        const loader = loaders[scanType];
+        if (loader) {
+          loader(data);
+        } else {
+          statusEl.className = 'status error';
+          statusEl.textContent = `Unknown scan type: ${scanType}`;
+        }
+      } catch (err) {
+        statusEl.className = 'status error';
+        statusEl.textContent = 'Error: ' + err.message;
+      }
+    }
+
+    /**
+     * Re-renders a saved timesheet scan through the exact same path a live scan's completion uses
+     * (renderFinalResult) — same editable rows, same hover-highlight (image fields already came
+     * back as /api/history/:id/image/:ref URLs from the server, see rehydrateImageRefs in
+     * lib/history.ts), same export buttons underneath.
+     */
+    // Shared setup every one of the 5 loaders below runs before populating its own section: swaps
+    // the form/history-list views for the shared review area, tracks which record + scan type
+    // "Save changes" should act on, and hides every type's review section first — each scan type is
+    // its own standalone upload/scan flow, so a history record for one type never carries any of
+    // the others' data, and this stops a DIFFERENT type's leftover content from an earlier live scan
+    // this same browser session lingering alongside a freshly-opened, unrelated history record.
+    function enterHistoryDetailView(record) {
+      historyListViewEl.style.display = 'none';
+      document.getElementById('adminDashboardView').style.display = 'none';
+      document.getElementById('scanFormWrap').style.display = 'none';
+      currentHistoryScanId = record.id;
+      currentHistoryScanType = record.scanType;
+      // Opened from the admin dashboard: no Save (editing another caseworker's case data is out of
+      // scope — see viewingAsAdminReadOnly's own comment), and "Back" returns to the admin scans
+      // table instead of the personal history list.
+      document.getElementById('backToFormBtn').style.display = viewingAsAdminReadOnly ? 'none' : '';
+      document.getElementById('backToAdminDashboardBtn').style.display = viewingAsAdminReadOnly ? '' : 'none';
+      document.getElementById('saveHistoryChangesBtn').style.display = viewingAsAdminReadOnly ? 'none' : '';
+      document.getElementById('saveHistoryChangesStatus').textContent = '';
+      ipaPageReviewEl.style.display = 'none';
+      document.getElementById('ipaPageReviewHeading').style.display = 'none';
+      ipaReviewEl.style.display = 'none';
+      pageReviewList.innerHTML = '';
+      document.getElementById('pageReviewListHeading').style.display = 'none';
+      bankPageReviewListEl.innerHTML = '';
+      bankPageReviewListEl.style.display = 'none';
+      document.getElementById('bankPageReviewListHeading').style.display = 'none';
+      medicalPageReviewListEl.innerHTML = '';
+      medicalPageReviewListEl.style.display = 'none';
+      document.getElementById('medicalPageReviewListHeading').style.display = 'none';
+      medicalCertPageReviewListEl.innerHTML = '';
+      medicalCertPageReviewListEl.style.display = 'none';
+      document.getElementById('medicalCertPageReviewListHeading').style.display = 'none';
+      payslipPageReviewListEl.innerHTML = '';
+      payslipPageReviewListEl.style.display = 'none';
+      document.getElementById('payslipPageReviewListHeading').style.display = 'none';
+      ['monthlyPayTotals', 'allowancesBreakdown', 'overtimeBreakdown', 'restBreakdown', 'publicHolidayBreakdown', 'payslipBreakdown', 'bankResults', 'medicalBillsResults', 'owedVsPaidBox'].forEach(id => {
+        const el = document.getElementById(id);
+        el.style.display = 'none';
+        el.innerHTML = '';
+      });
+    }
+
+    function loadTimesheetHistoryRecord(record) {
+      enterHistoryDetailView(record);
+      // A live scan earlier in this same browser session could have left these populated from a
+      // DIFFERENT upload — renderFinalResult uses them to attach per-page "Rotate + Rescan" controls
+      // by (fileIndex, pageIndex), which make no sense for a saved record (its original uploaded
+      // files are long gone from temp storage). Resetting to empty before rendering means every
+      // page gets no rescan key, regardless of what the current session happened to have loaded
+      // before — not just "happens to be empty on a fresh page load".
+      pdfsPreviewPages = [];
+      excludedPdfsPages = new Set();
+      viewingHistoryRecord = true;
+      renderFinalResult(record.result);
+    }
+
+    // Same reuse approach as loadTimesheetHistoryRecord, but these 4 simpler scan types don't have
+    // a renderFinalResult-equivalent — their live poll just calls renderXLivePages(pages, done),
+    // which already self-contains its own summary refresh (refreshBankSummary/
+    // refreshMedicalBillsClaim/refreshMedicalCertGuardrails/refreshPayslipDerivedTotals all run at
+    // the end of their respective renderXLivePages — confirmed by reading each one directly, not
+    // assumed). Passing done=true renders every page WITH rescan controls unless the preview-pages
+    // globals are reset first — same stale-session-state concern as the timesheet case above.
+    function loadBankHistoryRecord(record) {
+      enterHistoryDetailView(record);
+      bankStatementPreviewPages = [];
+      excludedBankStatementPages = new Set();
+      renderBankLivePages(record.result.pages || [], true);
+    }
+
+    function loadMedicalBillsHistoryRecord(record) {
+      enterHistoryDetailView(record);
+      medicalBillsPreviewPages = [];
+      excludedMedicalBillsPages = new Set();
+      renderMedicalLivePages(record.result.pages || [], true);
+    }
+
+    function loadMedicalCertificatesHistoryRecord(record) {
+      enterHistoryDetailView(record);
+      medicalCertificatesPreviewPages = [];
+      excludedMedicalCertificatesPages = new Set();
+      renderMedicalCertLivePages(record.result.pages || [], true);
+    }
+
+    function loadPayslipsHistoryRecord(record) {
+      enterHistoryDetailView(record);
+      payslipsPreviewPages = [];
+      excludedPayslipsPages = new Set();
+      renderPayslipLivePages(record.result.pages || [], true);
+    }
+
+    // The one editable array each scan type actually has — matches lib/history.ts's
+    // EDITABLE_FIELD_BY_SCAN_TYPE exactly (both sides of this PUT need to agree on which collector
+    // produces what the server will store). Timesheet's is reviewRows; the other 4 (standalone
+    // cross-check tools, no spreadsheet output) just have one flat entries/transactions list.
+    const HISTORY_ROW_COLLECTORS = {
+      timesheet: collectAllReviewRowsWithSource,
+      bank_statement: collectAllBankTransactions,
+      medical_bills: collectAllMedicalBillEntries,
+      medical_certificates: collectAllMedicalCertEntries,
+      payslips: collectAllPayslipEntries,
+    };
+
+    document.getElementById('saveHistoryChangesBtn').addEventListener('click', async () => {
+      const statusEl = document.getElementById('saveHistoryChangesStatus');
+      const collector = HISTORY_ROW_COLLECTORS[currentHistoryScanType];
+      if (!currentHistoryScanId || !collector) return;
+      const btn = document.getElementById('saveHistoryChangesBtn');
+      btn.disabled = true;
+      statusEl.className = 'status loading';
+      statusEl.textContent = 'Saving…';
+      try {
+        const rows = collector();
+        const res = await fetch(`/api/history/${currentHistoryScanId}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ rows }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || `Server returned ${res.status}`);
+        statusEl.className = 'status';
+        statusEl.textContent = 'Saved.';
+      } catch (err) {
+        statusEl.className = 'status error';
+        statusEl.textContent = 'Error: ' + err.message;
+      } finally {
+        btn.disabled = false;
+      }
+    });
+
+    // ===== Admin dashboard =====
+    // Oversight across every caseworker's scans + model-cost spend — see GET /api/admin/scans and
+    // GET /api/admin/cost-summary (both 403 for a non-admin server-side; the nav link below is just
+    // a convenience so a non-admin never sees a dead-end). "View" reuses the exact same detail
+    // loaders the personal history list uses (openHistoryDetail/loadXHistoryRecord), just with
+    // viewingAsAdminReadOnly set first so Save stays hidden.
+    const adminScansStatusEl = document.getElementById('adminScansStatus');
+    const adminScansTableEl = document.getElementById('adminScansTable');
+    const adminScansTableBodyEl = document.getElementById('adminScansTableBody');
+    const adminScansPaginationEl = document.getElementById('adminScansPagination');
+    let adminScansOffset = 0;
+
+    /** Fetches /api/me once on load and shows the admin-dashboard nav link only if the current user is an admin. */
+    async function checkAdminAccess() {
+      try {
+        const res = await fetch('/api/me');
+        const data = await res.json();
+        isCurrentUserAdmin = !!data.isAdmin;
+        document.getElementById('viewAdminDashboardBtn').style.display = isCurrentUserAdmin ? '' : 'none';
+      } catch {
+        // Not logged in / request failed — leave the link hidden, same as a non-admin.
+      }
+    }
+    checkAdminAccess();
+
+    function showAdminDashboardView() {
+      document.getElementById('scanFormWrap').style.display = 'none';
+      historyListViewEl.style.display = 'none';
+      pageReviewsEl.style.display = 'none';
+      document.getElementById('adminDashboardView').style.display = 'block';
+      document.getElementById('backToFormBtn').style.display = '';
+      document.getElementById('backToAdminDashboardBtn').style.display = 'none';
+      currentHistoryScanId = null;
+      currentHistoryScanType = null;
+      viewingAsAdminReadOnly = false;
+      document.getElementById('saveHistoryChangesBtn').style.display = 'none';
+      adminScansOffset = 0;
+      loadAdminCostSummary();
+      loadAdminScansList();
+    }
+
+    document.getElementById('viewAdminDashboardBtn').addEventListener('click', showAdminDashboardView);
+    document.getElementById('adminScanTypeFilter').addEventListener('change', () => { adminScansOffset = 0; loadAdminScansList(); });
+
+    function formatAdminCost(n) {
+      return `$${(n || 0).toFixed(4)}`;
+    }
+
+    async function loadAdminCostSummary() {
+      try {
+        const res = await fetch('/api/admin/cost-summary');
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || `Server returned ${res.status}`);
+        document.getElementById('adminCostToday').textContent = formatAdminCost(data.totalToday.total);
+        document.getElementById('adminCostWeek').textContent = formatAdminCost(data.totalThisWeek.total);
+        document.getElementById('adminCostMonth').textContent = formatAdminCost(data.totalThisMonth.total);
+        document.getElementById('adminCostAllTime').textContent = formatAdminCost(data.totalAllTime.total);
+        document.getElementById('adminCostByDayBody').innerHTML = data.byDay.map(r => `<tr><td>${escapeHtml(r.bucket)}</td><td>${r.count}</td><td>${formatAdminCost(r.total)}</td></tr>`).join('')
+          || '<tr><td colspan="3" class="muted">No scans yet.</td></tr>';
+        document.getElementById('adminCostByMonthBody').innerHTML = data.byMonth.map(r => `<tr><td>${escapeHtml(r.bucket)}</td><td>${r.count}</td><td>${formatAdminCost(r.total)}</td></tr>`).join('')
+          || '<tr><td colspan="3" class="muted">No scans yet.</td></tr>';
+      } catch (err) {
+        adminScansStatusEl.className = 'status error';
+        adminScansStatusEl.textContent = 'Error loading cost summary: ' + err.message;
+      }
+    }
+
+    async function loadAdminScansList() {
+      adminScansStatusEl.className = 'status loading';
+      adminScansStatusEl.textContent = 'Loading…';
+      adminScansTableEl.style.display = 'none';
+      try {
+        const type = document.getElementById('adminScanTypeFilter').value;
+        const typeParam = type ? `&type=${encodeURIComponent(type)}` : '';
+        const res = await fetch(`/api/admin/scans?limit=${HISTORY_PAGE_SIZE}&offset=${adminScansOffset}${typeParam}`);
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || `Server returned ${res.status}`);
+        renderAdminScansTable(data);
+      } catch (err) {
+        adminScansStatusEl.className = 'status error';
+        adminScansStatusEl.textContent = 'Error: ' + err.message;
+      }
+    }
+
+    function renderAdminScansTable(data) {
+      if (data.rows.length === 0) {
+        adminScansStatusEl.className = 'status';
+        adminScansStatusEl.textContent = adminScansOffset === 0 ? 'No scans yet.' : 'No more scans.';
+        adminScansTableEl.style.display = 'none';
+        adminScansPaginationEl.innerHTML = '';
+        return;
+      }
+      adminScansStatusEl.textContent = '';
+      adminScansTableEl.style.display = '';
+      adminScansTableBodyEl.innerHTML = data.rows.map(row => {
+        const date = new Date(row.created_at).toLocaleString();
+        const typeLabel = HISTORY_SCAN_TYPE_LABELS[row.scan_type] || row.scan_type;
+        const cost = row.cost_usd != null ? formatAdminCost(row.cost_usd) : '';
+        return `<tr>
+          <td>${date}</td>
+          <td>${typeLabel}</td>
+          <td>${escapeHtml(row.user_fullname || '')}</td>
+          <td>${row.title ? escapeHtml(row.title) : '<span class="muted">—</span>'}</td>
+          <td>${cost}</td>
+          <td><button type="button" class="generate-btn" data-admin-scan-view="${row.id}" data-admin-scan-type="${row.scan_type}">View</button></td>
+        </tr>`;
+      }).join('');
+      adminScansTableBodyEl.querySelectorAll('[data-admin-scan-view]').forEach(btn => {
+        btn.addEventListener('click', () => openAdminScanDetail(btn.dataset.adminScanView, btn.dataset.adminScanType));
+      });
+
+      const hasPrev = adminScansOffset > 0;
+      const hasNext = adminScansOffset + data.rows.length < data.total;
+      adminScansPaginationEl.innerHTML = `
+        <button type="button" class="generate-btn" id="adminScansPrevBtn" ${hasPrev ? '' : 'disabled'}>&larr; Newer</button>
+        <button type="button" class="generate-btn" id="adminScansNextBtn" ${hasNext ? '' : 'disabled'}>Older &rarr;</button>
+        <span style="margin-left:10px" class="muted">${adminScansOffset + 1}-${adminScansOffset + data.rows.length} of ${data.total}</span>
+      `;
+      if (hasPrev) document.getElementById('adminScansPrevBtn').addEventListener('click', () => { adminScansOffset = Math.max(0, adminScansOffset - HISTORY_PAGE_SIZE); loadAdminScansList(); });
+      if (hasNext) document.getElementById('adminScansNextBtn').addEventListener('click', () => { adminScansOffset += HISTORY_PAGE_SIZE; loadAdminScansList(); });
+    }
+
+    /** Opens a scan from the admin dashboard — same loaders as the personal history list, just read-only (see viewingAsAdminReadOnly). */
+    function openAdminScanDetail(scanId, scanType) {
+      viewingAsAdminReadOnly = true;
+      openHistoryDetail(scanId, scanType);
     }
   </script>
 </body>

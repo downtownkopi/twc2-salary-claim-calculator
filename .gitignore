@@ -16,3 +16,7 @@ sample-data/
 # eval fixtures are page images + extracted fields from real wage-claim docs — same PII concern
 # as sample-data/ above, never commit
 test/eval/fixtures/
+
+# scan history — a SQLite DB + per-scan page images, containing worker PII (IC/FIN/wages/medical
+# details) captured from real claims; never commit, same concern as sample-data/ above
+data/

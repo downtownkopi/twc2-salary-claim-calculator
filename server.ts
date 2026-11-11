@@ -27,6 +27,16 @@ import { bankJobs, runBankStatementJob, scheduleBankJobCleanup } from "./lib/job
 import { medicalJobs, runMedicalBillsJob, scheduleMedicalJobCleanup } from "./lib/jobs/medicalBillsJob";
 import { medicalCertJobs, runMedicalCertificateJob, scheduleMedicalCertJobCleanup } from "./lib/jobs/medicalCertificateJob";
 import { payslipJobs, runPayslipJob, schedulePayslipJobCleanup } from "./lib/jobs/payslipJob";
+import {
+    listScansForUser,
+    getScanForOwner,
+    getScanForAdminOrOwner,
+    rehydrateImageRefs,
+    updateScanEditableFields,
+    listAllScans,
+    getCostSummary,
+    HISTORY_IMAGES_DIR,
+} from "./lib/history";
 
 const TEMPLATE_PATH = path.join(__dirname, "calculation.xltx");
 const PORT = process.env.PORT || 3002;
@@ -84,6 +94,44 @@ app.use((req, res, next) => {
         res.clearCookie("token", { path: "/", domain: SSO_COOKIE_DOMAIN });
         return res.redirect(redirectTarget);
     }
+});
+
+// Pulls the identity fields scan history records are keyed/labeled by out of the decoded camans
+// JWT (see the SSO gate above) — the token's shape, confirmed by reading the sibling camans
+// identity-provider repo directly (not documented anywhere in this codebase), is
+// `{ user: { id, user_fullname, user_email_address, user_role, ... } }`. `user_role` is one of
+// "Admin" | "Manager" | "Specialist" | "Associate" | "Recorder" (camans/server/app/controllers/
+// system/helper.controller.js:241-256) — camans itself gates every admin-only check with a plain
+// `user_role === "Admin"` string comparison (e.g. auth.controller.js:129), not role_id, so this
+// matches that exact convention rather than inventing a different one. Falls back to a fixed dev
+// identity when DISABLE_SSO is set (the gate above skips verification entirely in that case, so
+// there's no real decoded token to read) — scan history still works locally, just attributed to
+// one shared "dev" user rather than crashing for lack of a JWT. Defaults that dev identity to
+// admin so local testing doesn't dead-end on the one gate that needs a real camans session — has
+// no effect in production (SSO always verifies a real token there, this branch never runs).
+function getAuthedUser(req: express.Request): { id: number; fullname: string; email: string; isAdmin: boolean } {
+    const decoded = (req as any).user?.user;
+    if (decoded && typeof decoded.id === "number") {
+        return { id: decoded.id, fullname: decoded.user_fullname ?? "", email: decoded.user_email_address ?? "", isAdmin: decoded.user_role === "Admin" };
+    }
+    return { id: 0, fullname: "dev", email: "dev@localhost", isAdmin: true };
+}
+
+/** Shared 403 guard for the admin-only routes below — returns `false` (and has already sent the response) if the caller isn't an admin. */
+function requireAdmin(req: express.Request, res: express.Response): boolean {
+    if (!getAuthedUser(req).isAdmin) {
+        res.status(403).json({ error: "admin access required" });
+        return false;
+    }
+    return true;
+}
+
+// Lets the frontend decide whether to show the "Admin dashboard" nav link without duplicating the
+// role-check logic client-side — a non-admin simply never sees `isAdmin: true`, never renders the
+// link, and would still get a 403 from the admin routes themselves if they somehow hit them directly.
+app.get("/api/me", (req, res) => {
+    const u = getAuthedUser(req);
+    res.json({ id: u.id, fullname: u.fullname, email: u.email, isAdmin: u.isAdmin });
 });
 
 app.use(express.static(path.join(__dirname, "public")));
@@ -314,7 +362,18 @@ app.post(
         // than waiting for the entire batch.
         const jobId = randomUUID();
         const controller = new AbortController();
-        processJobs.set(jobId, { status: "running", pages: [], result: null, error: null, events: [], controller });
+        const authedUser = getAuthedUser(req);
+        processJobs.set(jobId, {
+            status: "running",
+            pages: [],
+            result: null,
+            error: null,
+            events: [],
+            controller,
+            userId: authedUser.id,
+            userFullname: authedUser.fullname,
+            userEmail: authedUser.email,
+        });
         // Cloud Run would just add instances under load; a fixed VPS can't — acquireJobSlot queues
         // this job's actual work (not the response below, which returns immediately either way)
         // until a concurrency slot is free, so peak memory/CPU stays bounded to MAX_CONCURRENT_JOBS
@@ -361,7 +420,7 @@ app.get("/api/process/:jobId", (req, res) => {
     // here rather than sent as JSON `null`, so the client only ever sees pages that actually
     // completed, still in upload-order relative to each other. `controller` is deliberately
     // excluded — an AbortController isn't meaningfully serializable and the client has no use for it.
-    res.json({ ...job, controller: undefined, pages: job.pages.filter(p => p !== undefined) });
+    res.json({ ...job, controller: undefined, userId: undefined, userFullname: undefined, userEmail: undefined, pages: job.pages.filter(p => p !== undefined) });
 });
 
 // Lets a caseworker stop a running scan mid-way — most useful now that discovery is agentic
@@ -416,7 +475,8 @@ app.post(
         const interpretationHint = typeof req.body.interpretationHint === "string" && req.body.interpretationHint.trim() ? req.body.interpretationHint.trim() : undefined;
 
         const jobId = randomUUID();
-        bankJobs.set(jobId, { status: "running", pages: [], result: null, error: null });
+        const authedUser = getAuthedUser(req);
+        bankJobs.set(jobId, { status: "running", pages: [], result: null, error: null, userId: authedUser.id, userFullname: authedUser.fullname, userEmail: authedUser.email });
         acquireJobSlot()
             .then(() => runBankStatementJob(jobId, files, rotations, excludedPages, interpretationHint))
             .catch(e => {
@@ -447,7 +507,7 @@ app.get("/api/bank-statement/:jobId", (req, res) => {
     // job.pages is pre-sized to the page count and written by index (upload order) — see
     // runBankStatementJob — so a page that hasn't finished yet leaves a hole, filtered out here
     // rather than sent as JSON `null`.
-    res.json({ ...job, pages: job.pages.filter(p => p !== undefined) });
+    res.json({ ...job, userId: undefined, userFullname: undefined, userEmail: undefined, pages: job.pages.filter(p => p !== undefined) });
 });
 
 // Standalone cross-check tool, same shape as /api/bank-statement above: caseworker uploads the
@@ -486,7 +546,8 @@ app.post(
         const interpretationHint = typeof req.body.interpretationHint === "string" && req.body.interpretationHint.trim() ? req.body.interpretationHint.trim() : undefined;
 
         const jobId = randomUUID();
-        medicalJobs.set(jobId, { status: "running", pages: [], result: null, error: null });
+        const authedUser = getAuthedUser(req);
+        medicalJobs.set(jobId, { status: "running", pages: [], result: null, error: null, userId: authedUser.id, userFullname: authedUser.fullname, userEmail: authedUser.email });
         acquireJobSlot()
             .then(() => runMedicalBillsJob(jobId, files, rotations, excludedPages, interpretationHint))
             .catch(e => {
@@ -514,7 +575,7 @@ app.get("/api/medical-bills/:jobId", (req, res) => {
                 `(job id: ${req.params.jobId}, if this keeps happening please share this id and the approximate time)`,
         });
     }
-    res.json({ ...job, pages: job.pages.filter(p => p !== undefined) });
+    res.json({ ...job, userId: undefined, userFullname: undefined, userEmail: undefined, pages: job.pages.filter(p => p !== undefined) });
 });
 
 // A medical certificate (MC) is a distinct document from a medical bill/invoice — see
@@ -549,7 +610,8 @@ app.post(
         const interpretationHint = typeof req.body.interpretationHint === "string" && req.body.interpretationHint.trim() ? req.body.interpretationHint.trim() : undefined;
 
         const jobId = randomUUID();
-        medicalCertJobs.set(jobId, { status: "running", pages: [], result: null, error: null });
+        const authedUser = getAuthedUser(req);
+        medicalCertJobs.set(jobId, { status: "running", pages: [], result: null, error: null, userId: authedUser.id, userFullname: authedUser.fullname, userEmail: authedUser.email });
         acquireJobSlot()
             .then(() => runMedicalCertificateJob(jobId, files, rotations, excludedPages, interpretationHint))
             .catch(e => {
@@ -577,7 +639,7 @@ app.get("/api/medical-certificates/:jobId", (req, res) => {
                 `(job id: ${req.params.jobId}, if this keeps happening please share this id and the approximate time)`,
         });
     }
-    res.json({ ...job, pages: job.pages.filter(p => p !== undefined) });
+    res.json({ ...job, userId: undefined, userFullname: undefined, userEmail: undefined, pages: job.pages.filter(p => p !== undefined) });
 });
 
 // A payslip states overtime hours the employer already worked out for some period (day/week/
@@ -612,7 +674,8 @@ app.post(
         const interpretationHint = typeof req.body.interpretationHint === "string" && req.body.interpretationHint.trim() ? req.body.interpretationHint.trim() : undefined;
 
         const jobId = randomUUID();
-        payslipJobs.set(jobId, { status: "running", pages: [], result: null, error: null });
+        const authedUser = getAuthedUser(req);
+        payslipJobs.set(jobId, { status: "running", pages: [], result: null, error: null, userId: authedUser.id, userFullname: authedUser.fullname, userEmail: authedUser.email });
         acquireJobSlot()
             .then(() => runPayslipJob(jobId, files, rotations, excludedPages, interpretationHint))
             .catch(e => {
@@ -640,7 +703,93 @@ app.get("/api/payslips/:jobId", (req, res) => {
                 `(job id: ${req.params.jobId}, if this keeps happening please share this id and the approximate time)`,
         });
     }
-    res.json({ ...job, pages: job.pages.filter(p => p !== undefined) });
+    res.json({ ...job, userId: undefined, userFullname: undefined, userEmail: undefined, pages: job.pages.filter(p => p !== undefined) });
+});
+
+// Scan history — the first persistent store in this app (see lib/history.ts). Every finished scan
+// of any of the 5 types above gets a row here via persistScan(), keyed to whichever caseworker ran
+// it (from the SSO JWT, see getAuthedUser above). These 3 routes let a caseworker revisit a past
+// scan: list their own scans, fetch one in full (re-rendered through the same review UI a live
+// scan uses), and view its page images.
+//
+// Lists the current user's scans, most recent first — never includes result_json (could be large
+// for a timesheet's pageReviews), just enough to render a history list row.
+app.get("/api/history", (req, res) => {
+    const userId = getAuthedUser(req).id;
+    const limit = Math.min(Math.max(Number(req.query.limit) || 25, 1), 100);
+    const offset = Math.max(Number(req.query.offset) || 0, 0);
+    const scanType = typeof req.query.type === "string" ? req.query.type : undefined;
+    const { rows, total } = listScansForUser(userId, { limit, offset, scanType });
+    res.json({ rows, total, limit, offset });
+});
+
+// Admin dashboard — oversight across every caseworker's scans, not just the requester's own. Both
+// routes 403 for a non-admin (see requireAdmin above); neither exposes anything a non-admin's own
+// /api/history doesn't already expose per-row, just without the user_id scoping.
+app.get("/api/admin/scans", (req, res) => {
+    if (!requireAdmin(req, res)) return;
+    const limit = Math.min(Math.max(Number(req.query.limit) || 25, 1), 100);
+    const offset = Math.max(Number(req.query.offset) || 0, 0);
+    const scanType = typeof req.query.type === "string" ? req.query.type : undefined;
+    const userId = req.query.userId !== undefined ? Number(req.query.userId) : undefined;
+    const { rows, total } = listAllScans({ limit, offset, scanType, userId });
+    res.json({ rows, total, limit, offset });
+});
+
+app.get("/api/admin/cost-summary", (req, res) => {
+    if (!requireAdmin(req, res)) return;
+    res.json(getCostSummary());
+});
+
+// Full saved record for one scan, ownership-checked — a scan id belonging to a different user
+// 404s identically to a nonexistent one, no existence leak, UNLESS the requester is an admin (see
+// getScanForAdminOrOwner) — the admin dashboard reuses this exact route to view any user's scan.
+// Image fields are rewritten from their stored {ref} markers to this route's own URLs at READ time
+// (not persist time), so the route prefix never gets baked into stored data.
+app.get("/api/history/:id", (req, res) => {
+    const authedUser = getAuthedUser(req);
+    const scan = getScanForAdminOrOwner(req.params.id, authedUser.id, authedUser.isAdmin);
+    if (!scan) return res.status(404).json({ error: "scan not found" });
+    const result = rehydrateImageRefs(scan.id, JSON.parse(scan.result_json));
+    res.json({
+        id: scan.id,
+        scanType: scan.scan_type,
+        title: scan.title,
+        createdAt: scan.created_at,
+        costUsd: scan.cost_usd,
+        durationMs: scan.duration_ms,
+        userId: scan.user_id,
+        userFullname: scan.user_fullname,
+        result,
+    });
+});
+
+// Streams one page image from a saved scan — ownership-checked before any filesystem access, same
+// 404-either-way behavior as the route above (and the same admin bypass). :ref is whitelisted
+// before being joined into a path even though it's always server-generated (see persistScan's
+// writeImage helper), never taken directly off a client-controlled value.
+app.get("/api/history/:scanId/image/:ref", (req, res) => {
+    const authedUser = getAuthedUser(req);
+    const scan = getScanForAdminOrOwner(req.params.scanId, authedUser.id, authedUser.isAdmin);
+    if (!scan) return res.status(404).json({ error: "scan not found" });
+    if (!/^[a-zA-Z0-9_-]+$/.test(req.params.ref)) return res.status(400).json({ error: "invalid image ref" });
+    res.sendFile(path.join(HISTORY_IMAGES_DIR, scan.id, `${req.params.ref}.png`), err => {
+        if (err) res.status(404).json({ error: "image not found" });
+    });
+});
+
+// Persists an edit made while viewing a history record — e.g. fixing a misread clock time on a
+// reopened claim — so it survives leaving the page, same durability the live review already has
+// once you click Generate. Scoped to just the one editable array each scan type actually has
+// (reviewRows/transactions/entries — see lib/history.ts's EDITABLE_FIELD_BY_SCAN_TYPE); nothing
+// else in a saved record (images, scan_type, cost) can be touched through this route.
+app.put("/api/history/:id", express.json({ limit: "5mb" }), (req, res) => {
+    const userId = getAuthedUser(req).id;
+    const rows = req.body?.rows;
+    if (!Array.isArray(rows)) return res.status(400).json({ error: "rows (array) required" });
+    const updated = updateScanEditableFields(req.params.id, userId, rows);
+    if (!updated) return res.status(404).json({ error: "scan not found" });
+    res.json({ success: true });
 });
 
 // Takes the human-reviewed (possibly hand-corrected) rows from the browser's edit step and writes

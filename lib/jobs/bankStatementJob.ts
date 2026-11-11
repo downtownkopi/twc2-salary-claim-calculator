@@ -1,6 +1,7 @@
 import * as path from "path";
 import { resizeForDisplay, rotateImage, type PagedImages } from "../ocr";
 import { extractMatchingTransactions, mergeTransactionAttempts, type BankTransaction } from "../bankstatement";
+import { persistScan } from "../history";
 import {
     loadPagesForFile,
     SCAN_TEMPERATURES,
@@ -22,6 +23,12 @@ export type BankStatementJob = {
     pages: BankStatementPageResult[];
     result: { transactions: (BankTransaction & { source: string })[]; totalCredits: number; costUsd: number; durationMs: number } | null;
     error: string | null;
+    // Set by server.ts at job-creation time (from the SSO JWT) — not serialized to the client
+    // (excluded the same way `controller` is on the timesheet job), read back here purely to
+    // persist a finished scan to history. See lib/history.ts.
+    userId: number;
+    userFullname: string;
+    userEmail: string;
 };
 export const bankJobs = new Map<string, BankStatementJob>();
 /** Schedules a bank-statement job's entry to be evicted from {@link bankJobs} after {@link JOB_TTL_MS}, and reclaims its temp page dir immediately. */
@@ -161,4 +168,16 @@ export async function runBankStatementJob(
     job.pages = orderedPages;
     job.result = { transactions, totalCredits, costUsd: totalCostUsd, durationMs: Date.now() - startedAt };
     job.status = "done";
+    persistScan({
+        id: jobId,
+        scanType: "bank_statement",
+        userId: job.userId,
+        userFullname: job.userFullname,
+        userEmail: job.userEmail,
+        title: null,
+        costUsd: job.result.costUsd,
+        durationMs: job.result.durationMs,
+        result: job.result,
+        pages: job.pages,
+    });
 }

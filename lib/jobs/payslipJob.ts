@@ -1,6 +1,7 @@
 import * as path from "path";
 import { resizeForDisplay, rotateImage, type PagedImages } from "../ocr";
 import { extractPayslipEntries, mergePayslipEntries, periodRange, type PayslipEntry } from "../payslips";
+import { persistScan } from "../history";
 import {
     loadPagesForFile,
     SCAN_TEMPERATURES,
@@ -20,6 +21,10 @@ export type PayslipJob = {
     pages: PayslipPageResult[];
     result: { entries: (PayslipEntry & { source: string })[]; costUsd: number; durationMs: number } | null;
     error: string | null;
+    // See BankStatementJob's identical fields (lib/jobs/bankStatementJob.ts) for why these exist.
+    userId: number;
+    userFullname: string;
+    userEmail: string;
 };
 export const payslipJobs = new Map<string, PayslipJob>();
 /** Schedules a payslip job's entry to be evicted from {@link payslipJobs} after {@link JOB_TTL_MS}, and reclaims its temp page dir immediately. */
@@ -154,4 +159,16 @@ export async function runPayslipJob(
     job.pages = orderedPages;
     job.result = { entries, costUsd: totalCostUsd, durationMs: Date.now() - startedAt };
     job.status = "done";
+    persistScan({
+        id: jobId,
+        scanType: "payslips",
+        userId: job.userId,
+        userFullname: job.userFullname,
+        userEmail: job.userEmail,
+        title: null,
+        costUsd: job.result.costUsd,
+        durationMs: job.result.durationMs,
+        result: job.result,
+        pages: job.pages,
+    });
 }

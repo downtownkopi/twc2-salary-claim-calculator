@@ -16,6 +16,7 @@
     "@google-cloud/firestore": "^8.7.0",
     "@google-cloud/storage": "^7.21.0",
     "@openrouter/sdk": "^0.13.25",
+    "better-sqlite3": "^13.0.3",
     "cookie-parser": "^1.4.7",
     "docx": "^9.7.1",
     "exceljs": "^4.4.0",
@@ -29,6 +30,7 @@
     "sharp": "^0.35.3"
   },
   "devDependencies": {
+    "@types/better-sqlite3": "^9.6.0",
     "@types/cookie-parser": "^1.4.10",
     "@types/express": "^5.0.6",
     "@types/jsonwebtoken": "^9.0.10",

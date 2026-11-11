@@ -19,6 +19,7 @@ import { buildPrompt } from "../timesheetPrompt";
 import { buildRosterPrompt } from "../rosterPrompt";
 import { runAgentLoop, type AgentEvent, type AgentLoopResult, type ShapeFamily } from "../ocr/agentLoop";
 import type { WorkerMatchConfidence } from "../workerMatch";
+import { persistScan } from "../history";
 import {
     loadPagesForFile,
     SUPPORTED_YEARS,
@@ -92,6 +93,11 @@ export type ProcessJob = {
     // Not serialized to the client — set by server.ts on job creation, aborted by the cancel
     // endpoint. Threaded down into every vision call so an in-flight request actually cancels.
     controller: AbortController;
+    // Also not serialized to the client — set by server.ts on job creation (from the SSO JWT),
+    // read back once the scan finishes purely to persist it to history. See lib/history.ts.
+    userId: number;
+    userFullname: string;
+    userEmail: string;
 };
 // Named processJobs, not jobs — the per-page scan loop below already uses a local variable
 // called `jobs` for its band x temperature attempt list, and shadowing that would be a landmine.
@@ -1736,4 +1742,20 @@ export async function runProcessJob(
     // reflects whatever pages actually finished, so a cancelled run still renders a (partial) result
     // instead of nothing.
     if (job.status === "running") job.status = "done";
+    // Only a genuine successful completion gets saved to history — a cancelled run's partial
+    // result is still useful to render live, but isn't worth persisting as a "scan".
+    if (job.status === "done") {
+        persistScan({
+            id: jobId,
+            scanType: "timesheet",
+            userId: job.userId,
+            userFullname: job.userFullname,
+            userEmail: job.userEmail,
+            title: ipa?.workerName ?? null,
+            costUsd: job.result.costUsd as number,
+            durationMs: job.result.durationMs as number,
+            result: job.result,
+            ipaImage,
+        });
+    }
 }
