@@ -24,12 +24,17 @@ import type { PageDataModel } from "./ocr";
  * @param pageContext - Any page-level context already found (e.g. a month header), from {@link
  * extractPageContext} in `./ocr`.
  * @param dataModelHint - The page's classified data model, used as a hint rather than a hard rule.
+ * @param interpretationHint - A caseworker-authored note on how to read this specific document
+ * (e.g. "8 - 9pm on every date means 8am to 9pm"), typed into the upfront "Reading notes for this
+ * scan" field (public/index.html) or carried over from the post-scan rescan flow. Applied as
+ * guidance, not a license to override what the image actually shows.
  * @returns The full prompt text to send alongside the page image.
  */
 export function buildPrompt(
     year: number,
     pageContext: string,
     dataModelHint: PageDataModel,
+    interpretationHint?: string,
 ): string {
     const hintLine =
         dataModelHint === "hours_total"
@@ -78,7 +83,9 @@ export function buildPrompt(
 
         FORMAT HINT:
         ${hintLine}
-
+${interpretationHint ? `
+        CASEWORKER READING NOTE: A caseworker reviewing this document has provided the following note on how to read it: "${interpretationHint}". Apply this understanding when reading this page, but still read what is actually visible — this note explains ambiguous notation, it does not override a clearly different value actually shown in the image.
+` : ""}
         IMPORTANT: The page-level context and format hint are supporting information only. Always verify them against the actual image.
 
         --------------------------------------------------
@@ -179,6 +186,8 @@ export function buildPrompt(
 
         EXCEPTION — corrections: if a date's row shows an earlier clock-time pair struck through / crossed out / scribbled over, with a second, still-legible pair written to replace it, report ONLY the not-crossed-out pair in the times array. Never include a struck-through pair's values, and never combine a struck-through pair with the real pair into one longer array (a crossed-out "800,1700" next to a kept "900,1800" is times:[900,1800], not a 4-value array). If you can still read the struck-through values, mention them in notes (e.g. "800-1700 struck through, corrected to 900-1800"); notes is the only place they belong.
 
+        EXCEPTION — voided entries: if a date's entire time entry is struck through / crossed out / scribbled over with NO replacement pair written anywhere in that date's region, treat the day as having no timing at all — report times: null, same as a genuinely blank box. Do not report the struck-through values as the times array. Mention in notes (e.g. "entry crossed out, no replacement — treated as not worked").
+
         --------------------------------------------------
         4. SCAN THE ENTIRE LOGICAL DATE REGION
         --------------------------------------------------
@@ -207,9 +216,9 @@ export function buildPrompt(
         Distinguish noon and midnight carefully.
 
         - 12pm = 1200
-        - 12am = midnight
+        - 12am = 0000 (as a start time, or any standalone occurrence)
 
-        When midnight is the endpoint of a shift that began earlier on that calendar date, represent it as 2400 where appropriate.
+        When midnight is the ENDPOINT of a shift that began earlier on that calendar date, represent it as 2400 instead of 0000.
 
         For example:
 
@@ -362,6 +371,8 @@ export function buildPrompt(
         If an unfamiliar notation is visible but its meaning cannot be determined, transcribe it in notes rather than inventing an interpretation.
 
         A named public holiday (e.g. a printed "New Year's Day" label on a calendar template) combined with a dash drawn in the SAME box is not a special or ambiguous case — it is simply two signals agreeing with each other that this date was not worked. Do not let the presence of BOTH a printed holiday name AND a dash confuse you into treating the box as needing extra scrutiny or a different rule; it still gets rest_day = true, times = null, exactly like any other box with a dash. A box with a named holiday label is not automatically exempt from also being read for a dash — check every box the same way regardless of what else is printed in it.
+
+        A public holiday box with NO mark at all — no times, no dash, no leave code, genuinely blank — is omitted entirely, same as any other genuinely blank box (see section 1). Do NOT fill it with times copied from a neighboring date, a repeated weekday pattern, or what the rest of that week looks like, even though it is tempting to assume the worker's usual shift applied. A public holiday is exactly the kind of date most likely to have been taken off, so a blank box there is not evidence of a missed transcription — it is itself the signal.
 
         --------------------------------------------------
         11. Dashes AND CHECKMARKS IN CALENDAR GRIDS

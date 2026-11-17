@@ -139,11 +139,14 @@ export function scheduleJobCleanup(jobId: string) {
  * on its own even after being rescanned (e.g. the rotation fix was needed for the date header
  * itself). A normal full-batch job never passes this — every page there can still borrow from a
  * real neighbor.
- * @param interpretationHint - Either a caseworker's answer to a structural interpretation question
- * the agentic loop flagged (see `detectInterpretationDisagreement` below), e.g. "Qty/Amount columns
- * are clock in/out times, not hours+dollars", or free text typed into the single-page "Rescan"
- * popup (public/index.html). Forwarded into every agentic-path page this request scans (see
- * lib/ocr/agentLoop.ts's `interpretationHint` param) and into the IPA extraction below.
+ * @param interpretationHint - A caseworker-authored note on how to read this document: either an
+ * answer to a structural interpretation question the agentic loop flagged (see
+ * `detectInterpretationDisagreement` below), e.g. "Qty/Amount columns are clock in/out times, not
+ * hours+dollars"; free text typed into the single-page "Rescan" popup; or free text typed into the
+ * main form's upfront "Reading notes for this scan" field (public/index.html), sent on the very
+ * first scan attempt rather than after the fact. Forwarded into every agentic-path page this
+ * request scans (see lib/ocr/agentLoop.ts's `interpretationHint` param), the non-agentic buildPrompt
+ * path (see lib/timesheetPrompt.ts's `interpretationHint` param), and into the IPA extraction below.
  */
 export async function runProcessJob(
     jobId: string,
@@ -1169,7 +1172,7 @@ export async function runProcessJob(
                     return;
                 }
 
-                const prompt = buildPrompt(pageYear, pageContext, dataModel);
+                const prompt = buildPrompt(pageYear, pageContext, dataModel, interpretationHint);
 
                 const bands = await cropIntoBands(pageImage, BANDS_PER_PAGE);
 

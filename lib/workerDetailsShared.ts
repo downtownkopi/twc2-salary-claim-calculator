@@ -62,6 +62,7 @@ export type WorkerDetailsExportPayload = {
     basicSalary: number;
     basic: ExportCategory;
     allowances: ExportCategory;
+    nonFixedAllowance: ExportCategory;
     overtime: ExportCategory;
     restDays: ExportCategory;
     publicHolidays: ExportCategory;
@@ -124,14 +125,15 @@ export function formatClaimDate(dateStr: string | null): string {
 export function computeClaimTotals(p: WorkerDetailsExportPayload) {
     const claimForBasic = p.basic.totalEarned - p.basic.totalPaid;
     const claimForAllowances = p.allowances.totalEarned - p.allowances.totalPaid;
+    const claimForNonFixedAllowance = p.nonFixedAllowance.totalEarned - p.nonFixedAllowance.totalPaid;
     const claimForOvertime = p.overtime.totalEarned - p.overtime.totalPaid;
     const claimForRestDays = p.restDays.totalEarned - p.restDays.totalPaid;
     const claimForNotice = p.noticeClaim?.owedAmount ?? 0;
     const claimForLeave = p.leaveClaim?.owedAmount ?? 0;
     const claimForSick = p.sickClaim?.owedAmount ?? 0;
     const claimForMedicalBills = p.medicalBillsClaim?.owedAmount ?? 0;
-    const totalAmountClaim = claimForBasic + claimForAllowances + claimForOvertime + claimForRestDays + claimForNotice + claimForLeave + claimForSick + claimForMedicalBills;
-    return { claimForBasic, claimForAllowances, claimForOvertime, claimForRestDays, claimForNotice, claimForLeave, claimForSick, claimForMedicalBills, totalAmountClaim };
+    const totalAmountClaim = claimForBasic + claimForAllowances + claimForNonFixedAllowance + claimForOvertime + claimForRestDays + claimForNotice + claimForLeave + claimForSick + claimForMedicalBills;
+    return { claimForBasic, claimForAllowances, claimForNonFixedAllowance, claimForOvertime, claimForRestDays, claimForNotice, claimForLeave, claimForSick, claimForMedicalBills, totalAmountClaim };
 }
 
 // Column layout shared by both formats: the merged caption row (see each format's own "categoryTable"),

@@ -7,6 +7,7 @@ import { randomUUID } from "crypto";
 import { resizeForDisplay } from "./lib/ocr";
 import { fillTimesheetFromRows, MONTH_ABBR, type FillWarning, type ReviewRow } from "./lib/xlsx";
 import { uploadFlaggedPage, type FlaggedPageEntry } from "./lib/feedback";
+import { translateTierCondition, parseTierConditionsBatch } from "./lib/tierCondition";
 import { buildWorkerPersonalDetailsDocx } from "./lib/workerDetailsDocx";
 import { buildWorkerPersonalDetailsPdf } from "./lib/workerDetailsPdf";
 import type { WorkerDetailsExportPayload } from "./lib/workerDetailsShared";
@@ -883,7 +884,7 @@ function breakdownFilename(fin: string | null | undefined, ext: string): string 
 // docx template, it does no calculation of its own.
 app.post("/api/export-docx", express.json({ limit: "1mb" }), async (req, res) => {
     const p = req.body as Partial<WorkerDetailsExportPayload>;
-    if (!p || typeof p.basicSalary !== "number" || !p.basic || !p.allowances || !p.overtime || !p.restDays || !p.publicHolidays) {
+    if (!p || typeof p.basicSalary !== "number" || !p.basic || !p.allowances || !p.nonFixedAllowance || !p.overtime || !p.restDays || !p.publicHolidays) {
         return res.status(400).json({ error: "missing or malformed claim breakdown" });
     }
     try {
@@ -902,7 +903,7 @@ app.post("/api/export-docx", express.json({ limit: "1mb" }), async (req, res) =>
 // endpoint's comment for why there's no calculation here either.
 app.post("/api/export-pdf", express.json({ limit: "1mb" }), async (req, res) => {
     const p = req.body as Partial<WorkerDetailsExportPayload>;
-    if (!p || typeof p.basicSalary !== "number" || !p.basic || !p.allowances || !p.overtime || !p.restDays || !p.publicHolidays) {
+    if (!p || typeof p.basicSalary !== "number" || !p.basic || !p.allowances || !p.nonFixedAllowance || !p.overtime || !p.restDays || !p.publicHolidays) {
         return res.status(400).json({ error: "missing or malformed claim breakdown" });
     }
     try {
@@ -942,6 +943,42 @@ app.post("/api/flag-page", express.json({ limit: "5mb" }), async (req, res) => {
     } catch (e: any) {
         console.error("failed to store flagged page:", e);
         res.status(500).json({ error: `failed to store flagged page: ${e.message}` });
+    }
+});
+
+// Non-fixed-allowance tier conditions (public/index.html) can be typed in plain English — this
+// translates one sentence into the client's structured expression grammar via a cheap text LLM
+// call (see lib/tierCondition.ts). The client ALWAYS re-compiles/validates whatever comes back
+// before using it (same as a hand-typed condition) — this endpoint only proposes a candidate, it
+// never becomes a trusted, unchecked input to the actual money math.
+app.post("/api/translate-tier-condition", express.json({ limit: "10kb" }), async (req, res) => {
+    const { text } = req.body ?? {};
+    if (typeof text !== "string" || !text.trim()) {
+        return res.status(400).json({ error: "text is required" });
+    }
+    try {
+        const { expression, cost } = await translateTierCondition(text.trim());
+        res.json({ success: true, expression, costUsd: cost });
+    } catch (e: any) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// Batch sibling to /api/translate-tier-condition — the caseworker writes every non-fixed-allowance
+// rule as one free-written paragraph (public/index.html's single textarea), and this extracts
+// every distinct {condition, amount} rule out of it in one call, run once at "Extract details"
+// time rather than live per tier. Same trust boundary as the single-condition endpoint: the client
+// re-compiles/validates every returned condition before using it.
+app.post("/api/parse-tier-conditions", express.json({ limit: "20kb" }), async (req, res) => {
+    const { text } = req.body ?? {};
+    if (typeof text !== "string" || !text.trim()) {
+        return res.status(400).json({ error: "text is required" });
+    }
+    try {
+        const { tiers, cost } = await parseTierConditionsBatch(text.trim());
+        res.json({ success: true, tiers, costUsd: cost });
+    } catch (e: any) {
+        res.status(500).json({ error: e.message });
     }
 });
 

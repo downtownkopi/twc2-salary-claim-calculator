@@ -29,6 +29,14 @@ import { logVisionEvent } from "../visionDebugLog";
 export const PRIMARY_VISION_MODEL = "xiaomi/mimo-v2.5";
 export const FALLBACK_VISION_MODEL = "qwen/qwen3-vl-235b-a22b-instruct";
 
+// Used only by translateTierCondition (lib/tierCondition.ts) — a tiny, non-vision, low-stakes
+// text task (turning one sentence like "time beyond 5pm" into an expression), so it deliberately
+// does NOT reuse PRIMARY_VISION_MODEL — that's priced/selected for dense handwritten-page OCR,
+// massive overkill (and cost) for one short line of text. Not yet validated against this exact
+// task the way PRIMARY_VISION_MODEL/FALLBACK_VISION_MODEL were (see their own comments) — swap if
+// it turns out to mis-translate often or a cheaper/faster option emerges.
+export const CHEAP_TEXT_MODEL = "openai/gpt-4o-mini";
+
 let client: OpenRouter | null = null;
 
 /**
@@ -271,6 +279,45 @@ export const sendVisionRequest = traceable(
             };
         },
     }
+);
+
+// Plain text-only sibling to sendVisionRequest — no image_url content block, for tasks that have
+// nothing to do with reading a page image (currently just translateTierCondition). Kept separate
+// rather than making base64Image optional on sendVisionRequest itself, so every existing
+// image-reading call site's shape stays untouched.
+/**
+ * Sends a plain text-only prompt to a model via OpenRouter (no image). Retries on rate limiting
+ * (with backoff) and on a hung/timed-out request (no backoff), same as {@link sendVisionRequest}.
+ *
+ * @param prompt - The text prompt.
+ * @param temperature - Model sampling temperature.
+ * @param maxTokens - Max output tokens.
+ * @param model - Which model to call.
+ * @returns The model's raw reply text and this call's cost in USD.
+ */
+export const sendTextRequest = traceable(
+    async function sendTextRequest(
+        prompt: string,
+        temperature: number,
+        maxTokens: number,
+        model: string
+    ): Promise<{ content: string; cost: number }> {
+        const response = await sendChatRequestWithRetry({
+            usage: { include: true },
+            reasoning: { effort: "none" },
+            model,
+            maxTokens,
+            temperature,
+            seed: 42,
+            messages: [{ role: "user", content: prompt }],
+        });
+        const choice = (response as any).choices[0];
+        return {
+            content: choice.message.content ?? "",
+            cost: (response as any).usage?.cost ?? 0,
+        };
+    },
+    { name: "sendTextRequest", run_type: "llm" }
 );
 
 // Multi-turn, tool-calling sibling to sendVisionRequest — used by the agent loop

@@ -339,6 +339,10 @@
       margin-bottom: 20px;
     }
 
+    .field h4 {
+      margin: 0 0 8px;
+    }
+
     /* Segmented-pill toggle — the underlying <input type="radio"> stays for real
      single-select/keyboard/accessibility behavior, just visually hidden; the sibling label is
      styled as the actual clickable pill, filled in with the accent color via :has() when its
@@ -427,7 +431,7 @@
     }
 
     .file-list {
-      margin-top: 8px;
+      margin: 8px 0;
       font-size: 12px;
       color: var(--muted);
     }
@@ -610,6 +614,7 @@
       color: var(--muted);
       font-weight: 400;
     }
+
     .owed-vs-paid-sub {
       margin-top: 8px;
       font-size: 12px;
@@ -673,16 +678,6 @@
       border-radius: 6px;
       display: block;
       cursor: zoom-in;
-    }
-
-    /* Tints the row itself on hover, same color as the source-image highlight box below, so it
-       reads as one hover state across both sides of the page-review split. */
-    .payslip-row:hover,
-    .bt-row:hover,
-    .mb-row:hover,
-    .mc-row:hover,
-    .review-row:hover {
-      background: rgba(255, 82, 82, 0.18);
     }
 
     /* Hover highlight showing roughly where an extracted row came from on the source page image —
@@ -817,6 +812,19 @@
 
     .inline-review-row.missing-day-row {
       background: rgba(220, 80, 80, 0.08);
+    }
+
+    /* Tints the row itself on hover, same color as the source-image highlight box below, so it
+       reads as one hover state across both sides of the page-review split. Placed after the
+       flagged/missing-day background rules above — same class-count specificity, so later source
+       order wins and hover reliably overrides a yellow/red flagged tint instead of being stuck
+       under it. */
+    .payslip-row:hover,
+    .bt-row:hover,
+    .mb-row:hover,
+    .mc-row:hover,
+    .review-row:hover {
+      background: rgba(255, 82, 82, 0.18);
     }
 
     /* Marks a field the reviewer has hand-edited away from its scanned value (red outline), and
@@ -1038,13 +1046,23 @@
       padding: 8px;
       margin: 8px 0;
     }
-    .agent-event { padding: 1px 0; }
-    .agent-event-detail { color: var(--muted); }
-    #stopScanBtn { margin-left: 8px; }
+
+    .agent-event {
+      padding: 1px 0;
+    }
+
+    .agent-event-detail {
+      color: var(--muted);
+    }
+
+    #stopScanBtn {
+      margin-left: 8px;
+    }
 
     #interpretationDisagreementPanel {
       margin: 12px 0;
     }
+
     .disagreement-group {
       border: 1px solid #e0a800;
       background: #fffaf0;
@@ -1052,7 +1070,12 @@
       padding: 12px;
       margin-bottom: 12px;
     }
-    .disagreement-header { font-weight: 600; margin-bottom: 8px; }
+
+    .disagreement-header {
+      font-weight: 600;
+      margin-bottom: 8px;
+    }
+
     .disagreement-candidate {
       display: block;
       border: 1px solid #ddd;
@@ -1061,12 +1084,33 @@
       margin-bottom: 6px;
       cursor: pointer;
     }
-    .disagreement-candidate input { margin-right: 6px; }
-    .disagreement-explain { display: block; margin: 8px 0; }
-    .disagreement-explain-input { width: 100%; box-sizing: border-box; }
-    .disagreement-status { font-size: 13px; margin-top: 6px; }
-    .disagreement-status.error { color: #b00020; }
-    .disagreement-status.success { color: #2e7d32; }
+
+    .disagreement-candidate input {
+      margin-right: 6px;
+    }
+
+    .disagreement-explain {
+      display: block;
+      margin: 8px 0;
+    }
+
+    .disagreement-explain-input {
+      width: 100%;
+      box-sizing: border-box;
+    }
+
+    .disagreement-status {
+      font-size: 13px;
+      margin-top: 6px;
+    }
+
+    .disagreement-status.error {
+      color: #b00020;
+    }
+
+    .disagreement-status.success {
+      color: #2e7d32;
+    }
 
     .ipa-computed-rates-list {
       margin: 0;
@@ -1156,9 +1200,17 @@
       margin-bottom: 6px;
     }
 
-    .roster-confidence-high { color: #1a7f37; }
-    .roster-confidence-low { color: #9a6700; }
-    .roster-confidence-none { color: #cf222e; }
+    .roster-confidence-high {
+      color: #1a7f37;
+    }
+
+    .roster-confidence-low {
+      color: #9a6700;
+    }
+
+    .roster-confidence-none {
+      color: #cf222e;
+    }
 
     .roster-worker-select {
       width: 100%;
@@ -1224,365 +1276,377 @@
     <h1>Salary Claim Calculator</h1>
     <div class="history-nav-row">
       <button type="button" class="generate-btn" id="viewHistoryBtn">View scan history</button>
-      <button type="button" class="generate-btn" id="viewAdminDashboardBtn" style="display:none">Admin dashboard</button>
-      <button type="button" class="generate-btn" id="backToFormBtn" style="display:none">&larr; Back to new scan</button>
-      <button type="button" class="generate-btn" id="backToAdminDashboardBtn" style="display:none">&larr; Back to admin dashboard</button>
+      <button type="button" class="generate-btn" id="viewAdminDashboardBtn" style="display:none">Admin
+        dashboard</button>
+      <button type="button" class="generate-btn" id="backToFormBtn" style="display:none">&larr; Back to new
+        scan</button>
+      <button type="button" class="generate-btn" id="backToAdminDashboardBtn" style="display:none">&larr; Back to admin
+        dashboard</button>
       <button type="button" class="generate-btn" id="saveHistoryChangesBtn" style="display:none">Save changes</button>
       <span class="status" id="saveHistoryChangesStatus"></span>
+      <a class="generate-btn" id="howItWorksBtn" href="/guide.html" target="_blank" rel="noopener" style="margin-left:auto; text-decoration:none; display:inline-flex; align-items:center;
+                background:var(--accent); color:#fff; border:none; padding:10px 20px;
+                border-radius:6px; font-size:14px; font-weight:600;">How it works</a>
     </div>
 
     <div id="scanFormWrap">
-    <div class="rules-summary">
-      <div class="rules-summary-row">
-        <div>
-          <div class="rules-summary-cat">Inputs you provide</div>
-          <ul>
-            <li>Weekly rest day</li>
-            <li>Work week (5.5/6-day) and half-day, for 5.5-day weeks</li>
-            <li>Standard break</li>
-            <li>Default shift timing — used to fill in days with no timesheet entry</li>
-            <li>Claim period start/end dates (optional, but the only thing rows can be auto-filled from if no
-              timesheet is attached) — keeps auto-filled days inside the actual employment period</li>
-            <li>Bank statement line item(s) to look for (optional)</li>
-            <li>Payslip upload (optional) — an alternate source for a month's overtime hours when no daily
-              timesheet is available; per-month choice of timesheet-derived vs payslip-stated once both exist</li>
-          </ul>
-        </div>
-        <div>
-          <div class="rules-summary-cat">Computed automatically (needs IPA basic salary)</div>
-          <ul>
-            <li>Hourly / daily basic rate, daily gross rate</li>
-            <li>Basic Salary / Overtime / Rest / Public Holiday Breakdown — each pay category shown separately, per
-              month</li>
-            <li>Owed vs Paid delta (also needs a bank statement scan)</li>
-          </ul>
-        </div>
-      </div>
-      <div class="rules-summary-cat rules-summary-guardrails-cat">Guardrails — flagged live on each row</div>
-      <table class="rules-summary-table">
-        <thead>
-          <tr>
-            <th>Check</th>
-            <th>Passes (no flag)</th>
-            <th>Flags</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr>
-            <td>Break</td>
-            <td>Break matches what you set above</td>
-            <td>Break is different from what you set — check the row</td>
-          </tr>
-          <tr>
-            <td>12-hour/day cap</td>
-            <td>Worked 12 hours or less that day</td>
-            <td>Worked more than 12 hours in one day</td>
-          </tr>
-          <tr>
-            <td>Monthly overtime cap</td>
-            <td>Under 72 overtime hours that month</td>
-            <td>Over 72 overtime hours in one month</td>
-          </tr>
-          <tr>
-            <td>Rest day worked</td>
-            <td>Worker didn't work on their rest day</td>
-            <td>Worker worked on their rest day — extra pay applies</td>
-          </tr>
-          <tr>
-            <td>Public holiday worked</td>
-            <td>Worker didn't work on a public holiday</td>
-            <td>Worker worked on a public holiday — extra pay applies</td>
-          </tr>
-          <tr>
-            <td>Missing work day</td>
-            <td>Every expected work day is accounted for</td>
-            <td>A work day had no entry — app filled it in for you</td>
-          </tr>
-          <tr>
-            <td>Bank statement transaction</td>
-            <td>All 3 independent scan passes caught this transaction</td>
-            <td>Fewer than 3 passes caught it — flagged, worth double-checking against the source page</td>
-          </tr>
-          <tr>
-            <td>MC / medical leave</td>
-            <td>A medical certificate covering this date was uploaded and reviewed</td>
-            <td>No medical certificate on file covers this date — unpaid unless one is provided</td>
-          </tr>
-        </tbody>
-      </table>
-      <div class="rules-summary-note">Flags only — nothing here is auto-corrected or written to the spreadsheet; every
-        row still needs your review.</div>
-    </div>
-
-    <form id="form">
-      <h2>Worker's schedule</h2>
-      <div class="field">
-        <h4>Worker's weekly rest day</h4>
-        <div class="radio-group" id="restDayGroup">
-          <label><input type="radio" name="restDayOfWeek" value="0" checked> Sun</label>
-          <label><input type="radio" name="restDayOfWeek" value="1"> Mon</label>
-          <label><input type="radio" name="restDayOfWeek" value="2"> Tue</label>
-          <label><input type="radio" name="restDayOfWeek" value="3"> Wed</label>
-          <label><input type="radio" name="restDayOfWeek" value="4"> Thu</label>
-          <label><input type="radio" name="restDayOfWeek" value="5"> Fri</label>
-          <label><input type="radio" name="restDayOfWeek" value="6"> Sat</label>
-        </div>
+      <div class="rules-summary">
+        <div class="rules-summary-cat">Guardrails — flagged live on each row</div>
+        <table class="rules-summary-table">
+          <thead>
+            <tr>
+              <th>Check</th>
+              <th>Passes (no flag)</th>
+              <th>Flags</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Break</td>
+              <td>Break matches what you set above</td>
+              <td>Break is different from what you set — check the row</td>
+            </tr>
+            <tr>
+              <td>12-hour/day cap</td>
+              <td>Worked 12 hours or less that day</td>
+              <td>Worked more than 12 hours in one day</td>
+            </tr>
+            <tr>
+              <td>Monthly overtime cap</td>
+              <td>Under 72 overtime hours that month</td>
+              <td>Over 72 overtime hours in one month</td>
+            </tr>
+            <tr>
+              <td>Rest day worked</td>
+              <td>Worker didn't work on their rest day</td>
+              <td>Worker worked on their rest day — extra pay applies</td>
+            </tr>
+            <tr>
+              <td>Public holiday worked</td>
+              <td>Worker didn't work on a public holiday</td>
+              <td>Worker worked on a public holiday — extra pay applies</td>
+            </tr>
+            <tr>
+              <td>Missing work day</td>
+              <td>Every expected work day is accounted for</td>
+              <td>A work day had no entry — app filled it in for you</td>
+            </tr>
+            <tr>
+              <td>Bank statement transaction</td>
+              <td>All 3 independent scan passes caught this transaction</td>
+              <td>Fewer than 3 passes caught it — flagged, worth double-checking against the source page</td>
+            </tr>
+            <tr>
+              <td>MC / medical leave</td>
+              <td>A medical certificate covering this date was uploaded and reviewed</td>
+              <td>No medical certificate on file covers this date — unpaid unless one is provided</td>
+            </tr>
+          </tbody>
+        </table>
+        <div class="rules-summary-note">Flags only — nothing here is auto-corrected or written to the spreadsheet; every
+          row still needs your review.</div>
       </div>
 
-      <div class="field">
-        <h4>Work week</h4>
-        <div class="radio-group" id="workWeekGroup">
-          <label><input type="radio" name="workWeekType" value="5.5" checked> 5.5-day week</label>
-          <label><input type="radio" name="workWeekType" value="6"> 6-day week</label>
-        </div>
-      </div>
-
-      <div class="field" id="halfDayField" style="display:none">
-        <h4>Half-day (5.5-day week only)</h4>
-        <div class="radio-group" id="halfDayGroup">
-          <label><input type="radio" name="halfDayOfWeek" value="0"> Sun</label>
-          <label><input type="radio" name="halfDayOfWeek" value="1"> Mon</label>
-          <label><input type="radio" name="halfDayOfWeek" value="2"> Tue</label>
-          <label><input type="radio" name="halfDayOfWeek" value="3"> Wed</label>
-          <label><input type="radio" name="halfDayOfWeek" value="4"> Thu</label>
-          <label><input type="radio" name="halfDayOfWeek" value="5"> Fri</label>
-          <label><input type="radio" name="halfDayOfWeek" value="6"> Sat</label>
-        </div>
-        <div class="file-list">Defaults to the day right before the declared rest day — change it if the worker's actual
-          half-day falls elsewhere.</div>
-      </div>
-
-      <div class="field">
-        <h4>Standard break</h4>
-        <div class="radio-group" id="breakGroup">
-          <label><input type="radio" name="breakStandard" value="1" checked> 1 hour</label>
-          <label><input type="radio" name="breakStandard" value="0.75"> 45 minutes</label>
-          <label><input type="radio" name="breakStandard" value="0.5"> 30 minutes</label>
-          <label><input type="radio" name="breakStandard" value="0"> 0 minutes</label>
-          <label><input type="radio" name="breakStandard" value="other" id="breakOtherRadio"> Others: <input
-              type="number" step="0.25" min="0" id="breakOtherHours" placeholder="hrs"
-              style="width:60px;margin-left:6px" disabled></label>
-        </div>
-        <div class="file-list">Used to double-check each row's break against what was actually extracted — a mismatch is
-          flagged for review, not auto-corrected.</div>
-      </div>
-
-      <div class="field" style="display:none">
-        <h4>Default shift timing (used to fill in unaccounted days — see below)</h4>
-        <div class="shift-default-row">
-          <div class="field-group"><span class="field-label">In</span><input type="text" inputmode="numeric"
-              maxlength="4" placeholder="0800" value="0800" class="time-input" id="defaultShiftStart"></div>
-          <div class="field-group"><span class="field-label">Out</span><input type="text" inputmode="numeric"
-              maxlength="4" placeholder="1700" value="1700" class="time-input" id="defaultShiftEnd"></div>
-        </div>
-        <div class="file-list">A day with no timesheet entry at all, in a week that otherwise falls short of the
-          declared work week, gets filled in using this pattern — clearly marked so you know the app inserted it, not
-          the scan.</div>
-      </div>
-
-      <div class="field">
-        <h4>Claim period (optional)</h4>
-        <div class="shift-default-row">
-          <div class="field-group"><span class="field-label-body">Start</span><input type="date" id="contractStartDate">
-          </div>
-          <div class="field-group"><span class="field-label-body">End</span><input type="date" id="contractEndDate">
+      <form id="form">
+        <h2>Worker's schedule</h2>
+        <div class="field">
+          <h4>Worker's weekly rest day</h4>
+          <div class="radio-group" id="restDayGroup">
+            <label><input type="radio" name="restDayOfWeek" value="0" checked> Sun</label>
+            <label><input type="radio" name="restDayOfWeek" value="1"> Mon</label>
+            <label><input type="radio" name="restDayOfWeek" value="2"> Tue</label>
+            <label><input type="radio" name="restDayOfWeek" value="3"> Wed</label>
+            <label><input type="radio" name="restDayOfWeek" value="4"> Thu</label>
+            <label><input type="radio" name="restDayOfWeek" value="5"> Fri</label>
+            <label><input type="radio" name="restDayOfWeek" value="6"> Sat</label>
           </div>
         </div>
-        <div class="file-list">Stops the app from inventing work days before the worker started or after they left —
-          e.g. if they started on a Wednesday, Monday/Tuesday that same week won't be auto-filled even if the rest of
-          the month otherwise falls short.</div>
-        <div class="file-list stage-error" id="claimPeriodPayslipWarning" style="display:none">⚠ No timesheet files
-          attached and a payslip has OT figures on file — without a claim period start/end here, the app assumes a
-          full month worked for every month the payslip covers (no day-level detail to go on otherwise), and there
-          are no individual timesheet review rows to check things like rest-day-worked pay, public holiday pay, or
-          medical-certificate-backed MC days against. Set both dates above for day-level detail instead, if you have
-          it.</div>
-      </div>
 
-      <div class="field">
-        <h4>Claim salary-in-lieu of termination notice (optional)</h4>
-        <div class="radio-group">
-          <label><input type="checkbox" id="noticeClaimToggle"> Yes</label>
+        <div class="field" id="halfDayField" style="display:none">
+          <h4>Half-day (5.5-day week only)</h4>
+          <div class="file-list">Only shown once the IPA's declared working days/week (editable in the IPA review
+            card once scanned) comes out to 5.5 — a 6-day week has no shorter half-day, every day gets the same
+            44/6h threshold instead. On the half-day, overtime starts right after the 4th worked hour (no lunch
+            break built into its normal hours), not the usual 8-hour mark. Defaults to the day right before the
+            declared rest day — change it if the worker's actual half-day falls elsewhere.</div>
+          <div class="radio-group" id="halfDayGroup">
+            <label><input type="radio" name="halfDayOfWeek" value="0"> Sun</label>
+            <label><input type="radio" name="halfDayOfWeek" value="1"> Mon</label>
+            <label><input type="radio" name="halfDayOfWeek" value="2"> Tue</label>
+            <label><input type="radio" name="halfDayOfWeek" value="3"> Wed</label>
+            <label><input type="radio" name="halfDayOfWeek" value="4"> Thu</label>
+            <label><input type="radio" name="halfDayOfWeek" value="5"> Fri</label>
+            <label><input type="radio" name="halfDayOfWeek" value="6"> Sat</label>
+          </div>
         </div>
-        <div id="noticeClaimFields" style="display:none">
+
+        <div class="field">
+          <h4>Standard break</h4>
+          <div class="file-list">Used to double-check each row's break against what was actually extracted — a mismatch
+            is
+            flagged for review, not auto-corrected.</div>
+          <div class="radio-group" id="breakGroup">
+            <label><input type="radio" name="breakStandard" value="1" checked> 1 hour</label>
+            <label><input type="radio" name="breakStandard" value="0.75"> 45 minutes</label>
+            <label><input type="radio" name="breakStandard" value="0.5"> 30 minutes</label>
+            <label><input type="radio" name="breakStandard" value="0"> 0 minutes</label>
+            <label><input type="radio" name="breakStandard" value="other" id="breakOtherRadio"> Others: <input
+                type="number" step="0.25" min="0" id="breakOtherHours" placeholder="hrs"
+                style="width:60px;margin-left:6px" disabled></label>
+          </div>
+        </div>
+
+        <div class="field" style="display:none">
+          <h4>Default shift timing (used to fill in unaccounted days — see below)</h4>
           <div class="shift-default-row">
-            <div class="field-group"><span class="field-label-body">Employment start date</span><input type="date"
-                id="noticeEmploymentStart"></div>
-            <div class="field-group"><span class="field-label-body">Termination / last working day</span><input
-                type="date" id="noticeTerminationDate"></div>
+            <div class="field-group"><span class="field-label">In</span><input type="text" inputmode="numeric"
+                maxlength="4" placeholder="0800" value="0800" class="time-input" id="defaultShiftStart"></div>
+            <div class="field-group"><span class="field-label">Out</span><input type="text" inputmode="numeric"
+                maxlength="4" placeholder="1700" value="1700" class="time-input" id="defaultShiftEnd"></div>
           </div>
+          <div class="file-list">A day with no timesheet entry at all, in a week that otherwise falls short of the
+            declared work week, gets filled in using this pattern — clearly marked so you know the app inserted it, not
+            the scan.</div>
+        </div>
+
+        <div class="field">
+          <h4>Claim period (optional)</h4>
+          <div class="file-list">Set this when the claim covers only part of the worker's time with the employer —
+            e.g. the worker started partway through a month, or you only have timesheets for a limited stretch. Stops
+            the app from inventing work days before the worker started or after they left — e.g. if they started on a
+            Wednesday, Monday/Tuesday that same week won't be auto-filled even if the rest of the month otherwise falls
+            short.</div>
           <div class="shift-default-row">
-            <div class="field-group"><span class="field-label-body">Notice actually given (days)</span><input
-                type="number" min="0" step="1" id="noticeDaysGiven" value="0" style="width:80px"></div>
-          </div>
-          <div class="shift-default-row">
-            <div class="field-group"><span class="field-label-body">Contract notice period override</span>
-              <input type="number" min="0" step="0.5" id="noticeContractValue" placeholder="e.g. 2" style="width:80px">
-              <select id="noticeContractUnit">
-                <option value="days">days</option>
-                <option value="weeks">weeks</option>
-                <option value="months">months</option>
-              </select>
+            <div class="field-group"><span class="field-label-body">Start</span><input type="date"
+                id="contractStartDate">
+            </div>
+            <div class="field-group"><span class="field-label-body">End</span><input type="date" id="contractEndDate">
             </div>
           </div>
-          <div class="file-list">Leave the override blank to use the statutory tier (Employment Act ss.10-11) based
-            on length of service. Fill it in only if the employment contract itself specifies a different notice
-            period.
-            <ul style="margin:6px 0 0 18px">
-              <li>Less than 26 weeks' service — 1 day's notice</li>
-              <li>26 weeks to less than 2 years' service — 1 week's notice</li>
-              <li>2 years to less than 5 years' service — 2 weeks' notice</li>
-              <li>5 years or more service — 4 weeks' notice</li>
-            </ul>
-          </div>
-          <div id="noticeClaimResult" style="margin-top:8px"></div>
+          <div class="file-list stage-error" id="claimPeriodPayslipWarning" style="display:none">⚠ No timesheet files
+            attached and a payslip has OT figures on file — without a claim period start/end here, the app assumes a
+            full month worked for every month the payslip covers (no day-level detail to go on otherwise), and there
+            are no individual timesheet review rows to check things like rest-day-worked pay, public holiday pay, or
+            medical-certificate-backed MC days against. Set both dates above for day-level detail instead, if you have
+            it.</div>
         </div>
-      </div>
 
-      <div class="field">
-        <h4>Claim salary-in-lieu of paid annual leave (optional)</h4>
-        <div class="radio-group">
-          <label><input type="checkbox" id="leaveClaimToggle"> Yes</label>
-        </div>
-        <div id="leaveClaimFields" style="display:none">
-          <div class="shift-default-row">
-            <div class="field-group"><span class="field-label-body">Employment start date</span><input type="date"
-                id="leaveEmploymentStart"></div>
-            <div class="field-group"><span class="field-label-body">Termination / last working day</span><input
-                type="date" id="leaveTerminationDate"></div>
+        <div class="field">
+          <h4>Claim salary-in-lieu of termination notice (optional)</h4>
+          <div class="file-list">Tick this if the employer dismissed the worker without giving full notice (or
+            payment instead of notice). Not for workers who resigned, or who worked their full notice period.</div>
+          <div class="radio-group">
+            <label><input type="checkbox" id="noticeClaimToggle"> Yes</label>
           </div>
-          <div class="shift-default-row">
-            <div class="field-group"><span class="field-label-body">Leave days already taken this leave-year</span>
-              <input type="number" min="0" step="0.5" id="leaveDaysTaken" value="0" style="width:80px">
+          <div id="noticeClaimFields" style="display:none">
+            <div class="shift-default-row">
+              <div class="field-group"><span class="field-label-body">Employment start date</span><input type="date"
+                  id="noticeEmploymentStart"></div>
+              <div class="field-group"><span class="field-label-body">Termination / last working day</span><input
+                  type="date" id="noticeTerminationDate"></div>
             </div>
-          </div>
-          <div class="file-list">Gross rate of pay = basic salary + monthly allowances (Employment Act s.88A).
-            <ul style="margin:6px 0 0 18px">
-              <li>Only payable if the worker served more than 3 months</li>
-              <li>7 days' leave per 12 continuous months served, +1 additional day per completed year, capped at 14
-                days</li>
-              <li>Applied to the worker's final, partial leave-year, prorated by months served in it</li>
-            </ul>
-          </div>
-          <div id="leaveClaimResult" style="margin-top:8px"></div>
-        </div>
-      </div>
-
-      <div class="field">
-        <h4>Claim sick leave pay (optional)</h4>
-        <div class="radio-group">
-          <label><input type="checkbox" id="sickClaimToggle"> Yes</label>
-        </div>
-        <div id="sickClaimFields" style="display:none">
-          <div class="shift-default-row">
-            <div class="field-group"><span class="field-label-body">Employment start date</span><input type="date"
-                id="sickEmploymentStart"></div>
-            <div class="field-group"><span class="field-label-body">As-of date (usually claim/termination date)</span>
-              <input type="date" id="sickAsOfDate">
+            <div class="shift-default-row">
+              <div class="field-group"><span class="field-label-body">Notice actually given (days)</span><input
+                  type="number" min="0" step="1" id="noticeDaysGiven" value="0" style="width:80px"></div>
             </div>
+            <div class="shift-default-row">
+              <div class="field-group"><span class="field-label-body">Contract notice period override</span>
+                <input type="number" min="0" step="0.5" id="noticeContractValue" placeholder="e.g. 2"
+                  style="width:80px">
+                <select id="noticeContractUnit">
+                  <option value="days">days</option>
+                  <option value="weeks">weeks</option>
+                  <option value="months">months</option>
+                </select>
+              </div>
+            </div>
+            <div class="file-list">Leave the override blank to use the statutory tier (Employment Act ss.10-11) based
+              on length of service. Fill it in only if the employment contract itself specifies a different notice
+              period.
+              <ul style="margin:6px 0 0 18px">
+                <li>Less than 26 weeks' service — 1 day's notice</li>
+                <li>26 weeks to less than 2 years' service — 1 week's notice</li>
+                <li>2 years to less than 5 years' service — 2 weeks' notice</li>
+                <li>5 years or more service — 4 weeks' notice</li>
+              </ul>
+            </div>
+            <div id="noticeClaimResult" style="margin-top:8px"></div>
           </div>
-          <div class="shift-default-row">
-            <div class="field-group"><span class="field-label-body">Unpaid non-hospitalization sick days</span>
-              <input type="number" min="0" step="0.5" id="sickDaysNonHosp" value="0" style="width:80px"></div>
-          </div>
-          <div class="shift-default-row">
-            <div class="field-group"><span class="field-label-body">Unpaid hospitalization sick days</span>
-              <input type="number" min="0" step="0.5" id="sickDaysHosp" value="0" style="width:80px"></div>
-          </div>
-          <div class="file-list">Gross rate of pay = basic salary + monthly allowances (Employment Act s.89).
-            <ul style="margin:6px 0 0 18px">
-              <li>Not payable before 3 months' service</li>
-              <li>3 months' service — 5 non-hospitalization / 15 hospitalization days</li>
-              <li>4 months' service — 8 non-hospitalization / 30 hospitalization days</li>
-              <li>5 months' service — 11 non-hospitalization / 45 hospitalization days</li>
-              <li>6+ months' service — 14 non-hospitalization / 60 hospitalization days (the hospitalization cap
-                already includes the non-hospitalization days within it)</li>
-              <li>"Unpaid" days are a caseworker judgment call — cross-check the worker's medical certificates
-                against the Basic Salary Breakdown table for that month to see whether pay was actually docked</li>
-            </ul>
-          </div>
-          <div id="sickClaimResult" style="margin-top:8px"></div>
         </div>
-      </div>
 
-      <hr />
+        <div class="field">
+          <h4>Claim salary-in-lieu of paid annual leave (optional)</h4>
+          <div class="file-list">Tick this if the worker's job ended with unused paid annual leave that the employer
+            never paid out. Only applies if the worker served more than 3 months.</div>
+          <div class="radio-group">
+            <label><input type="checkbox" id="leaveClaimToggle"> Yes</label>
+          </div>
+          <div id="leaveClaimFields" style="display:none">
+            <div class="shift-default-row">
+              <div class="field-group"><span class="field-label-body">Employment start date</span><input type="date"
+                  id="leaveEmploymentStart"></div>
+              <div class="field-group"><span class="field-label-body">Termination / last working day</span><input
+                  type="date" id="leaveTerminationDate"></div>
+            </div>
+            <div class="shift-default-row">
+              <div class="field-group"><span class="field-label-body">Leave days already taken this leave-year</span>
+                <input type="number" min="0" step="0.5" id="leaveDaysTaken" value="0" style="width:80px">
+              </div>
+            </div>
+            <div class="file-list">Gross rate of pay = basic salary + monthly allowances (Employment Act s.88A).
+              <ul style="margin:6px 0 0 18px">
+                <li>Only payable if the worker served more than 3 months</li>
+                <li>7 days' leave per 12 continuous months served, +1 additional day per completed year, capped at 14
+                  days</li>
+                <li>Applied to the worker's final, partial leave-year, prorated by months served in it</li>
+              </ul>
+            </div>
+            <div id="leaveClaimResult" style="margin-top:8px"></div>
+          </div>
+        </div>
 
-      <h2>Documents</h2>
-      <div class="upload-warning">⚠ Make sure every page — IPA letter and timesheets alike — is upright before
-        uploading. A sideways page (common in scanned/photographed PDFs) can cause the scan to silently misread dates
-        and times.</div>
-      <div class="field">
-        <h4 for="ipa">IPA letter (PDF or photo)</h4>
-        <input type="file" id="ipa" name="ipa" accept="application/pdf,image/*" required>
-        <div class="file-list">Employer/salary/OT-rate terms are read off it alongside the timesheets, in the same
-          submit.</div>
-        <div class="stage-grid" id="ipaStage"></div>
-      </div>
+        <div class="field">
+          <h4>Claim sick leave pay (optional)</h4>
+          <div class="file-list">Tick this if the worker took paid sick leave (MC days) that the employer never paid
+            for. Needs a medical certificate backing each day — a bill alone doesn't count.</div>
+          <div class="radio-group">
+            <label><input type="checkbox" id="sickClaimToggle"> Yes</label>
+          </div>
+          <div id="sickClaimFields" style="display:none">
+            <div class="shift-default-row">
+              <div class="field-group"><span class="field-label-body">Employment start date</span><input type="date"
+                  id="sickEmploymentStart"></div>
+              <div class="field-group"><span class="field-label-body">As-of date (usually claim/termination date)</span>
+                <input type="date" id="sickAsOfDate">
+              </div>
+            </div>
+            <div class="shift-default-row">
+              <div class="field-group"><span class="field-label-body">Unpaid non-hospitalization sick days</span>
+                <input type="number" min="0" step="0.5" id="sickDaysNonHosp" value="0" style="width:80px">
+              </div>
+            </div>
+            <div class="shift-default-row">
+              <div class="field-group"><span class="field-label-body">Unpaid hospitalization sick days</span>
+                <input type="number" min="0" step="0.5" id="sickDaysHosp" value="0" style="width:80px">
+              </div>
+            </div>
+            <div class="file-list">Gross rate of pay = basic salary + monthly allowances (Employment Act s.89).
+              <ul style="margin:6px 0 0 18px">
+                <li>Not payable before 3 months' service</li>
+                <li>3 months' service — 5 non-hospitalization / 15 hospitalization days</li>
+                <li>4 months' service — 8 non-hospitalization / 30 hospitalization days</li>
+                <li>5 months' service — 11 non-hospitalization / 45 hospitalization days</li>
+                <li>6+ months' service — 14 non-hospitalization / 60 hospitalization days (the hospitalization cap
+                  already includes the non-hospitalization days within it)</li>
+                <li>"Unpaid" days are a caseworker judgment call — cross-check the worker's medical certificates
+                  against the Basic Salary Breakdown table for that month to see whether pay was actually docked</li>
+              </ul>
+            </div>
+            <div id="sickClaimResult" style="margin-top:8px"></div>
+          </div>
+        </div>
 
-      <div class="field">
-        <h4 for="pdfs">Timesheet files (optional if a payslip covers overtime — PDF or photo)</h4>
-        <input type="file" id="pdfs" name="pdfs" accept="application/pdf,image/*" multiple>
-        <div class="file-list" id="fileList"></div>
-        <div class="stage-grid" id="pdfsStage"></div>
-      </div>
+        <div class="field">
+          <h4>Non-fixed allowance (optional)</h4>
+          <div class="file-list">For a contract-based allowance that isn't on the IPA — e.g. transport pay only on
+            certain days, a late-work top-up, a Sunday meal allowance. Write every rule as plain English, any way
+            you like, in one block — e.g. "Add $5 if clocked out past 5pm. On Sundays, add another $10." Each rule
+            adds its own amount on days it applies (rules stack). This gets read and turned into the actual day-by-day
+            calculation once you click "Extract details" below — not live as you type — so finish writing before
+            submitting.</div>
+          <div class="radio-group">
+            <label><input type="checkbox" id="nonFixedAllowanceToggle"> Yes</label>
+          </div>
+          <div id="nonFixedAllowanceFields" style="display:none">
+            <textarea id="nonFixedAllowanceText" rows="3" style="width:100%;margin-top:10px"
+              placeholder="e.g. Add $5 if the worker clocked out past 5pm. On Sundays, add another $10. Always add a flat $2 transport allowance."></textarea>
+            <div id="nonFixedAllowanceParsedSummary" class="file-list" style="display:none"></div>
+          </div>
+        </div>
 
-      <div class="field">
-        <h4 for="bankStatementInput">Bank statement (optional — PDF or photo)</h4>
-        <input type="file" id="bankStatementInput" accept=".pdf,image/*" multiple>
-        <div class="file-list" id="bankFileList"></div>
-        <div class="stage-grid" id="bankStatementStage"></div>
-        <div class="file-list">A worker sometimes says they were paid "some" but not all of what's owed — this is a
-          separate check against their own bank statement, not tied to the claim scan above and not written to the
-          spreadsheet. Every incoming (credit) transaction on the statement is extracted — nothing is filtered by
-          keyword — so delete whatever's irrelevant in the review below before comparing against the claim total.</div>
-      </div>
+        <hr />
 
-      <div class="field">
-        <h4 for="medicalCertificatesInput">Medical certificates (optional — PDF or photo)</h4>
-        <input type="file" id="medicalCertificatesInput" accept=".pdf,image/*" multiple>
-        <div class="file-list" id="medicalCertificatesFileList"></div>
-        <div class="stage-grid" id="medicalCertificatesStage"></div>
-        <div class="file-list">A timesheet day marked "MC" is only treated as backed by evidence if a matching
-          medical certificate (MC) is on file here — a distinct document from a medical bill/invoice below, since an
-          MC often has no billed amount printed on it at all. Every certificate is scanned for its granted leave
-          period; a timesheet MC day with no matching leave period on file gets flagged in the review below.</div>
-      </div>
+        <h2>Documents</h2>
+        <div class="upload-warning">⚠ Make sure every page — IPA letter and timesheets alike — is upright before
+          uploading. A sideways page (common in scanned/photographed PDFs) can cause the scan to silently misread dates
+          and times.</div>
 
-      <div class="field">
-        <h4 for="medicalBillsInput">Medical bills (optional — PDF or photo)</h4>
-        <input type="file" id="medicalBillsInput" accept=".pdf,image/*" multiple>
-        <div class="file-list" id="medicalBillsFileList"></div>
-        <div class="stage-grid" id="medicalBillsStage"></div>
-        <div class="file-list">An employer of a Work Permit holder is generally required to bear the worker's
-          medical costs — this checks whether that actually happened. Every medical bill/invoice is scanned for its
-          billed date and amount. Review the extracted amounts below, mark whether each one was reimbursed by the
-          employer, and the app totals the unreimbursed amount for you.</div>
-      </div>
+        <div class="field">
+          <h4>Reading notes for this scan (optional)</h4>
+          <div class="file-list">Tell the scan about anything on these specific pages that could otherwise be misread
+            — e.g. "8 - 9pm on every date actually means 8am to 9pm", "the Qty column is clock-out time, not a
+            quantity", or "ignore the printed total column, it's wrong". Applies to every page in this submission.</div>
+          <textarea id="scanHint" rows="2" style="width:100%" placeholder="e.g. 8 - 9pm on every date means 8am to 9pm, not 8pm to 9pm"></textarea>
+        </div>
 
-      <div class="field">
-        <h4 for="payslipsInput">Payslip (optional — PDF or photo)</h4>
-        <input type="file" id="payslipsInput" accept=".pdf,image/*" multiple>
-        <div class="file-list" id="payslipsFileList"></div>
-        <div class="stage-grid" id="payslipsStage"></div>
-        <div class="file-list">Use this when overtime hours aren't available day-by-day from a timesheet — a payslip
-          states OT hours already worked out by the employer, at whatever breakdown it happens to show (per day, per
-          week, or per month). Each month's Overtime Breakdown below lets you pick whether to use the timesheet-derived
-          figure or this payslip's stated figure once both are available.</div>
-      </div>
+        <div class="field">
+          <h4 for="ipa">IPA letter (PDF or photo)</h4>
+          <div class="file-list">Employer/salary/OT-rate terms are read off it alongside the timesheets, in the same
+            submit.</div>
+          <input type="file" id="ipa" name="ipa" accept="application/pdf,image/*" required>
+          <div class="stage-grid" id="ipaStage"></div>
+        </div>
 
-      <hr />
+        <div class="field">
+          <h4 for="pdfs">Timesheet files (optional if a payslip covers overtime — PDF or photo)</h4>
+          <div class="file-list">Upload the worker's daily timesheets here — this is the main source for day-by-day
+            hours, rest days worked, and public holidays worked. Skip this only if a payslip already states the
+            month's overtime hours and you don't need day-level detail.</div>
+          <input type="file" id="pdfs" name="pdfs" accept="application/pdf,image/*" multiple>
+          <div class="file-list" id="fileList"></div>
+          <div class="stage-grid" id="pdfsStage"></div>
+        </div>
 
-      <button type="submit" id="submitBtn">Extract details</button>
-      <button type="button" id="stopScanBtn" style="display:none;">Stop scan</button>
+        <div class="field">
+          <h4 for="bankStatementInput">Bank statement (optional — PDF or photo)</h4>
+          <div class="file-list">Checks what was actually paid against the claim total — a separate check, not
+            written to the spreadsheet. All incoming transactions get extracted; delete irrelevant ones before
+            comparing.</div>
+          <input type="file" id="bankStatementInput" accept=".pdf,image/*" multiple>
+          <div class="file-list" id="bankFileList"></div>
+          <div class="stage-grid" id="bankStatementStage"></div>
+        </div>
 
-      <div class="status" id="status"></div>
-      <div id="agentEventFeed" style="display:none;"></div>
-      <div class="status" id="bankStatus"></div>
-      <div class="status" id="medicalBillsStatus"></div>
-      <div class="status" id="medicalCertificatesStatus"></div>
-      <div class="status" id="payslipsStatus"></div>
-      <ul class="month-summary" id="otCapWarnings" style="display:none"></ul>
-    </form>
+        <div class="field">
+          <h4 for="medicalCertificatesInput">Medical certificates (optional — PDF or photo)</h4>
+          <div class="file-list">Backs up timesheet "MC" days — a day without a matching certificate here gets
+            flagged. Separate from medical bills below (MCs rarely show a billed amount).</div>
+          <input type="file" id="medicalCertificatesInput" accept=".pdf,image/*" multiple>
+          <div class="file-list" id="medicalCertificatesFileList"></div>
+          <div class="stage-grid" id="medicalCertificatesStage"></div>
+        </div>
+
+        <div class="field">
+          <h4 for="medicalBillsInput">Medical bills (optional — PDF or photo)</h4>
+          <div class="file-list">Employers must bear a Work Permit holder's medical costs — this checks if that
+            happened. Mark each bill reimbursed or not; the app totals what's still owed.</div>
+          <input type="file" id="medicalBillsInput" accept=".pdf,image/*" multiple>
+          <div class="file-list" id="medicalBillsFileList"></div>
+          <div class="stage-grid" id="medicalBillsStage"></div>
+        </div>
+
+        <div class="field">
+          <h4 for="payslipsInput">Payslip (optional — PDF or photo)</h4>
+          <div class="file-list">Use when no day-by-day overtime from a timesheet — a payslip states the employer's
+            own OT figure instead. Pick timesheet vs payslip per month once both exist.</div>
+          <input type="file" id="payslipsInput" accept=".pdf,image/*" multiple>
+          <div class="file-list" id="payslipsFileList"></div>
+          <div class="stage-grid" id="payslipsStage"></div>
+        </div>
+
+        <hr />
+
+        <button type="submit" id="submitBtn">Extract details</button>
+        <button type="button" id="stopScanBtn" style="display:none;">Stop scan</button>
+
+        <div class="status" id="status"></div>
+        <div id="agentEventFeed" style="display:none;"></div>
+        <div class="status" id="bankStatus"></div>
+        <div class="status" id="medicalBillsStatus"></div>
+        <div class="status" id="medicalCertificatesStatus"></div>
+        <div class="status" id="payslipsStatus"></div>
+        <ul class="month-summary" id="otCapWarnings" style="display:none"></ul>
+      </form>
     </div>
   </div>
 
@@ -1622,21 +1686,45 @@
       read-only review a caseworker sees, just without the Save button.</div>
 
     <div class="admin-cost-cards">
-      <div class="admin-cost-card"><div class="admin-cost-card-label">Today</div><div class="admin-cost-card-value" id="adminCostToday">—</div></div>
-      <div class="admin-cost-card"><div class="admin-cost-card-label">Last 7 days</div><div class="admin-cost-card-value" id="adminCostWeek">—</div></div>
-      <div class="admin-cost-card"><div class="admin-cost-card-label">This month</div><div class="admin-cost-card-value" id="adminCostMonth">—</div></div>
-      <div class="admin-cost-card"><div class="admin-cost-card-label">All-time</div><div class="admin-cost-card-value" id="adminCostAllTime">—</div></div>
+      <div class="admin-cost-card">
+        <div class="admin-cost-card-label">Today</div>
+        <div class="admin-cost-card-value" id="adminCostToday">—</div>
+      </div>
+      <div class="admin-cost-card">
+        <div class="admin-cost-card-label">Last 7 days</div>
+        <div class="admin-cost-card-value" id="adminCostWeek">—</div>
+      </div>
+      <div class="admin-cost-card">
+        <div class="admin-cost-card-label">This month</div>
+        <div class="admin-cost-card-value" id="adminCostMonth">—</div>
+      </div>
+      <div class="admin-cost-card">
+        <div class="admin-cost-card-label">All-time</div>
+        <div class="admin-cost-card-value" id="adminCostAllTime">—</div>
+      </div>
     </div>
 
     <h3>Cost by day (last 30 days)</h3>
     <table class="history-table" id="adminCostByDayTable">
-      <thead><tr><th>Date</th><th>Scans</th><th>Cost</th></tr></thead>
+      <thead>
+        <tr>
+          <th>Date</th>
+          <th>Scans</th>
+          <th>Cost</th>
+        </tr>
+      </thead>
       <tbody id="adminCostByDayBody"></tbody>
     </table>
 
     <h3>Cost by month (last 12 months)</h3>
     <table class="history-table" id="adminCostByMonthTable">
-      <thead><tr><th>Month</th><th>Scans</th><th>Cost</th></tr></thead>
+      <thead>
+        <tr>
+          <th>Month</th>
+          <th>Scans</th>
+          <th>Cost</th>
+        </tr>
+      </thead>
       <tbody id="adminCostByMonthBody"></tbody>
     </table>
 
@@ -1698,6 +1786,7 @@
           <div class="ipa-review" id="ipaReview" style="display:none"></div>
           <div class="ipa-review" id="monthlyPayTotals" style="display:none; margin-top: 20px;"></div>
           <div class="ipa-review" id="allowancesBreakdown" style="display:none; margin-top: 20px;"></div>
+          <div class="ipa-review" id="nonFixedAllowanceBreakdown" style="display:none; margin-top: 20px;"></div>
           <div class="ipa-review" id="overtimeBreakdown" style="display:none; margin-top: 20px;"></div>
           <div class="ipa-review" id="restBreakdown" style="display:none; margin-top: 20px;"></div>
           <div class="ipa-review" id="publicHolidayBreakdown" style="display:none; margin-top: 20px;"></div>
@@ -1799,7 +1888,7 @@
       const isUnderpaid = delta > 0.005; // guards against float noise landing a cent either side of zero
       owedVsPaidBoxEl.className = 'owed-vs-paid ' + (isUnderpaid ? 'underpaid' : 'settled');
       owedVsPaidBoxEl.style.display = 'block';
-      // Only non-zero categories are shown — most claims only ever populate 2-3 of the 7 possible
+      // Only non-zero categories are shown — most claims only ever populate 2-3 of the 8 possible
       // categories (e.g. basic + OT), so listing every zero category every time would bury the
       // formula in noise rather than clarify it.
       const owedParts = (owedBreakdownCache || []).filter(c => Math.abs(c.amount) > 0.005);
@@ -2230,20 +2319,31 @@
       document.querySelectorAll('.review-row').forEach(checkBreakMismatch);
     });
 
-    // Work week affects the daily-rate formula (Third Schedule); rest day affects which rows count
-    // as "worked on the declared rest day" — both need every row's guardrails re-evaluated, same
-    // reasoning as the break group above.
-    document.getElementById('workWeekGroup').addEventListener('change', recomputeAllGuardrails);
+    // Rest day affects which rows count as "worked on the declared rest day" — needs every row's
+    // guardrails re-evaluated, same reasoning as the break group above. Work week used to have its
+    // own listener here too, back when it was a manual pre-submit radio group — now it's read
+    // straight from the IPA's own declared workingDaysPerWeek field (see getWorkDaysPerWeek), so an
+    // edit there already goes through the generic `.ipa-input` listener's recomputeAllGuardrails()
+    // call instead.
     document.getElementById('restDayGroup').addEventListener('change', recomputeAllGuardrails);
 
     const halfDayField = document.getElementById('halfDayField');
     let halfDayTouched = false; // once the reviewer picks one explicitly, stop overwriting it
     document.querySelectorAll('input[name="halfDayOfWeek"]').forEach(input => {
-      input.addEventListener('change', () => { halfDayTouched = true; });
+      // The half-day choice now drives OT's 4h threshold (normalHoursForDate) — every row on that
+      // weekday needs its guardrails/OT re-evaluated the moment it changes, same as restDayGroup
+      // above, not just on whatever edit happens to touch a row next.
+      input.addEventListener('change', () => { halfDayTouched = true; recomputeAllGuardrails(); });
     });
+    // getWorkDaysPerWeek() reads the IPA's own declared field now (see its own comment) — before
+    // the IPA has been scanned (or edited away from 5.5) this still defaults to 5.5, so the
+    // half-day field is visible pre-submit same as before; it hides itself automatically once a
+    // scanned/edited value of 6 says otherwise (see the `.ipa-input` listeners below, which call
+    // this on every edit) — a 6-day week spreads its 44 hours evenly across every day instead
+    // (see normalHoursForDate), with no shorter half-day to pick at all.
     /** Shows/hides the half-day field for a 5.5-day work week and defaults it to the day before the declared rest day. */
     function updateHalfDayDefault() {
-      const is55 = document.querySelector('input[name="workWeekType"]:checked').value === '5.5';
+      const is55 = getWorkDaysPerWeek() === 5.5;
       halfDayField.style.display = is55 ? 'block' : 'none';
       if (is55 && !halfDayTouched) {
         const dayBeforeRest = (getDeclaredRestDayOfWeek() + 6) % 7;
@@ -2251,7 +2351,6 @@
         if (radio && !radio.checked) { radio.checked = true; radio.dispatchEvent(new Event('change')); halfDayTouched = false; }
       }
     }
-    document.getElementById('workWeekGroup').addEventListener('change', updateHalfDayDefault);
     document.getElementById('restDayGroup').addEventListener('change', updateHalfDayDefault);
     updateHalfDayDefault();
 
@@ -2342,6 +2441,83 @@
       el.addEventListener('input', refreshSickClaim);
       el.addEventListener('change', refreshSickClaim);
     });
+
+    // Non-fixed allowance — unlike notice/leave/sick above (one-off entitlements, computed from a
+    // couple of dates), this is a RECURRING per-day amount: every tier whose condition expression
+    // evaluates true for a given row's fields gets its $ amount added into that day's pay, same
+    // recurring shape as OT/rest-day/PH pay (see recomputeMonthlyPayTotals' own
+    // rowNonFixedAllowance call). The caseworker writes every rule as one free-written paragraph
+    // (nonFixedAllowanceText) rather than per-tier rows — parsed into compiledNonFixedAllowanceTiers
+    // ONCE, at "Extract details" submit time (see parseNonFixedAllowanceRules below), not live as
+    // they type. Every parsed condition is still re-compiled through compileTierExpression before
+    // use — never eval()'d, so a bad extraction just gets dropped (and listed) rather than running
+    // arbitrary code.
+    const nonFixedAllowanceToggle = document.getElementById('nonFixedAllowanceToggle');
+    const nonFixedAllowanceFields = document.getElementById('nonFixedAllowanceFields');
+    const nonFixedAllowanceParsedSummaryEl = document.getElementById('nonFixedAllowanceParsedSummary');
+    let compiledNonFixedAllowanceTiers = []; // [{test, amount}] — populated by parseNonFixedAllowanceRules
+    nonFixedAllowanceToggle.addEventListener('change', () => {
+      const on = nonFixedAllowanceToggle.checked;
+      nonFixedAllowanceFields.style.display = on ? 'block' : 'none';
+      if (!on) {
+        compiledNonFixedAllowanceTiers = [];
+        nonFixedAllowanceParsedSummaryEl.style.display = 'none';
+        recomputeMonthlyPayTotals();
+      }
+    });
+    // Called from the main form submit handler below, before the scan actually kicks off — one
+    // LLM call extracts every {condition, amount} rule out of the whole paragraph at once (see
+    // lib/tierCondition.ts's parseTierConditionsBatch), each condition gets compiled here exactly
+    // like a hand-typed expression would, and a rule that fails to compile is dropped and listed
+    // in the summary rather than silently eaten or blocking the rest. Returns false (and leaves
+    // the toggle on, tiers empty) only on a genuine request failure, so the caller can decide
+    // whether to still let the scan proceed.
+    /** Parses the non-fixed-allowance textarea into compiledNonFixedAllowanceTiers, if the feature is toggled on. */
+    async function parseNonFixedAllowanceRules() {
+      if (!nonFixedAllowanceToggle.checked) { compiledNonFixedAllowanceTiers = []; return true; }
+      const text = document.getElementById('nonFixedAllowanceText').value.trim();
+      if (!text) { compiledNonFixedAllowanceTiers = []; nonFixedAllowanceParsedSummaryEl.style.display = 'none'; return true; }
+      try {
+        const res = await fetch('/api/parse-tier-conditions', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || `Server returned ${res.status}`);
+        const understood = [];
+        const dropped = [];
+        compiledNonFixedAllowanceTiers = [];
+        for (const { expression, amount, once, anchorMonth } of data.tiers) {
+          // A `once` tier carries anchorMonth instead of a per-row test — recomputeMonthlyPayTotals
+          // adds its amount straight to that month, a single time, rather than evaluating it
+          // against every row the way a recurring tier's `test` does (see its own comment there).
+          if (once) {
+            compiledNonFixedAllowanceTiers.push({ once: true, amount, anchorMonth });
+            understood.push(`one-time $${amount} in ${anchorMonth}`);
+            continue;
+          }
+          try {
+            const test = expression === '' ? () => true : compileTierExpression(expression);
+            compiledNonFixedAllowanceTiers.push({ once: false, test, amount });
+            understood.push(`"${expression || 'always'}" → $${amount}/day`);
+          } catch (e) {
+            dropped.push(`"${expression}" — ${e.message}`);
+          }
+        }
+        const lines = [];
+        if (understood.length) lines.push(`✓ Understood: ${understood.join('; ')}`);
+        if (dropped.length) lines.push(`⚠ Couldn't use: ${dropped.join('; ')}`);
+        if (understood.length === 0 && dropped.length === 0) lines.push('No rules were found in that text.');
+        nonFixedAllowanceParsedSummaryEl.innerHTML = lines.join('<br>');
+        nonFixedAllowanceParsedSummaryEl.style.display = 'block';
+        return true;
+      } catch (e) {
+        nonFixedAllowanceParsedSummaryEl.innerHTML = `⚠ Couldn't parse the allowance rules: ${e.message}`;
+        nonFixedAllowanceParsedSummaryEl.style.display = 'block';
+        return false;
+      }
+    }
 
     // Scans can run for minutes on multiple/large PDFs — a browser notification means the user
     // doesn't have to keep the tab in view to know when it's done. Permission must be requested from
@@ -2442,6 +2618,11 @@
       if (typeof Notification !== 'undefined' && Notification.permission === 'default') {
         Notification.requestPermission();
       }
+      // Parses the non-fixed-allowance paragraph (if toggled on) into compiledNonFixedAllowanceTiers
+      // before the scan even starts — a failure here (shown inline under the textarea by the
+      // function itself) doesn't block the scan; the caseworker can fix the wording and the
+      // breakdown will just be missing that allowance until they do.
+      await parseNonFixedAllowanceRules();
       pageReviewList.innerHTML = '';
       generateStatusEl.className = 'status';
       generateStatusEl.textContent = '';
@@ -2468,6 +2649,12 @@
       // actually observed to contradict it there) instead of a hardcoded assumption, so it agrees by
       // construction with checkBreakMismatch's later comparison for those rows.
       formData.append('standardBreakHours', getStandardBreakHours());
+      // Caseworker-authored reading notes (new "Reading notes for this scan" field above) — sent as
+      // the same interpretationHint server.ts/runProcessJob already accepts from the post-scan
+      // rescan flow, just supplied upfront instead of after the fact, so it reaches every page's
+      // prompt from this job's very first scan attempt.
+      const scanHintVal = document.getElementById('scanHint').value.trim();
+      if (scanHintVal) formData.append('interpretationHint', scanHintVal);
       // Year detection (runProcessJob) reads printed date headers off timesheet pages — with no
       // timesheet attached (a payslip-only claim) there's nothing for it to read at all, so it
       // always fails without this. Claim period start date is the first-choice source; the payslip
@@ -2785,10 +2972,14 @@
           // Salary/allowances feed the rate formulas every row's guardrails depend on, AND the
           // Summary card's read-only figures — editing either one here needs to ripple through both,
           // not just the row guardrails, otherwise Summary would keep showing the stale scanned
-          // value right next to rates already recomputed from the edited one.
+          // value right next to rates already recomputed from the edited one. workingDaysPerWeek
+          // specifically also needs updateHalfDayDefault — getWorkDaysPerWeek() now reads straight
+          // off this field (see its own comment), so the half-day field's visibility needs
+          // re-checking on every edit, not just once at page load.
           ipaPageReviewEl.querySelectorAll('.ipa-input').forEach(input => {
-            input.addEventListener('input', () => { renderIpaSummaryText(); recomputeAllGuardrails(); });
+            input.addEventListener('input', () => { renderIpaSummaryText(); recomputeAllGuardrails(); updateHalfDayDefault(); });
           });
+          updateHalfDayDefault(); // reflects the freshly-scanned workingDaysPerWeek value immediately, not just after an edit
         }
       }
 
@@ -2860,13 +3051,13 @@
       }
 
       // Unconditional (outside the pageReviews>0 block above) — a payslip-only claim has zero
-      // timesheet pages, so that whole block (and detectAndInsertMissingDays with it) never runs at
-      // all, and nothing else here was actually triggering the first monthly-totals computation:
-      // appendReviewRow only wires recomputeMonthlyOtCap to fire on a row's own later edits, never on
-      // insertion itself. Without this, the Basic Salary/Overtime Breakdown tables stayed blank until
-      // the caseworker happened to touch something (a row edit, a rescan) that incidentally
-      // triggered a recompute — this makes it happen right away instead, the same as every other
-      // path (bank statement scan, medical bills scan, etc.) that ends with its own recompute call.
+      // timesheet pages, so that whole block (and detectAndInsertMissingDays, and every
+      // appendReviewRow call that would otherwise have triggered its own recompute on insertion)
+      // never runs at all, leaving nothing else here to trigger the first monthly-totals
+      // computation. Without this, the Basic Salary/Overtime Breakdown tables stayed blank until the
+      // caseworker happened to touch something (a row edit, a rescan) that incidentally triggered a
+      // recompute — this makes it happen right away instead, the same as every other path (bank
+      // statement scan, medical bills scan, etc.) that ends with its own recompute call.
       recomputeMonthlyOtCap();
       return data.costUsd;
     }
@@ -2923,7 +3114,7 @@
      */
     function buildExportPayload() {
       if (!lastBreakdownForExport) return { error: 'No claim breakdown yet — set a basic salary and add at least one claimed day first.' };
-      const { monthKeys, totals, allocated, restDayWorkedDatesByMonth, phWorkedDatesByMonth, basicSalary, basicFullAmountByMonth, allowancesFullAmountByMonth, noticeClaim, leaveClaim, sickClaim, medicalBillsClaim } = lastBreakdownForExport;
+      const { monthKeys, totals, allocated, restDayWorkedDatesByMonth, phWorkedDatesByMonth, nonFixedAllowanceByMonth, basicSalary, basicFullAmountByMonth, allowancesFullAmountByMonth, noticeClaim, leaveClaim, sickClaim, medicalBillsClaim } = lastBreakdownForExport;
 
       /** Builds one export category's per-month rows and totals. */
       function category(getFullAmount, getBucketKey, getDaysOrHours) {
@@ -2946,6 +3137,7 @@
 
       const basic = category(month => basicFullAmountByMonth.get(month) || 0, 'basic', () => null);
       const allowances = category(month => allowancesFullAmountByMonth.get(month) || 0, 'allowances', () => null);
+      const nonFixedAllowance = category(month => nonFixedAllowanceByMonth.get(month) || 0, 'nonFixedAllowance', () => null);
       const overtime = category((month, t) => t.otRate * t.otHours, 'ot', (month, t) => t.otHours);
       const restDays = category((month, t) => t.restDayPay, 'rest', month => (restDayWorkedDatesByMonth.get(month) || []).length);
       const publicHolidays = category((month, t) => t.phPay, 'ph', month => (phWorkedDatesByMonth.get(month) || []).length);
@@ -2958,7 +3150,7 @@
         claimEndDate: document.getElementById('contractEndDate').value || null,
         workWeekType: getWorkDaysPerWeek(),
         basicSalary,
-        basic, allowances, overtime, restDays, publicHolidays,
+        basic, allowances, nonFixedAllowance, overtime, restDays, publicHolidays,
         noticeClaim: noticeClaim ? {
           employmentStartDate: noticeClaim.employmentStartDate,
           terminationDate: noticeClaim.terminationDate,
@@ -3134,6 +3326,13 @@
       // recomputeRowGuardrails/collectAllReviewRows/buildCorrectedEntries below instead of a live
       // checkbox state.
       li.dataset.restDay = row.restDay ? '1' : '';
+      // Read by the OT calc (recomputeRowGuardrails/recomputeMonthlyPayTotals) to force OT to 0 on
+      // this row — a genuinely blank box got filled with the caseworker's own default shift
+      // timing, a guess standing in for missing evidence, not an actual observed clock-out time;
+      // crediting OT off a default we invented would overstate the claim on a day we don't
+      // actually have proof for. The day still counts as standard/normal hours worked (basic
+      // salary proration untouched), just never as overtime.
+      li.dataset.autoInserted = row.autoInserted ? '1' : '';
       li.dataset.bbox = row.bbox ? JSON.stringify(row.bbox) : '';
       // Not read by collectAllReviewRows (the /api/generate export doesn't need page attribution)
       // but needed by collectAllReviewRowsWithSource (the history "Save changes" path) to persist
@@ -3183,6 +3382,13 @@
         onRowChanged();
       });
       li.querySelectorAll('.time-input').forEach(input => {
+        // 'blur' still normalizes the display text (e.g. "9" -> "0900") once the reviewer leaves
+        // the field, but the breakdown tables below shouldn't have to wait for that — recomputing
+        // on every keystroke too means the Overtime/Rest/PH/Basic Salary breakdowns and the owed
+        // total stay in sync with a day's hours the moment they're typed, not just after the field
+        // loses focus. rowNetHours/timeInputToHHMM already return null for a not-yet-valid partial
+        // value, so a mid-typing state just contributes nothing rather than a wrong number.
+        input.addEventListener('input', onRowChanged);
         input.addEventListener('blur', () => { input.value = normalizeTimeInput(input.value); onRowChanged(); });
       });
       li.querySelector('.f-break').addEventListener('input', onRowChanged);
@@ -3231,10 +3437,16 @@
       const v = Number(el.value);
       return Number.isFinite(v) ? v : null;
     }
-    /** Reads the declared work week radio (5.5 or 6 days), defaulting to 5.5. */
+    // Derived from the IPA's own declared workingDaysPerWeek (editable in the IPA review card,
+    // same as basicMonthlySalary/dailyBasicRate) rather than a separate manual pre-submit choice —
+    // the IPA already states this, so asking the caseworker to also pick it by hand just invited
+    // the two to silently disagree. Falls back to 5.5 (this app's long-standing prior default)
+    // before the IPA has been scanned, or if it didn't state a usable value.
+    /** Reads the IPA's declared working days/week, defaulting to 5.5 if not yet scanned or not stated. */
     function getWorkDaysPerWeek() {
-      const checked = document.querySelector('input[name="workWeekType"]:checked');
-      return checked ? Number(checked.value) : 5.5;
+      const el = document.querySelector('#ipaPageReview input[data-field="workingDaysPerWeek"]');
+      const v = el && el.value !== '' ? Number(el.value) : NaN;
+      return Number.isFinite(v) && v > 0 ? v : 5.5;
     }
     /** Reads the declared weekly rest day radio (0=Sun..6=Sat), defaulting to Sunday. */
     function getDeclaredRestDayOfWeek() {
@@ -3397,7 +3609,204 @@
       return shiftHoursClient(start, end) - brk;
     }
 
-    const NORMAL_HOURS_PER_DAY = 8; // s.38's default "normal hours of work" absent a different agreed figure
+    const NORMAL_HOURS_PER_DAY = 8; // s.38's default "normal hours of work" — also the flat tier size rest-day-worked pay (computeRestDayPay below) uses regardless of work week, since that's a separate statutory tier system
+    const SIX_DAY_WEEK_DAILY_HOURS = 44 / 6; // Fourth Schedule's 44 hrs/week spread evenly over a 6-day week — not a flat 8h/7h split, every day gets the same fractional threshold
+    const HALF_DAY_HOURS = 4; // the declared half-day's normal hours (5.5-day week only) — no lunch break built in, OT starts right after this
+
+    // True for the declared half-day of week (the day right before the declared weekly rest day —
+    // see the halfDayOfWeek radio group's auto-pick), but ONLY on a 5.5-day week — a 6-day week
+    // spreads its 44 statutory hours evenly across every day instead (SIX_DAY_WEEK_DAILY_HOURS), so
+    // there's no shorter "half day" concept to apply there at all.
+    /** True if `dateVal` falls on the declared half-day of a 5.5-day work week. */
+    function isHalfDayDate(dateVal) {
+      if (!dateVal || getWorkDaysPerWeek() !== 5.5) return false;
+      const halfDay = getHalfDayOfWeek();
+      return halfDay !== null && weekdayIndex(dateVal) === halfDay;
+    }
+
+    // Resolves which "normal hours before OT" threshold applies to a given date, per the
+    // caseworker's declared shape of the week:
+    // - 6-day week: every day is SIX_DAY_WEEK_DAILY_HOURS (44/6 ≈ 7.33h) — lunch (the declared
+    //   standard break, already subtracted into netHours by rowNetHours) applies every day same as
+    //   a normal full day; OT starts right after 7.33 worked hours.
+    // - 5.5-day week, declared half-day: HALF_DAY_HOURS (4h) flat, no lunch built into the normal
+    //   shape of the day — OT starts right after the 4th worked hour.
+    // - 5.5-day week, any other day: NORMAL_HOURS_PER_DAY (8h), lunch applies same as the 6-day case.
+    // In every case the comparison is against netHours (span minus whatever break was actually
+    // recorded for that row), not the raw clock span — a row's own break already accounts for
+    // "+ lunch hour" in the threshold without this function needing to add it separately.
+    /** Resolves the normal-hours-before-OT threshold for `dateVal`, per the declared work week shape. */
+    function normalHoursForDate(dateVal) {
+      if (getWorkDaysPerWeek() === 6) return SIX_DAY_WEEK_DAILY_HOURS;
+      return isHalfDayDate(dateVal) ? HALF_DAY_HOURS : NORMAL_HOURS_PER_DAY;
+    }
+
+    // An auto-inserted missing-day row (see detectAndInsertMissingDays) never earns OT, no matter
+    // how long the caseworker's configured default shift is — it's a standard day's worth of hours
+    // credited as a stand-in for missing evidence, not an actual observed clock-out time worth
+    // crediting overtime against. Every other row keeps the normal netHours-vs-threshold OT calc.
+    /** Computes a row's OT hours — always 0 for an auto-inserted default-shift row, normalHoursForDate-based otherwise. */
+    function rowOtHours(li, dateVal, netHours) {
+      if (li.dataset.autoInserted === '1') return 0;
+      return Math.max(0, netHours - normalHoursForDate(dateVal));
+    }
+
+    // ===== Non-fixed allowance: safe condition-expression engine =====
+    // A caseworker-authored tier condition (e.g. `clockOut >= 1700 && weekday != 0`) is NEVER
+    // passed to eval()/new Function() — that would let a typo (or a copy-pasted string from
+    // somewhere untrusted) run arbitrary JS with access to this page's data. Instead this is a
+    // small hand-rolled tokenizer + recursive-descent parser supporting only comparisons
+    // (== != >= <= > <), boolean combinators (&& || ! and parens), and a fixed whitelist of
+    // identifiers (TIER_EXPR_VARS) — nothing else can appear in a compiled expression, so the
+    // worst a bad expression can do is fail to compile.
+    const TIER_EXPR_VARS = new Set(['date', 'weekday', 'clockIn', 'clockOut', 'netHours', 'isRestDay', 'isHalfDay', 'isPublicHoliday']);
+    /** Tokenizes a tier condition string into `{t, v}` tokens, or throws with a descriptive message. */
+    function tokenizeTierExpr(src) {
+      const tokens = [];
+      let i = 0;
+      const n = src.length;
+      while (i < n) {
+        const c = src[i];
+        if (/\s/.test(c)) { i++; continue; }
+        if (c === '(' || c === ')') { tokens.push({ t: c }); i++; continue; }
+        if (src.startsWith('&&', i)) { tokens.push({ t: '&&' }); i += 2; continue; }
+        if (src.startsWith('||', i)) { tokens.push({ t: '||' }); i += 2; continue; }
+        if (src.startsWith('==', i)) { tokens.push({ t: '==' }); i += 2; continue; }
+        if (src.startsWith('!=', i)) { tokens.push({ t: '!=' }); i += 2; continue; }
+        if (src.startsWith('>=', i)) { tokens.push({ t: '>=' }); i += 2; continue; }
+        if (src.startsWith('<=', i)) { tokens.push({ t: '<=' }); i += 2; continue; }
+        if (c === '>') { tokens.push({ t: '>' }); i++; continue; }
+        if (c === '<') { tokens.push({ t: '<' }); i++; continue; }
+        if (c === '!') { tokens.push({ t: '!' }); i++; continue; }
+        if (c === '"' || c === "'") {
+          const quote = c;
+          let j = i + 1, s = '';
+          while (j < n && src[j] !== quote) { s += src[j]; j++; }
+          if (j >= n) throw new Error('unterminated string literal');
+          tokens.push({ t: 'string', v: s });
+          i = j + 1; continue;
+        }
+        if (/[0-9]/.test(c)) {
+          let j = i, s = '';
+          while (j < n && /[0-9.]/.test(src[j])) { s += src[j]; j++; }
+          tokens.push({ t: 'number', v: Number(s) });
+          i = j; continue;
+        }
+        if (/[A-Za-z_]/.test(c)) {
+          let j = i, s = '';
+          while (j < n && /[A-Za-z0-9_]/.test(src[j])) { s += src[j]; j++; }
+          tokens.push({ t: 'ident', v: s });
+          i = j; continue;
+        }
+        throw new Error(`unexpected character "${c}"`);
+      }
+      return tokens;
+    }
+    /** Parses tokenized tier-condition tokens into an evaluator function `(ctx) => boolean`. */
+    function parseTierExprTokens(tokens) {
+      let pos = 0;
+      const peek = () => tokens[pos];
+      const next = () => tokens[pos++];
+      const expect = t => { const tok = next(); if (!tok || tok.t !== t) throw new Error(`expected "${t}"`); };
+      function parseOr() {
+        let left = parseAnd();
+        while (peek() && peek().t === '||') { next(); const right = parseAnd(); const l = left; left = ctx => l(ctx) || right(ctx); }
+        return left;
+      }
+      function parseAnd() {
+        let left = parseNot();
+        while (peek() && peek().t === '&&') { next(); const right = parseNot(); const l = left; left = ctx => l(ctx) && right(ctx); }
+        return left;
+      }
+      function parseNot() {
+        if (peek() && peek().t === '!') { next(); const inner = parseNot(); return ctx => !inner(ctx); }
+        return parseComparison();
+      }
+      function parseComparison() {
+        const left = parsePrimary();
+        const tok = peek();
+        if (tok && ['==', '!=', '>=', '<=', '>', '<'].includes(tok.t)) {
+          next();
+          const right = parsePrimary();
+          const op = tok.t;
+          return ctx => {
+            const l = left(ctx), r = right(ctx);
+            switch (op) {
+              case '==': return l === r;
+              case '!=': return l !== r;
+              case '>=': return l >= r;
+              case '<=': return l <= r;
+              case '>': return l > r;
+              case '<': return l < r;
+            }
+          };
+        }
+        return left; // bare value used directly as a boolean, e.g. `isPublicHoliday`
+      }
+      function parsePrimary() {
+        const tok = next();
+        if (!tok) throw new Error('unexpected end of expression');
+        if (tok.t === '(') { const inner = parseOr(); expect(')'); return inner; }
+        if (tok.t === 'number') return () => tok.v;
+        if (tok.t === 'string') return () => tok.v;
+        if (tok.t === 'ident') {
+          if (!TIER_EXPR_VARS.has(tok.v)) throw new Error(`unknown field "${tok.v}" — allowed: ${[...TIER_EXPR_VARS].join(', ')}`);
+          return ctx => ctx[tok.v];
+        }
+        throw new Error('unexpected token in expression');
+      }
+      const fn = parseOr();
+      if (pos !== tokens.length) throw new Error('unexpected trailing text after expression');
+      return fn;
+    }
+    /** Compiles a caseworker-written tier condition into an evaluator function, or throws a descriptive error. */
+    function compileTierExpression(src) {
+      return parseTierExprTokens(tokenizeTierExpr(src));
+    }
+
+    // compiledNonFixedAllowanceTiers is populated once, at "Extract details" submit time, by
+    // parseNonFixedAllowanceRules — every condition in it has already been through
+    // compileTierExpression, so there's nothing left to parse/compile here on every recompute.
+    /** Reads the already-parsed non-fixed-allowance tiers, or `[]` if the feature is off. */
+    function getNonFixedAllowanceTiers() {
+      return document.getElementById('nonFixedAllowanceToggle').checked ? compiledNonFixedAllowanceTiers : [];
+    }
+
+    // Every tier whose condition evaluates true adds its own amount on top of the others (not
+    // "highest tier only") — a worker who clocked out at 9pm against tiers "clockOut>=1700" (+$5)
+    // and "clockOut>=2100" (+$3) gets $5 + $3 = $8, per how this feature was specced.
+    /** Sums every met non-fixed-allowance tier's amount for one row, given its already-built field context. */
+    function rowNonFixedAllowance(ctx, tiers) {
+      if (tiers.length === 0) return 0;
+      let total = 0;
+      for (const tier of tiers) {
+        try {
+          if (tier.test(ctx)) total += tier.amount;
+        } catch {
+          // a condition can throw at eval time too (e.g. comparing a null clockOut with >=,
+          // which JS just resolves to false rather than throwing — this catch is for genuinely
+          // unexpected cases) — treated as "doesn't apply" rather than aborting the whole recompute
+        }
+      }
+      return total;
+    }
+    // Builds the fixed-field context every tier condition is evaluated against for one row — kept
+    // as its own function (not inlined into the caller) so rowNonFixedAllowance's signature stays
+    // `(ctx, tiers)` regardless of how many fields end up exposed here later.
+    /** Builds the condition-evaluation context (date/weekday/clock times/flags) for one review row. */
+    function buildTierRowContext(li, dateVal) {
+      const netHours = rowNetHours(li);
+      return {
+        date: dateVal,
+        weekday: weekdayIndex(dateVal),
+        clockIn: timeInputToHHMM(li.querySelector('.f-start').value),
+        clockOut: timeInputToHHMM(li.querySelector('.f-end').value),
+        netHours: netHours === null ? 0 : netHours,
+        isRestDay: li.dataset.restDay === '1',
+        isHalfDay: isHalfDayDate(dateVal),
+        isPublicHoliday: isPublicHoliday(dateVal),
+      };
+    }
 
     // s.37 rest-day-worked pay table — differs by who initiated it, which this app has no other way
     // to know than asking (see the rest-day-work-block wired in appendReviewRow).
@@ -3659,7 +4068,7 @@
       const netHours = rowNetHours(li);
 
       li.querySelector('.ot-hours-display').textContent =
-        netHours === null ? '—' : `${Math.max(0, netHours - NORMAL_HOURS_PER_DAY).toFixed(1)}h`;
+        netHours === null ? '—' : `${rowOtHours(li, dateVal, netHours).toFixed(2)}h`;
 
       const capNote = li.querySelector('.hours-cap-note');
       const overCap = netHours !== null && netHours > 12;
@@ -3743,7 +4152,7 @@
       }
       el.style.display = 'block';
       el.innerHTML = overCap
-        .map(([month, hrs]) => `<li class="incomplete">⚠ ${month}: ${hrs.toFixed(1)}h overtime exceeds the 72h/month statutory cap — please verify.</li>`)
+        .map(([month, hrs]) => `<li class="incomplete">⚠ ${month}: ${hrs.toFixed(2)}h overtime exceeds the 72h/month statutory cap — please verify.</li>`)
         .join('');
     }
 
@@ -3759,10 +4168,10 @@
     // (monthKeys is already sorted "YYYY-MM" ascending) specifically so this carry-forward flows
     // the right direction. Returns a Map monthKey -> {basic, allowances, ot, rest, ph}.
     /**
-     * Splits each month's actual bank-matched payment across the five pay categories in priority order.
-     * @returns {Map<string, {basic: number, allowances: number, ot: number, rest: number, ph: number}>}
+     * Splits each month's actual bank-matched payment across the six pay categories in priority order.
+     * @returns {Map<string, {basic: number, allowances: number, nonFixedAllowance: number, ot: number, rest: number, ph: number}>}
      */
-    function allocatePaymentsWaterfall(monthKeys, basicFullAmountByMonth, allowancesFullAmountByMonth, totals, paidByMonth) {
+    function allocatePaymentsWaterfall(monthKeys, basicFullAmountByMonth, allowancesFullAmountByMonth, nonFixedAllowanceByMonth, totals, paidByMonth) {
       const allocated = new Map();
       let carryover = 0;
       for (const month of monthKeys) {
@@ -3770,13 +4179,14 @@
         const fullAmounts = {
           basic: basicFullAmountByMonth.get(month) || 0,
           allowances: allowancesFullAmountByMonth.get(month) || 0,
+          nonFixedAllowance: nonFixedAllowanceByMonth.get(month) || 0,
           ot: t.otRate * t.otHours,
           rest: t.restDayPay,
           ph: t.phPay,
         };
         let available = (paidByMonth.get(month) || 0) + carryover;
-        const buckets = { basic: 0, allowances: 0, ot: 0, rest: 0, ph: 0 };
-        for (const key of ['basic', 'allowances', 'ot', 'rest', 'ph']) {
+        const buckets = { basic: 0, allowances: 0, nonFixedAllowance: 0, ot: 0, rest: 0, ph: 0 };
+        for (const key of ['basic', 'allowances', 'nonFixedAllowance', 'ot', 'rest', 'ph']) {
           const take = Math.max(0, Math.min(available, fullAmounts[key]));
           buckets[key] = take;
           available -= take;
@@ -3801,11 +4211,29 @@
       const phWorkedDatesByMonth = new Map(); // monthKey -> array of dateVal actually paid public-holiday-worked pay
       const certEntries = collectAllMedicalCertEntries(); // read once, reused per row below
       const monthsWithTimesheetRows = new Set(); // monthKey -> at least one real .review-row contributed netHours here (see the OT-source default below)
+      // once-tiers (a one-time lump sum — see parseNonFixedAllowanceRules) never run against rows
+      // at all; only recurring tiers go into the per-row loop below, same as before this split.
+      const allNonFixedAllowanceTiers = getNonFixedAllowanceTiers();
+      const nonFixedAllowanceTiers = allNonFixedAllowanceTiers.filter(t => !t.once); // read once, reused per row below
+      const onceNonFixedAllowanceTiers = allNonFixedAllowanceTiers.filter(t => t.once);
+      const nonFixedAllowanceByMonth = new Map(); // monthKey -> $ total — kept separate from `totals`, since a tier condition can match a day with no worked hours at all (e.g. a flat Sunday allowance), unlike OT/rest/PH which only ever apply to a valid worked row
+      // Added once each, straight to their anchor month, not evaluated per row — see
+      // parseNonFixedAllowanceRules' own comment on why a one-time lump sum can't be a `test`.
+      for (const tier of onceNonFixedAllowanceTiers) {
+        nonFixedAllowanceByMonth.set(tier.anchorMonth, (nonFixedAllowanceByMonth.get(tier.anchorMonth) || 0) + tier.amount);
+      }
 
       document.querySelectorAll('.review-row').forEach(li => {
         const dateVal = li.querySelector('.f-date').value;
         if (!dateVal) return;
         const monthKey = dateVal.slice(0, 7);
+
+        // Evaluated for EVERY dated row, before the netHours-null early-return below — a tier
+        // condition is free to match a rest day or a blank-time row (e.g. `weekday == 0` for every
+        // Sunday, worked or not), so this can't be gated on "was this day actually worked" the way
+        // OT/rest/PH pay further down are.
+        const nonFixedAmt = rowNonFixedAllowance(buildTierRowContext(li, dateVal), nonFixedAllowanceTiers);
+        if (nonFixedAmt > 0) nonFixedAllowanceByMonth.set(monthKey, (nonFixedAllowanceByMonth.get(monthKey) || 0) + nonFixedAmt);
 
         const isRestDayChecked = li.dataset.restDay === '1';
         const isDeclaredRestDay = weekdayIndex(dateVal) === restDayOfWeek;
@@ -3835,7 +4263,7 @@
         monthsWithTimesheetRows.add(monthKey);
         const t = totals.get(monthKey);
         t.netHours += netHours;
-        t.otHours += Math.max(0, netHours - NORMAL_HOURS_PER_DAY);
+        t.otHours += rowOtHours(li, dateVal, netHours);
 
         if (isDeclaredRestDay && !isRestDayChecked) {
           const initiatorInput = li.querySelector('.rest-init-group input[type="radio"]:checked');
@@ -3931,15 +4359,19 @@
       lastMonthlyTotals = totals;
 
       const el = document.getElementById('monthlyPayTotals');
-      // Union of both maps — a month made up entirely of rest days (no valid netHours row at all)
-      // still needs to show up here with $0 OT/rest-day/PH pay, not silently vanish from the table.
-      const monthKeys = [...new Set([...totals.keys(), ...claimedDatesByMonth.keys()])].sort();
+      // Union of all three — a month made up entirely of rest days (no valid netHours row at all)
+      // still needs to show up here with $0 OT/rest-day/PH pay, not silently vanish from the table;
+      // nonFixedAllowanceByMonth is included too since a tier condition can match a month with no
+      // worked hours at all (see its own comment above).
+      const monthKeys = [...new Set([...totals.keys(), ...claimedDatesByMonth.keys(), ...nonFixedAllowanceByMonth.keys()])].sort();
       const basicSalary = getBasicMonthlySalary();
       if (monthKeys.length === 0 || otRate === null || basicSalary === null) {
         el.style.display = 'none';
         el.innerHTML = '';
         document.getElementById('allowancesBreakdown').style.display = 'none';
         document.getElementById('allowancesBreakdown').innerHTML = '';
+        document.getElementById('nonFixedAllowanceBreakdown').style.display = 'none';
+        document.getElementById('nonFixedAllowanceBreakdown').innerHTML = '';
         document.getElementById('overtimeBreakdown').style.display = 'none';
         document.getElementById('overtimeBreakdown').innerHTML = '';
         document.getElementById('restBreakdown').style.display = 'none';
@@ -3997,7 +4429,7 @@
         const monthKey = `${earnedForMonth.getFullYear()}-${String(earnedForMonth.getMonth() + 1).padStart(2, '0')}`;
         paidByMonth.set(monthKey, (paidByMonth.get(monthKey) || 0) + t.amount);
       });
-      const allocated = allocatePaymentsWaterfall(monthKeys, basicFullAmountByMonth, allowancesFullAmountByMonth, totals, paidByMonth);
+      const allocated = allocatePaymentsWaterfall(monthKeys, basicFullAmountByMonth, allowancesFullAmountByMonth, nonFixedAllowanceByMonth, totals, paidByMonth);
 
       // Grand total across every month, added as a bottom Total row — each month's own row is a
       // sub-amount, this is the figure the caseworker actually wants to hand to the worker.
@@ -4059,6 +4491,10 @@
       for (const month of monthKeys) {
         allowancesSum += allowancesFullAmountByMonth.get(month) || 0;
       }
+      let nonFixedAllowanceSum = 0;
+      for (const month of monthKeys) {
+        nonFixedAllowanceSum += nonFixedAllowanceByMonth.get(month) || 0;
+      }
       const noticeClaim = computeSalaryInLieuOfNotice();
       const leaveClaim = computeSalaryInLieuOfLeave();
       const sickClaim = computeSickLeaveClaim();
@@ -4067,6 +4503,7 @@
         { label: 'Basic salary', amount: sumTotal },
         { label: 'OT / rest-day / public-holiday pay', amount: otRestPhSum },
         { label: 'Allowances', amount: allowancesSum },
+        { label: 'Non-fixed allowance', amount: nonFixedAllowanceSum },
         { label: 'Salary in lieu of notice', amount: noticeClaim ? noticeClaim.owedAmount : 0 },
         { label: 'Salary in lieu of annual leave', amount: (leaveClaim && leaveClaim.qualifies) ? leaveClaim.owedAmount : 0 },
         { label: 'Sick leave pay', amount: (sickClaim && sickClaim.qualifies) ? sickClaim.owedAmount : 0 },
@@ -4075,11 +4512,13 @@
       totalOwedCache = owedBreakdownCache.reduce((sum, c) => sum + c.amount, 0);
       // otRate is no longer a single flat figure (see the per-month t.otRate override above) — every
       // consumer of this snapshot reads it off `totals` per month instead, so it's not duplicated
-      // here as its own field.
-      lastBreakdownForExport = { monthKeys, totals, allocated, restDayWorkedDatesByMonth, phWorkedDatesByMonth, basicSalary, basicFullAmountByMonth, allowancesFullAmountByMonth, noticeClaim, leaveClaim, sickClaim, medicalBillsClaim };
+      // here as its own field. nonFixedAllowanceByMonth is kept as its own map (not folded into
+      // `totals`) since a tier condition can match a month with no worked hours at all.
+      lastBreakdownForExport = { monthKeys, totals, allocated, restDayWorkedDatesByMonth, phWorkedDatesByMonth, nonFixedAllowanceByMonth, basicSalary, basicFullAmountByMonth, allowancesFullAmountByMonth, noticeClaim, leaveClaim, sickClaim, medicalBillsClaim };
       document.getElementById('exportDocxBtn').style.display = '';
       document.getElementById('exportPdfBtn').style.display = '';
       renderAllowancesBreakdown(monthKeys, allowancesFullAmountByMonth, allocated);
+      renderNonFixedAllowanceBreakdown(monthKeys, nonFixedAllowanceByMonth, allocated);
       renderOvertimeBreakdown(monthKeys, totals, allocated);
       renderRestBreakdown(monthKeys, totals, restDayWorkedDatesByMonth, allocated);
       renderPublicHolidayBreakdown(monthKeys, totals, phWorkedDatesByMonth, allocated);
@@ -4126,6 +4565,45 @@
   </table>`;
     }
 
+    // Caseworker-defined tier-based allowance (see getNonFixedAllowanceTiers/rowNonFixedAllowance)
+    // — a direct per-day dollar sum kept in its own nonFixedAllowanceByMonth map by
+    // recomputeMonthlyPayTotals' row loop (not folded into `totals`, since a tier condition can
+    // match a day with no worked hours at all), same recurring-not-prorated shape as OT/rest/PH.
+    // Hidden entirely (same as the input fields above) when the feature is toggled off.
+    /** Renders the Non-Fixed Allowance Breakdown table. */
+    function renderNonFixedAllowanceBreakdown(monthKeys, nonFixedAllowanceByMonth, allocated) {
+      const el = document.getElementById('nonFixedAllowanceBreakdown');
+      if (monthKeys.length === 0 || !document.getElementById('nonFixedAllowanceToggle').checked) {
+        el.style.display = 'none';
+        el.innerHTML = '';
+        return;
+      }
+      el.style.display = 'block';
+      let sumComputedClaim = 0;
+      const rows = monthKeys.map(month => {
+        const fullAmount = nonFixedAllowanceByMonth.get(month) || 0;
+        const paymentReceived = allocated.get(month).nonFixedAllowance;
+        const computedClaim = fullAmount - paymentReceived;
+        sumComputedClaim += computedClaim;
+        const [yearStr, monthNumStr] = month.split('-');
+        return `<tr>
+      <td>${yearStr}</td>
+      <td>${MONTH_ABBR[Number(monthNumStr) - 1]}</td>
+      <td>${formatMoney(fullAmount)}</td>
+      <td>${formatMoney(paymentReceived)}</td>
+      <td>${formatMoney(computedClaim)}</td>
+    </tr>`;
+      }).join('');
+      const totalRow = `<tr class="pay-total-row">
+      <td colspan="4">Total</td>
+      <td><strong>${formatMoney(sumComputedClaim)}</strong></td>
+    </tr>`;
+      el.innerHTML = `<h3>Non-Fixed Allowance Breakdown</h3><table class="pay-total-table">
+    <thead><tr><th>Year</th><th>Month</th><th>Full amount</th><th>Payment received</th><th>Computed claim</th></tr></thead>
+    <tbody>${rows}${totalRow}</tbody>
+  </table>`;
+    }
+
     // OT-only view of the same per-month totals recomputeMonthlyPayTotals already built — separate
     // table since a caseworker may want to claim/track overtime independently of the basic-salary
     // figure. Payment received comes from allocatePaymentsWaterfall — the portion of that month's
@@ -4151,8 +4629,8 @@
         const activeHoursSource = otSourceByMonth[month] || t.defaultOtSource;
         const hoursSourceToggle = t.payslipOtHours != null ? `
       <div class="pay-total-sub">
-        <label><input type="radio" name="ot-source-${month}" value="timesheet"${activeHoursSource === 'timesheet' ? ' checked' : ''}> Timesheet: ${t.timesheetOtHours.toFixed(1)}h</label>
-        <label><input type="radio" name="ot-source-${month}" value="payslip"${activeHoursSource === 'payslip' ? ' checked' : ''}> Payslip: ${t.payslipOtHours.toFixed(1)}h</label>
+        <label><input type="radio" name="ot-source-${month}" value="timesheet"${activeHoursSource === 'timesheet' ? ' checked' : ''}> Timesheet: ${t.timesheetOtHours.toFixed(2)}h</label>
+        <label><input type="radio" name="ot-source-${month}" value="payslip"${activeHoursSource === 'payslip' ? ' checked' : ''}> Payslip: ${t.payslipOtHours.toFixed(2)}h</label>
       </div>` : '';
         // Rate has no per-month toggle here — it's a single global pick (otRateSource, set in the
         // IPA summary card next to "Declared OT rate") already baked into t.otRate by
@@ -4160,7 +4638,7 @@
         return `<tr>
       <td>${yearStr}</td>
       <td>${MONTH_ABBR[Number(monthNumStr) - 1]}</td>
-      <td>${t.otHours.toFixed(1)}${hoursSourceToggle}</td>
+      <td>${t.otHours.toFixed(2)}${hoursSourceToggle}</td>
       <td>${formatMoney(t.otRate)}</td>
       <td>${formatMoney(fullAmount)}</td>
       <td>${formatMoney(paymentReceived)}</td>
@@ -4391,78 +4869,90 @@
       const accountedDates = new Set(rows.map(r => r.date));
       const dates = [...accountedDates].sort();
 
-      // Fills the full calendar month for each DISTINCT month rows actually touch, not just the
-      // earliest/latest individual row — a monthly timecard page still covers every day of that
-      // month even if the model only reported rows for the ones with handwriting on them. Trimming
-      // to the last non-blank row (an earlier approach) meant a genuinely blank trailing week (e.g.
-      // the worker not paid for the last week of the month) silently never got flagged at all, which
-      // is exactly the case this feature exists to catch.
-      //
-      // Deliberately does NOT bridge between touched months — an earlier version spanned from the
-      // single earliest date to the single latest date across every row, so one stray date landing
-      // in a different month (an OCR misread digit, or a genuinely separate document) dragged the
-      // ENTIRE gap in between into the fill range, fabricating a whole phantom month of default-shift
-      // rows for a month that was never actually touched at all. Each touched month is now expanded
-      // independently instead.
-      // A month needs at least a couple of REAL rows before it's trusted enough to get the full
-      // calendar-month treatment below — a single lone row is exactly the profile of an OCR
-      // misread (one date's month digit read wrong) rather than a genuinely worked month, and
-      // fully expanding on that evidence alone is what fabricated a whole phantom month before.
-      const MIN_REAL_ROWS_TO_TRUST_MONTH = 2;
-      const rowCountByMonth = new Map();
-      for (const d of dates) rowCountByMonth.set(d.slice(0, 7), (rowCountByMonth.get(d.slice(0, 7)) || 0) + 1);
-      const touchedMonths = [...rowCountByMonth.keys()]
-        .filter(monthKey => rowCountByMonth.get(monthKey) >= MIN_REAL_ROWS_TO_TRUST_MONTH)
-        .sort();
-
-      // Clamp against the caseworker-declared contract dates, if given — the calendar-month
-      // expansion above assumes the worker was employed the whole month, which breaks the moment
-      // employment actually starts or ends mid-month (e.g. hired on a Wednesday — filling in that
-      // week's Monday/Tuesday would invent days they were never employed at all, not just catch a
-      // blank timesheet row). Only narrows a touched month's range, never widens it, and can drop a
-      // touched month entirely if it falls wholly outside the contract dates.
       const contractStartVal = document.getElementById('contractStartDate').value;
       const contractStart = contractStartVal ? (() => { const [y, m, d] = contractStartVal.split('-').map(Number); return new Date(y, m - 1, d); })() : null;
       const contractEndVal = document.getElementById('contractEndDate').value;
       const contractEnd = contractEndVal ? (() => { const [y, m, d] = contractEndVal.split('-').map(Number); return new Date(y, m - 1, d); })() : null;
 
-      // Calendar-month edges (no contract date given for that side) still fill straight through with
-      // no week-completeness check — a month boundary isn't a real employment signal, just where the
-      // scanned page happens to stop, so there's no genuine "did they even work this day" ambiguity.
-      // A CONTRACT date, though, is a real declared boundary — if it lands mid-week, the rest of that
-      // week (e.g. Sun 20–Sat 26 when the contract ends Thu 24) isn't a period we actually know the
-      // normal work pattern applied to (last day could've been a half day, exit formalities, etc), so
-      // the whole partial week at that edge is left for the caseworker to fill in by hand instead of
-      // guessed at.
-      function fillRangeForMonth(monthStart, monthEnd) {
-        let rangeStart = monthStart;
-        let rangeEnd = monthEnd;
-        let startIsContractBoundary = false;
-        let endIsContractBoundary = false;
-        if (contractStart) {
-          if (contractStart > rangeEnd) return null; // this whole month is before employment started
-          if (contractStart > rangeStart) { rangeStart = contractStart; startIsContractBoundary = true; }
-        }
-        if (contractEnd) {
-          if (contractEnd < rangeStart) return null; // this whole month is after employment ended
-          if (contractEnd < rangeEnd) { rangeEnd = contractEnd; endIsContractBoundary = true; }
-        }
-        let fillStart = rangeStart;
-        if (startIsContractBoundary) {
-          const weekStart = new Date(rangeStart);
-          weekStart.setDate(weekStart.getDate() - weekStart.getDay());
-          if (weekStart < rangeStart) weekStart.setDate(weekStart.getDate() + 7);
-          fillStart = weekStart;
-        }
-        let fillEnd = rangeEnd;
-        if (endIsContractBoundary) {
-          const weekEnd = new Date(rangeEnd);
-          weekEnd.setDate(weekEnd.getDate() + (6 - weekEnd.getDay()));
-          if (weekEnd > rangeEnd) weekEnd.setDate(weekEnd.getDate() - 7);
-          fillEnd = weekEnd;
-        }
-        if (fillStart > fillEnd) return null;
-        return { fillStart, fillEnd };
+      // The declared Claim period is the source of truth once BOTH ends are set — the caseworker
+      // has directly stated the employment window, which is more reliable than inferring coverage
+      // from which months happen to have scanned rows. Every single day in that window gets filled
+      // in if missing (no month-trust threshold, no partial-week carve-out at the edges) — a day
+      // the scan didn't pick up is still a day the worker was employed, per the caseworker's own
+      // declared dates, so it still counts.
+      let fillRanges;
+      if (contractStart && contractEnd) {
+        fillRanges = contractStart <= contractEnd ? [{ fillStart: contractStart, fillEnd: contractEnd }] : [];
+      } else {
+        // No complete declared claim period to anchor on — fall back to inferring coverage from the
+        // scan itself, same safeguards as before:
+        // Fills the full calendar month for each DISTINCT month rows actually touch, not just the
+        // earliest/latest individual row — a monthly timecard page still covers every day of that
+        // month even if the model only reported rows for the ones with handwriting on them. Trimming
+        // to the last non-blank row (an earlier approach) meant a genuinely blank trailing week (e.g.
+        // the worker not paid for the last week of the month) silently never got flagged at all, which
+        // is exactly the case this feature exists to catch.
+        //
+        // Deliberately does NOT bridge between touched months — an earlier version spanned from the
+        // single earliest date to the single latest date across every row, so one stray date landing
+        // in a different month (an OCR misread digit, or a genuinely separate document) dragged the
+        // ENTIRE gap in between into the fill range, fabricating a whole phantom month of default-shift
+        // rows for a month that was never actually touched at all. Each touched month is now expanded
+        // independently instead.
+        // A month needs at least a couple of REAL rows before it's trusted enough to get the full
+        // calendar-month treatment below — a single lone row is exactly the profile of an OCR
+        // misread (one date's month digit read wrong) rather than a genuinely worked month, and
+        // fully expanding on that evidence alone is what fabricated a whole phantom month before.
+        const MIN_REAL_ROWS_TO_TRUST_MONTH = 2;
+        const rowCountByMonth = new Map();
+        for (const d of dates) rowCountByMonth.set(d.slice(0, 7), (rowCountByMonth.get(d.slice(0, 7)) || 0) + 1);
+        const touchedMonths = [...rowCountByMonth.keys()]
+          .filter(monthKey => rowCountByMonth.get(monthKey) >= MIN_REAL_ROWS_TO_TRUST_MONTH)
+          .sort();
+
+        // Clamp against whichever single contract date IS given (the other end stays open) — the
+        // calendar-month expansion above assumes the worker was employed the whole month, which
+        // breaks the moment employment actually starts or ends mid-month (e.g. hired on a
+        // Wednesday — filling in that week's Monday/Tuesday would invent days they were never
+        // employed at all, not just catch a blank timesheet row).
+        //
+        // Calendar-month edges (no contract date given for that side) still fill straight through
+        // with no week-completeness check — a month boundary isn't a real employment signal, just
+        // where the scanned page happens to stop, so there's no genuine "did they even work this
+        // day" ambiguity. A lone contract date, though, is a real declared boundary — if it lands
+        // mid-week, the rest of that week isn't a period we actually know the normal work pattern
+        // applied to, so the whole partial week at that edge is left for the caseworker to fill in
+        // by hand instead of guessed at.
+        fillRanges = touchedMonths.map(monthKey => {
+          const [my, mm] = monthKey.split('-').map(Number);
+          let rangeStart = new Date(my, mm - 1, 1);
+          let rangeEnd = new Date(my, mm, 0);
+          let startIsContractBoundary = false;
+          let endIsContractBoundary = false;
+          if (contractStart) {
+            if (contractStart > rangeEnd) return null;
+            if (contractStart > rangeStart) { rangeStart = contractStart; startIsContractBoundary = true; }
+          }
+          if (contractEnd) {
+            if (contractEnd < rangeStart) return null;
+            if (contractEnd < rangeEnd) { rangeEnd = contractEnd; endIsContractBoundary = true; }
+          }
+          let fillStart = rangeStart;
+          if (startIsContractBoundary) {
+            const weekStart = new Date(rangeStart);
+            weekStart.setDate(weekStart.getDate() - weekStart.getDay());
+            if (weekStart < rangeStart) weekStart.setDate(weekStart.getDate() + 7);
+            fillStart = weekStart;
+          }
+          let fillEnd = rangeEnd;
+          if (endIsContractBoundary) {
+            const weekEnd = new Date(rangeEnd);
+            weekEnd.setDate(weekEnd.getDate() + (6 - weekEnd.getDay()));
+            if (weekEnd > rangeEnd) weekEnd.setDate(weekEnd.getDate() - 7);
+            fillEnd = weekEnd;
+          }
+          return fillStart > fillEnd ? null : { fillStart, fillEnd };
+        }).filter(Boolean);
       }
 
       const restDayOfWeek = getDeclaredRestDayOfWeek();
@@ -4491,10 +4981,7 @@
       // the source PDF" coverage warning later, even though the declared pattern already answers it).
       const missingDates = [];
       const missingRestDates = [];
-      for (const monthKey of touchedMonths) {
-        const [my, mm] = monthKey.split('-').map(Number);
-        const range = fillRangeForMonth(new Date(my, mm - 1, 1), new Date(my, mm, 0));
-        if (!range) continue;
+      for (const range of fillRanges) {
         for (let d = new Date(range.fillStart); d <= range.fillEnd; d.setDate(d.getDate() + 1)) {
           const dateStr = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
           if (accountedDates.has(dateStr)) continue;
@@ -4515,14 +5002,37 @@
       // otherwise throw inside findPageListForWeek, silently aborting this whole function before any
       // row got inserted.
       const pageCards = [...pageReviewList.querySelectorAll('.page-review-row')];
+      // Last-resort fallback once the claim period is the fill source: a declared period can span
+      // months with literally zero uploaded timesheet pages at all (e.g. only 3 of 12 months were
+      // scanned), so there may be no page card to attach some missing dates to by week OR month.
+      // Every single declared day still has to surface somewhere rather than being silently
+      // dropped — this catch-all card holds exactly those orphaned dates. Created once, reused for
+      // every date that needs it, and excluded from pageCards above (captured before this exists)
+      // so it never gets mistaken for a real page when matching some OTHER date by week/month.
+      let claimPeriodExtraList = null;
+      function getClaimPeriodExtraList() {
+        if (claimPeriodExtraList) return claimPeriodExtraList;
+        const existing = pageReviewList.querySelector('#claimPeriodExtraCard .inline-review-list');
+        if (existing) { claimPeriodExtraList = existing; return existing; }
+        const card = document.createElement('div');
+        card.className = 'page-review-row';
+        card.id = 'claimPeriodExtraCard';
+        card.innerHTML = `
+    <div class="page-review-details">
+      <div class="page-review-source"><span>Claim period — no matching scanned page</span></div>
+      <div class="review-hint">These dates fall inside the declared Claim period, but no uploaded
+        timesheet page covers that week or month — filled in with the default shift timing since
+        there's no page to review them against.</div>
+      <ul class="inline-review-list"></ul>
+    </div>`;
+        pageReviewList.appendChild(card);
+        claimPeriodExtraList = card.querySelector('.inline-review-list');
+        return claimPeriodExtraList;
+      }
       for (const dateStr of missingDates) {
         // Same-week match first (keeps the row visually next to its real neighbours), then same-
-        // MONTH as a fallback — never "whichever page happens to be last", which is what used to
-        // dump a different month's auto-inserted rows into an unrelated page's section. If no page
-        // has so much as a same-month row either, there's nothing to sensibly attach this to, so it's
-        // left uninserted for the caseworker to add by hand rather than guessed into the wrong place.
-        const targetList = findPageListForWeek(dateStr, pageCards) || findPageListForMonth(dateStr, pageCards);
-        if (!targetList) continue;
+        // MONTH as a fallback, then the claim-period catch-all card above if neither exists.
+        const targetList = findPageListForWeek(dateStr, pageCards) || findPageListForMonth(dateStr, pageCards) || getClaimPeriodExtraList();
         const isHalfDay = halfDayOfWeek !== null && weekdayIndex(dateStr) === halfDayOfWeek;
         insertReviewRowSorted(targetList, {
           date: dateStr,
@@ -4537,8 +5047,7 @@
         });
       }
       for (const dateStr of missingRestDates) {
-        const targetList = findPageListForWeek(dateStr, pageCards) || findPageListForMonth(dateStr, pageCards);
-        if (!targetList) continue;
+        const targetList = findPageListForWeek(dateStr, pageCards) || findPageListForMonth(dateStr, pageCards) || getClaimPeriodExtraList();
         insertReviewRowSorted(targetList, {
           date: dateStr,
           clockIn: null,
@@ -4805,10 +5314,10 @@
         const optionsHtml = rm.allRows.length === 0
           ? ''
           : rm.allRows.map((r, idx) => {
-              const inOut = `${r.actualTimeIn !== null ? hhmmToTimeInput(r.actualTimeIn) : '—'}–${r.actualTimeOut !== null ? hhmmToTimeInput(r.actualTimeOut) : '—'}`;
-              const label = `${r.workerName || 'Unnamed'}${r.workerIc ? ` (${r.workerIc})` : ''} — ${inOut}`;
-              return `<option value="${idx}"${idx === rm.matchedRowIndex ? ' selected' : ''}>${escapeHtml(label)}</option>`;
-            }).join('');
+            const inOut = `${r.actualTimeIn !== null ? hhmmToTimeInput(r.actualTimeIn) : '—'}–${r.actualTimeOut !== null ? hhmmToTimeInput(r.actualTimeOut) : '—'}`;
+            const label = `${r.workerName || 'Unnamed'}${r.workerIc ? ` (${r.workerIc})` : ''} — ${inOut}`;
+            return `<option value="${idx}"${idx === rm.matchedRowIndex ? ' selected' : ''}>${escapeHtml(label)}</option>`;
+          }).join('');
         const selectHtml = rm.allRows.length === 0
           ? '<div class="review-hint">No worker rows extracted from this page.</div>'
           : `<select class="roster-worker-select">${optionsHtml}</select>`;
@@ -5312,8 +5821,9 @@
       if (controls) wireIpaRescanControls(controls);
       if (result.ipa) {
         ipaPageReviewEl.querySelectorAll('.ipa-input').forEach(input => {
-          input.addEventListener('input', () => { renderIpaSummaryText(); recomputeAllGuardrails(); });
+          input.addEventListener('input', () => { renderIpaSummaryText(); recomputeAllGuardrails(); updateHalfDayDefault(); });
         });
+        updateHalfDayDefault(); // reflects the rescanned workingDaysPerWeek value immediately
         ipaReviewEl.style.display = 'block';
         renderIpaSummaryText();
         renderComputedRates();
@@ -5367,6 +5877,7 @@
     ${ipaField('basicMonthlySalary', 'Basic monthly salary ($)', f.basicMonthlySalary)}
     ${ipaField('fixedMonthlyAllowances', 'Fixed monthly allowances ($)', allowanceTotal)}
     ${ipaField('dailyBasicRate', 'Declared daily basic rate ($)', f.dailyBasicRate)}
+    ${ipaField('workingDaysPerWeek', 'Working days/week', f.workingDaysPerWeek)}
   </div>`;
     }
 
@@ -7007,7 +7518,7 @@
         return `<tr>
       <td>${escapeHtml(t.granularity || '—')}</td>
       <td>${escapeHtml(periodLabel)}</td>
-      <td>${hours.toFixed(1)}</td>
+      <td>${hours.toFixed(2)}</td>
       <td>${hasRateUsed ? formatMoney(rateUsed) : '—'}${mismatchNote}</td>
       <td>${amount !== null ? formatMoney(amount) : '—'}</td>
       <td>${escapeHtml(t.source || '')}</td>
@@ -7021,7 +7532,7 @@
       }, 0);
       const totalRow = `<tr class="pay-total-row">
       <td colspan="2">Total</td>
-      <td><strong>${totalHours.toFixed(1)}</strong></td>
+      <td><strong>${totalHours.toFixed(2)}</strong></td>
       <td></td>
       <td><strong>${formatMoney(totalAmount)}</strong></td>
       <td></td>

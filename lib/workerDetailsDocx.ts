@@ -146,7 +146,7 @@ function categoryTable(category: ExportCategory, extraColumnLabel: string | null
  * @returns The rendered .docx as a `Buffer`.
  */
 export async function buildWorkerPersonalDetailsDocx(p: WorkerDetailsExportPayload): Promise<Buffer> {
-    const { claimForBasic, claimForAllowances, claimForOvertime, claimForRestDays, claimForNotice, claimForLeave, claimForSick, claimForMedicalBills, totalAmountClaim } = computeClaimTotals(p);
+    const { claimForBasic, claimForAllowances, claimForNonFixedAllowance, claimForOvertime, claimForRestDays, claimForNotice, claimForLeave, claimForSick, claimForMedicalBills, totalAmountClaim } = computeClaimTotals(p);
 
     const doc = new Document({
         sections: [{
@@ -179,6 +179,7 @@ export async function buildWorkerPersonalDetailsDocx(p: WorkerDetailsExportPaylo
                 fieldTable([
                     ["Claim for Basic", formatDollar(claimForBasic)],
                     ["Claim for Fixed Allowances", formatDollar(claimForAllowances)],
+                    ["Claim for Non-Fixed Allowance", formatDollar(claimForNonFixedAllowance)],
                     ["Claim for Overtime", formatDollar(claimForOvertime)],
                     ["Claim for Rest Days", formatDollar(claimForRestDays)],
                     ...(p.noticeClaim ? [["Claim for Salary-in-lieu of Notice", formatDollar(claimForNotice)] as [string, string]] : []),
@@ -186,7 +187,7 @@ export async function buildWorkerPersonalDetailsDocx(p: WorkerDetailsExportPaylo
                     ...(p.sickClaim ? [["Claim for Sick Leave Pay", formatDollar(claimForSick)] as [string, string]] : []),
                     ...(p.medicalBillsClaim ? [["Claim for Unreimbursed Medical Bills", formatDollar(claimForMedicalBills)] as [string, string]] : []),
                     ["Total Amount Claim", formatDollar(totalAmountClaim)],
-                ], new Set([4 + (p.noticeClaim ? 1 : 0) + (p.leaveClaim ? 1 : 0) + (p.sickClaim ? 1 : 0) + (p.medicalBillsClaim ? 1 : 0)])),
+                ], new Set([5 + (p.noticeClaim ? 1 : 0) + (p.leaveClaim ? 1 : 0) + (p.sickClaim ? 1 : 0) + (p.medicalBillsClaim ? 1 : 0)])),
 
                 ...(p.noticeClaim ? [
                     heading("Salary-in-lieu of Termination Notice"),
@@ -239,6 +240,9 @@ export async function buildWorkerPersonalDetailsDocx(p: WorkerDetailsExportPaylo
 
                 heading("Non-payment and short payment of allowances", { red: true }),
                 categoryTable(p.allowances, null, () => "", "Earned allowances vs Allowances Received by Month"),
+
+                heading("Non-payment and short payment of non-fixed allowance", { red: true }),
+                categoryTable(p.nonFixedAllowance, null, () => "", "Earned non-fixed allowance vs Non-fixed allowance Received by Month"),
 
                 heading("Overtime payment", { red: true }),
                 categoryTable(p.overtime, "Hours", n => n.toFixed(1), "Earned Overtime vs Overtime Pay Received by Month"),

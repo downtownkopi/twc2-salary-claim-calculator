@@ -102,7 +102,7 @@ function categoryTable(doc: PDFKit.PDFDocument, category: ExportCategory, extraC
  * @returns The rendered PDF as a `Buffer`.
  */
 export async function buildWorkerPersonalDetailsPdf(p: WorkerDetailsExportPayload): Promise<Buffer> {
-    const { claimForBasic, claimForAllowances, claimForOvertime, claimForRestDays, claimForNotice, claimForLeave, claimForSick, claimForMedicalBills, totalAmountClaim } = computeClaimTotals(p);
+    const { claimForBasic, claimForAllowances, claimForNonFixedAllowance, claimForOvertime, claimForRestDays, claimForNotice, claimForLeave, claimForSick, claimForMedicalBills, totalAmountClaim } = computeClaimTotals(p);
 
     return new Promise((resolve, reject) => {
         const doc = new PDFDocument({ size: "A4", margin: 40 });
@@ -138,6 +138,7 @@ export async function buildWorkerPersonalDetailsPdf(p: WorkerDetailsExportPayloa
         fieldTable(doc, [
             ["Claim for Basic", formatDollar(claimForBasic)],
             ["Claim for Fixed Allowances", formatDollar(claimForAllowances)],
+            ["Claim for Non-Fixed Allowance", formatDollar(claimForNonFixedAllowance)],
             ["Claim for Overtime", formatDollar(claimForOvertime)],
             ["Claim for Rest Days", formatDollar(claimForRestDays)],
             ...(p.noticeClaim ? [["Claim for Salary-in-lieu of Notice", formatDollar(claimForNotice)] as [string, string]] : []),
@@ -145,7 +146,7 @@ export async function buildWorkerPersonalDetailsPdf(p: WorkerDetailsExportPayloa
             ...(p.sickClaim ? [["Claim for Sick Leave Pay", formatDollar(claimForSick)] as [string, string]] : []),
             ...(p.medicalBillsClaim ? [["Claim for Unreimbursed Medical Bills", formatDollar(claimForMedicalBills)] as [string, string]] : []),
             ["Total Amount Claim", formatDollar(totalAmountClaim)],
-        ], new Set([4 + (p.noticeClaim ? 1 : 0) + (p.leaveClaim ? 1 : 0) + (p.sickClaim ? 1 : 0) + (p.medicalBillsClaim ? 1 : 0)]));
+        ], new Set([5 + (p.noticeClaim ? 1 : 0) + (p.leaveClaim ? 1 : 0) + (p.sickClaim ? 1 : 0) + (p.medicalBillsClaim ? 1 : 0)]));
 
         if (p.noticeClaim) {
             heading(doc, "Salary-in-lieu of Termination Notice");
@@ -198,6 +199,9 @@ export async function buildWorkerPersonalDetailsPdf(p: WorkerDetailsExportPayloa
 
         heading(doc, "Non-payment and short payment of allowances", { red: true });
         categoryTable(doc, p.allowances, null, () => "", "Earned allowances vs Allowances Received by Month");
+
+        heading(doc, "Non-payment and short payment of non-fixed allowance", { red: true });
+        categoryTable(doc, p.nonFixedAllowance, null, () => "", "Earned non-fixed allowance vs Non-fixed allowance Received by Month");
 
         heading(doc, "Overtime payment", { red: true });
         categoryTable(doc, p.overtime, "Hours", n => n.toFixed(1), "Earned Overtime vs Overtime Pay Received by Month");

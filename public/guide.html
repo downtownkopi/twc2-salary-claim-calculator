@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>How it works — Salary Claim Calculator</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    :root {
+      --bg: #f5f6f8;
+      --panel: #fff;
+      --border: #d7dbe0;
+      --text: #1a1a1a;
+      --muted: #666;
+      --accent: #2855c7;
+    }
+    * { box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      margin: 0;
+      padding: 0 0 60px;
+    }
+    .topbar {
+      background: var(--panel);
+      border-bottom: 1px solid var(--border);
+      padding: 16px 24px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      position: sticky;
+      top: 0;
+    }
+    .topbar h1 { font-size: 18px; margin: 0; }
+    .back-btn {
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      padding: 8px 14px;
+      border-radius: 6px;
+      font-size: 14px;
+      cursor: pointer;
+      text-decoration: none;
+    }
+    .wrap { max-width: 920px; margin: 0 auto; padding: 24px; }
+    .intro {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 16px 20px;
+      margin-bottom: 28px;
+    }
+    .step {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 20px;
+      margin-bottom: 28px;
+    }
+    .step h2 {
+      font-size: 16px;
+      margin: 0 0 4px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .step-num {
+      background: var(--accent);
+      color: #fff;
+      width: 24px;
+      height: 24px;
+      border-radius: 50%;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 13px;
+      flex-shrink: 0;
+    }
+    .step p { color: var(--muted); font-size: 14px; line-height: 1.5; }
+    .step img {
+      width: 100%;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      margin-top: 12px;
+      display: block;
+    }
+    .flow {
+      font-family: monospace;
+      font-size: 13px;
+      color: var(--muted);
+      text-align: center;
+      margin-bottom: 28px;
+    }
+  </style>
+</head>
+<body>
+  <div class="topbar">
+    <h1>How it works</h1>
+    <a class="back-btn" href="/">&larr; Back to app</a>
+  </div>
+
+  <div class="wrap">
+    <div class="intro">
+      <p style="margin:0; color:var(--text); font-size:14px; line-height:1.5;">
+        A caseworker's job in this tool is five steps: <b>upload</b> evidence, <b>check</b> the page
+        previews, let the <b>vision model scan</b> each page, <b>review</b> every row against the
+        source image, then <b>export</b> the filled spreadsheet and claim breakdown. Nothing is
+        trusted blind — every scanned value sits next to the page it came from so you can verify it
+        before it's used.
+      </p>
+    </div>
+
+    <div class="flow">Upload &rarr; Preview &rarr; Process (vision scan) &rarr; Review &rarr; Export</div>
+
+    <div class="step">
+      <h2><span class="step-num">1</span> Upload evidence</h2>
+      <p>
+        Start on the main form. Set the worker's weekly rest day and standard break, and optionally
+        a half-day of week (for a 5.5-day week — see Step 4 on how this feeds overtime) — these feed
+        the guardrail checks later. Work week (5.5 or 6 days) is no longer set here: it's read
+        straight off the IPA once scanned, editable in the IPA review card if it needs correcting.
+        If anything about these specific pages could otherwise be misread (e.g. "8 - 9pm on every
+        date actually means 8am to 9pm"), say so in "Reading notes for this scan" — it's sent to the
+        scan from the very first attempt. Then attach the IPA letter (required) and timesheet files
+        (required unless a payslip already states overtime hours). Bank statements, medical
+        certificates, medical bills, and payslips are optional cross-checks.
+      </p>
+      <img src="/guide-images/01-upload-blank.png" alt="Blank upload form">
+    </div>
+
+    <div class="step">
+      <h2><span class="step-num">2</span> Preview before scanning</h2>
+      <p>
+        Once files are chosen, each page gets a thumbnail with a rotate button and a remove (✕)
+        button. Check every page is upright here — a sideways scan silently misreads dates and
+        times downstream, so this is the one manual check the app can't do for you.
+      </p>
+      <img src="/guide-images/02-upload-filled.png" alt="Upload form with files attached">
+    </div>
+
+    <div class="step">
+      <h2><span class="step-num">3</span> Process — the vision scan</h2>
+      <p>
+        Clicking <b>Extract details</b> kicks off a background job. Each timesheet page is read
+        3 independent times and reconciled (unanimity / majority) before being trusted; disagreement
+        escalates to a fallback model rather than being silently guessed. This step runs behind the
+        thumbnails you just confirmed and can take 15–20+ minutes for a full batch — the page polls
+        and streams results in as each one finishes.
+      </p>
+      <img src="/guide-images/03-preview-stage.png" alt="Scan starting after Extract details">
+    </div>
+
+    <div class="step">
+      <h2><span class="step-num">4</span> Review — every row against its source</h2>
+      <p>
+        This is the step that matters most. Each date's start/end/break sits right beside the page
+        it was read from. Rows highlighted yellow were flagged by the scan itself (a guess, a
+        multi-shift day, an implausible reading, hours over the 12h/day statutory cap) — worth a
+        closer look before trusting them. Clicking into a row highlights the matching region on the
+        source image. Nothing is written to the spreadsheet until you click Generate; any row you
+        edit here is saved as a raw-vs-corrected pair to improve future scans.
+      </p>
+      <p>
+        Overtime's "normal hours before OT kicks in" depends on the declared work week: 8h on a
+        5.5-day week's normal days, a flat 4h (no lunch) on that week's declared half-day, or 44/6
+        (&asymp;7.33h) evenly across every day of a 6-day week.
+      </p>
+      <p>
+        A genuinely blank box (not a rest day, not an MC) still gets filled in as a worked day using
+        the declared default shift timing — flagged "Auto-inserted", since there's no real evidence
+        for it. That default-shift guess is credited as a standard day's pay but never as overtime,
+        no matter how long the configured default shift is — OT is only ever paid against an actual
+        observed clock-out time.
+      </p>
+      <img src="/guide-images/05-review-ipa.png" alt="Review stage — IPA letter fields next to source image">
+      <img src="/guide-images/06-review-timesheet.png" alt="Review stage — timesheet rows with flags and source highlight">
+    </div>
+
+    <div class="step">
+      <h2><span class="step-num">5</span> Optional claims</h2>
+      <p>
+        Below the main upload fields, four optional toggles cover entitlements the IPA/timesheet
+        scan alone doesn't compute: salary-in-lieu of termination notice, salary-in-lieu of unused
+        annual leave, sick leave pay, and a non-fixed allowance — a contract-based pay rule the IPA
+        never states (e.g. a late-work top-up, a Sunday meal allowance, a one-time housing payment).
+      </p>
+      <p>
+        The non-fixed allowance is written as one free paragraph, in plain English, any way you
+        like — e.g. "Add $5 daily if clocked out past 5pm. Between Sep 1-10 2026, the company
+        provided $250 one-time for housing." Nothing is parsed live as you type; clicking
+        <b>Extract details</b> sends the whole paragraph to be read once, turning each sentence
+        into either a recurring per-day rule or a one-time lump sum (correctly paid once, not
+        multiplied across every day of a date range), and a summary shows what was understood so
+        you can check it before trusting the total.
+      </p>
+    </div>
+
+    <div class="step">
+      <h2><span class="step-num">6</span> Export</h2>
+      <p>
+        Scroll to the bottom for the computed Overtime / Rest Day / Public Holiday / Non-Fixed
+        Allowance breakdown, totalled month by month. From here, generate the filled
+        <code>calculation.xltx</code> spreadsheet (Excel), or a Word/PDF version of the Worker
+        Personal Details claim breakdown for printing.
+      </p>
+      <img src="/guide-images/07-export.png" alt="Breakdown tables and export buttons">
+    </div>
+
+    <div class="step">
+      <h2><span class="step-num">7</span> Scan history</h2>
+      <p>
+        Every scan — timesheet, bank statement, medical bills, payslips — is logged with its cost.
+        Click <b>View</b> on any row to reopen that scan's full review screen later, e.g. to re-check
+        a case or re-export after a correction.
+      </p>
+      <img src="/guide-images/04-scan-history.png" alt="Scan history list with cost per scan">
+    </div>
+  </div>
+</body>
+</html>
