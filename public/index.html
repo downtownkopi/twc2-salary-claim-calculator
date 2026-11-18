@@ -3803,11 +3803,21 @@
     /** Builds the condition-evaluation context (date/weekday/clock times/flags) for one review row. */
     function buildTierRowContext(li, dateVal) {
       const netHours = rowNetHours(li);
+      const clockIn = timeInputToHHMM(li.querySelector('.f-start').value);
+      let clockOut = timeInputToHHMM(li.querySelector('.f-end').value);
+      // An overnight shift's raw clock-out is a small bare HHMM (e.g. "0600" = 600) even though the
+      // worker was still on shift well past 1700/2100 in elapsed-clock terms — shiftHoursClient
+      // already wraps this for duration math, but a tier condition like "clockOut >= 2100" was
+      // comparing the raw unwrapped value and silently failing for every overnight day, undercounting
+      // exactly the days this feature exists to catch. Add 2400 once clockOut < clockIn so
+      // "worked till 9pm and beyond" means what a caseworker expects, same as the 2400-midnight
+      // sentinel this codebase already uses elsewhere for an overnight end.
+      if (clockOut !== null && clockIn !== null && clockOut < clockIn) clockOut += 2400;
       return {
         date: dateVal,
         weekday: weekdayIndex(dateVal),
-        clockIn: timeInputToHHMM(li.querySelector('.f-start').value),
-        clockOut: timeInputToHHMM(li.querySelector('.f-end').value),
+        clockIn,
+        clockOut,
         netHours: netHours === null ? 0 : netHours,
         isRestDay: li.dataset.restDay === '1',
         isHalfDay: isHalfDayDate(dateVal),
