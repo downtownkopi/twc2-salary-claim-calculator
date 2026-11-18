@@ -355,6 +355,15 @@ app.post(
         // interpretationHint param comment.
         const interpretationHint = typeof req.body.interpretationHint === "string" && req.body.interpretationHint.trim() ? req.body.interpretationHint.trim() : undefined;
 
+        // The caseworker's declared claim period (public/index.html's contractStartDate/
+        // contractEndDate fields) — see runProcessJob's claimStartDate/claimEndDate param comments
+        // for why this must reach the server rather than being enforced client-side only. A malformed
+        // or absent value is treated as "not declared" (undefined), not an error — the claim period
+        // is optional, and runProcessJob only filters on the side(s) actually declared.
+        const isYmd = (v: unknown): v is string => typeof v === "string" && /^\d{4}-\d{2}-\d{2}$/.test(v);
+        const claimStartDate = isYmd(req.body.claimStartDate) ? req.body.claimStartDate : undefined;
+        const claimEndDate = isYmd(req.body.claimEndDate) ? req.body.claimEndDate : undefined;
+
         // A real scan (many pages, sequential) can run 15-20+ minutes — long enough that holding this
         // HTTP request open the whole time is fragile (proxies/networks can drop a connection that
         // long) and gives the browser zero visibility into progress until the very end. Instead: kick
@@ -380,7 +389,7 @@ app.post(
         // until a concurrency slot is free, so peak memory/CPU stays bounded to MAX_CONCURRENT_JOBS
         // regardless of how many caseworkers upload at the same moment.
         acquireJobSlot()
-            .then(() => runProcessJob(jobId, files, ipaFile, rotations, excludedPages, excludedIpaPages, standardBreakHours, fallbackYear, controller.signal, interpretationHint))
+            .then(() => runProcessJob(jobId, files, ipaFile, rotations, excludedPages, excludedIpaPages, standardBreakHours, fallbackYear, controller.signal, interpretationHint, claimStartDate, claimEndDate))
             .catch(e => {
                 const job = processJobs.get(jobId);
                 if (job && job.status === "running") { job.status = "error"; job.error = e.message; }

@@ -147,6 +147,12 @@ export function scheduleJobCleanup(jobId: string) {
  * first scan attempt rather than after the fact. Forwarded into every agentic-path page this
  * request scans (see lib/ocr/agentLoop.ts's `interpretationHint` param), the non-agentic buildPrompt
  * path (see lib/timesheetPrompt.ts's `interpretationHint` param), and into the IPA extraction below.
+ * @param claimStartDate - The caseworker's declared claim period start (YYYY-MM-DD), if declared.
+ * Any extracted entry/rest day/hours-row dated before this is dropped (with an `outside_claim_period`
+ * warning) before it reaches reviewRows/scanOutput/pageReviews — never displayed, not just filtered
+ * client-side.
+ * @param claimEndDate - Same as {@link claimStartDate} but for the declared claim period end,
+ * inclusive.
  */
 export async function runProcessJob(
     jobId: string,
@@ -158,7 +164,15 @@ export async function runProcessJob(
     standardBreakHours: number,
     fallbackYear?: number,
     signal?: AbortSignal,
-    interpretationHint?: string
+    interpretationHint?: string,
+    // The caseworker's declared claim period (public/index.html's contractStartDate/contractEndDate
+    // fields), YYYY-MM-DD, inclusive on both ends. Undefined means that bound wasn't declared — never
+    // treat an undefined bound as "today" or any other default, just skip filtering on that side.
+    // Any extracted entry/rest day/hours-row outside this range is dropped before it ever reaches
+    // reviewRows/scanOutput/pageReviews, so there is no code path where a date outside the declared
+    // claim period can appear on the right-hand review table — see the filter below.
+    claimStartDate?: string,
+    claimEndDate?: string
 ): Promise<void> {
     const startedAt = Date.now();
 
@@ -1553,6 +1567,54 @@ export async function runProcessJob(
     // actually showed (e.g. a day before the earliest page any file covered) — a wrong entry on
     // a wage claim is worse than a visible, honest gap.
 
+    // A date outside the declared claim period must never reach reviewRows/scanOutput/pageReviews —
+    // the caseworker is paying/claiming for the declared period only, so an entry the model happened
+    // to read off a page (e.g. a trailing week of the prior month visible at the top of a scanned
+    // sheet) is excluded here, not just hidden later by client-side rendering. Runs once, after every
+    // page has finished contributing entries, so it catches every source (plain clock times, rest
+    // days, hours-only rows) in one place rather than needing the same check repeated at each push
+    // site above. Either bound can be undeclared (undefined) — only the declared side is enforced.
+    if (claimStartDate || claimEndDate) {
+        const withinClaimPeriod = (dateStr: string) =>
+            (!claimStartDate || dateStr >= claimStartDate) && (!claimEndDate || dateStr <= claimEndDate);
+        for (let i = timeEntries.length - 1; i >= 0; i--) {
+            const e = timeEntries[i];
+            const dateStr = toLocalDateString(e.date);
+            if (withinClaimPeriod(dateStr)) continue;
+            warnings.push({
+                source: e.source,
+                reason: `${e.date.toDateString()} was read off the source document but falls outside the declared claim period — excluded from the claim.`,
+                category: "outside_claim_period",
+                date: dateStr,
+            });
+            timeEntries.splice(i, 1);
+        }
+        for (let i = restDays.length - 1; i >= 0; i--) {
+            const r = restDays[i];
+            const dateStr = `${r.year}-${String(r.month).padStart(2, "0")}-${String(r.day).padStart(2, "0")}`;
+            if (withinClaimPeriod(dateStr)) continue;
+            warnings.push({
+                source: r.source,
+                reason: `${new Date(r.year, r.month - 1, r.day).toDateString()} was read off the source document but falls outside the declared claim period — excluded from the claim.`,
+                category: "outside_claim_period",
+                date: dateStr,
+            });
+            restDays.splice(i, 1);
+        }
+        for (let i = hoursEntries.length - 1; i >= 0; i--) {
+            const h = hoursEntries[i];
+            const dateStr = toLocalDateString(h.date);
+            if (withinClaimPeriod(dateStr)) continue;
+            warnings.push({
+                source: h.source,
+                reason: `${h.date.toDateString()} was read off the source document but falls outside the declared claim period — excluded from the claim.`,
+                category: "outside_claim_period",
+                date: dateStr,
+            });
+            hoursEntries.splice(i, 1);
+        }
+    }
+
     // One row per calendar date (multi-shift days already collapsed into a single span+break) —
     // this is the editable seed for the human-review step in the browser. Nothing gets written to
     // the spreadsheet until the reviewer submits their (possibly corrected) rows to /api/generate.
@@ -1585,9 +1647,16 @@ export async function runProcessJob(
     for (const [key, daysCovered] of [...coveredByMonth].sort()) {
         const [y, monthIndex0] = key.split("-").map(Number);
         const daysInMonth = new Date(y, monthIndex0 + 1, 0).getDate();
+        let daysInClaimPeriod = 0;
         for (let day = 1; day <= daysInMonth; day++) {
-            if (daysCovered.has(day)) continue;
             const dateStr = `${y}-${String(monthIndex0 + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+            // A day outside the declared claim period isn't expected to be covered at all (its
+            // entries, if any, were already dropped above) — skip it here too, rather than flagging
+            // "no entry" for a date nobody is claiming.
+            if (claimStartDate && dateStr < claimStartDate) continue;
+            if (claimEndDate && dateStr > claimEndDate) continue;
+            daysInClaimPeriod++;
+            if (daysCovered.has(day)) continue;
             if (explainedDates.has(dateStr)) continue;
             const date = new Date(y, monthIndex0, day);
             warnings.push({
@@ -1597,7 +1666,7 @@ export async function runProcessJob(
                 date: dateStr,
             });
         }
-        monthSummary.push({ label: `${MONTH_ABBR[monthIndex0]} ${y}`, filled: daysCovered.size, total: daysInMonth });
+        monthSummary.push({ label: `${MONTH_ABBR[monthIndex0]} ${y}`, filled: daysCovered.size, total: daysInClaimPeriod });
     }
 
     // Every entry that was attempted, with its exact origin (a specific page/band scan), so a

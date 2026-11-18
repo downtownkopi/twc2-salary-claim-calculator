@@ -29,7 +29,8 @@ export type WarningCategory =
     | "flagged_review" // written to the sheet, but flagged (guess, implausible-but-kept, multi-shift collapse)
     | "skipped_invalid" // skipped due to structurally invalid data (bad date, odd time count, etc.)
     | "scan_quality" // page/attempt-level issues (truncation, failed calls, verification pass itself failing)
-    | "system"; // file-level errors (couldn't read a PDF, etc.)
+    | "system" // file-level errors (couldn't read a PDF, etc.)
+    | "outside_claim_period"; // read off the source page fine, but the date falls outside the declared claim period — excluded from the claim
 
 export type FillWarning = {
     source: string;
