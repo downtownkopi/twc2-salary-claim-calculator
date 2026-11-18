@@ -1,4 +1,8 @@
-export type ExportCategoryRow = { month: string; daysOrHours: number | null; earned: number; paid: number; owed: number };
+// remarks is optional and currently only populated for the non-fixed-allowance category (see
+// public/index.html's buildExportPayload) — categoryTableRows below only renders a Remarks column
+// at all when at least one row in the category actually has one, so every other breakdown table
+// (basic, overtime, rest days, etc.) renders exactly as before.
+export type ExportCategoryRow = { month: string; daysOrHours: number | null; earned: number; paid: number; owed: number; remarks?: string };
 export type ExportCategory = { rows: ExportCategoryRow[]; totalDaysOrHours: number; totalEarned: number; totalPaid: number; totalOwed: number };
 
 // Employment Act ss.10-11 — salary-in-lieu of termination notice. A one-off entitlement, not tied
@@ -148,13 +152,18 @@ export function computeClaimTotals(p: WorkerDetailsExportPayload) {
  * @returns `headers` (column titles), `body` (one string array per month), and `total` (the bottom row).
  */
 export function categoryTableRows(category: ExportCategory, extraColumnLabel: string | null, extraFormat: (n: number) => string) {
-    const headers = ["Month", ...(extraColumnLabel ? [extraColumnLabel] : []), "($) Earned", "($) Employer Paid", "($) Owed"];
+    // Auto-detected rather than an explicit param — only the non-fixed-allowance category's rows
+    // carry `remarks` today, so this keeps every other breakdown table's column count unchanged
+    // without needing a flag threaded through every call site.
+    const showRemarks = category.rows.some(r => r.remarks !== undefined);
+    const headers = ["Month", ...(extraColumnLabel ? [extraColumnLabel] : []), "($) Earned", "($) Employer Paid", "($) Owed", ...(showRemarks ? ["Remarks"] : [])];
     const body = category.rows.map(r => [
         r.month,
         ...(extraColumnLabel ? [extraFormat(r.daysOrHours ?? 0)] : []),
         formatPlain(r.earned),
         r.paid === 0 ? "-" : formatPlain(r.paid),
         formatPlain(r.owed),
+        ...(showRemarks ? [r.remarks || "-"] : []),
     ]);
     const total = [
         "Total",
@@ -162,6 +171,7 @@ export function categoryTableRows(category: ExportCategory, extraColumnLabel: st
         formatPlain(category.totalEarned),
         category.totalPaid === 0 ? "-" : formatPlain(category.totalPaid),
         formatPlain(category.totalOwed),
+        ...(showRemarks ? [""] : []),
     ];
     return { headers, body, total };
 }

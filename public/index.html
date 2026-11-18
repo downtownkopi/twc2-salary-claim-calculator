@@ -2493,13 +2493,13 @@
           // adds its amount straight to that month, a single time, rather than evaluating it
           // against every row the way a recurring tier's `test` does (see its own comment there).
           if (once) {
-            compiledNonFixedAllowanceTiers.push({ once: true, amount, anchorMonth });
+            compiledNonFixedAllowanceTiers.push({ once: true, amount, anchorMonth, label: `one-time in ${anchorMonth}` });
             understood.push(`one-time $${amount} in ${anchorMonth}`);
             continue;
           }
           try {
             const test = expression === '' ? () => true : compileTierExpression(expression);
-            compiledNonFixedAllowanceTiers.push({ once: false, test, amount });
+            compiledNonFixedAllowanceTiers.push({ once: false, test, amount, label: expression || 'always' });
             understood.push(`"${expression || 'always'}" → $${amount}/day`);
           } catch (e) {
             dropped.push(`"${expression}" — ${e.message}`);
@@ -3121,10 +3121,10 @@
      */
     function buildExportPayload() {
       if (!lastBreakdownForExport) return { error: 'No claim breakdown yet — set a basic salary and add at least one claimed day first.' };
-      const { monthKeys, totals, allocated, restDayWorkedDatesByMonth, phWorkedDatesByMonth, nonFixedAllowanceByMonth, basicSalary, basicFullAmountByMonth, allowancesFullAmountByMonth, noticeClaim, leaveClaim, sickClaim, medicalBillsClaim } = lastBreakdownForExport;
+      const { monthKeys, totals, allocated, restDayWorkedDatesByMonth, phWorkedDatesByMonth, nonFixedAllowanceByMonth, nonFixedAllowanceRemarksByMonth, basicSalary, basicFullAmountByMonth, allowancesFullAmountByMonth, noticeClaim, leaveClaim, sickClaim, medicalBillsClaim } = lastBreakdownForExport;
 
       /** Builds one export category's per-month rows and totals. */
-      function category(getFullAmount, getBucketKey, getDaysOrHours) {
+      function category(getFullAmount, getBucketKey, getDaysOrHours, getRemarks) {
         const rows = [];
         let totalDaysOrHours = 0, totalEarned = 0, totalPaid = 0, totalOwed = 0;
         for (const month of monthKeys) {
@@ -3133,7 +3133,9 @@
           const paid = allocated.get(month)[getBucketKey];
           const owed = paid - earned; // negative = shortfall, matches template's parens convention
           const daysOrHours = getDaysOrHours(month, t);
-          rows.push({ month: formatMonthLabelFull(month), daysOrHours, earned, paid, owed });
+          const row = { month: formatMonthLabelFull(month), daysOrHours, earned, paid, owed };
+          if (getRemarks) row.remarks = getRemarks(month);
+          rows.push(row);
           totalDaysOrHours += daysOrHours;
           totalEarned += earned;
           totalPaid += paid;
@@ -3144,7 +3146,10 @@
 
       const basic = category(month => basicFullAmountByMonth.get(month) || 0, 'basic', () => null);
       const allowances = category(month => allowancesFullAmountByMonth.get(month) || 0, 'allowances', () => null);
-      const nonFixedAllowance = category(month => nonFixedAllowanceByMonth.get(month) || 0, 'nonFixedAllowance', () => null);
+      // Same "N days × $X/day (rule)" text the on-screen Non-Fixed Allowance Breakdown's Remarks
+      // column already shows (formatNonFixedAllowanceRemarks) — reused here so the exported docx/pdf
+      // can't drift from what the caseworker is already looking at on screen.
+      const nonFixedAllowance = category(month => nonFixedAllowanceByMonth.get(month) || 0, 'nonFixedAllowance', () => null, month => formatNonFixedAllowanceRemarks(month, nonFixedAllowanceRemarksByMonth));
       const overtime = category((month, t) => t.otRate * t.otHours, 'ot', (month, t) => t.otHours);
       const restDays = category((month, t) => t.restDayPay, 'rest', month => (restDayWorkedDatesByMonth.get(month) || []).length);
       const publicHolidays = category((month, t) => t.phPay, 'ph', month => (phWorkedDatesByMonth.get(month) || []).length);
@@ -3784,18 +3789,27 @@
     // and "clockOut>=2100" (+$3) gets $5 + $3 = $8, per how this feature was specced.
     /** Sums every met non-fixed-allowance tier's amount for one row, given its already-built field context. */
     function rowNonFixedAllowance(ctx, tiers) {
-      if (tiers.length === 0) return 0;
+      return rowNonFixedAllowanceBreakdown(ctx, tiers).total;
+    }
+    // Same evaluation as rowNonFixedAllowance, but also reports WHICH tiers matched (by label) —
+    // the remarks column (renderNonFixedAllowanceBreakdown) needs this to say e.g. "12 days ×
+    // $5/day (weekday==0)" instead of just the opaque summed total. Kept separate from
+    // rowNonFixedAllowance (rather than changing its return type) so every existing call site
+    // that only wants the number doesn't have to unwrap a {total} object.
+    /** Same as rowNonFixedAllowance, but also returns which tiers matched (for remarks). */
+    function rowNonFixedAllowanceBreakdown(ctx, tiers) {
+      const matched = [];
       let total = 0;
       for (const tier of tiers) {
         try {
-          if (tier.test(ctx)) total += tier.amount;
+          if (tier.test(ctx)) { total += tier.amount; matched.push(tier); }
         } catch {
           // a condition can throw at eval time too (e.g. comparing a null clockOut with >=,
           // which JS just resolves to false rather than throwing — this catch is for genuinely
           // unexpected cases) — treated as "doesn't apply" rather than aborting the whole recompute
         }
       }
-      return total;
+      return { total, matched };
     }
     // Builds the fixed-field context every tier condition is evaluated against for one row — kept
     // as its own function (not inlined into the caller) so rowNonFixedAllowance's signature stays
@@ -4234,10 +4248,22 @@
       const nonFixedAllowanceTiers = allNonFixedAllowanceTiers.filter(t => !t.once); // read once, reused per row below
       const onceNonFixedAllowanceTiers = allNonFixedAllowanceTiers.filter(t => t.once);
       const nonFixedAllowanceByMonth = new Map(); // monthKey -> $ total — kept separate from `totals`, since a tier condition can match a day with no worked hours at all (e.g. a flat Sunday allowance), unlike OT/rest/PH which only ever apply to a valid worked row
+      // monthKey -> Map(tier label -> { amount: $/match, count: number of matches }) — feeds the
+      // Non-Fixed Allowance Breakdown's remarks column (renderNonFixedAllowanceBreakdown), so a
+      // caseworker can see e.g. "12 days × $5/day (weekday==0)" instead of just the opaque total.
+      const nonFixedAllowanceRemarksByMonth = new Map();
+      function addNonFixedRemark(monthKey, label, amount) {
+        const byLabel = nonFixedAllowanceRemarksByMonth.get(monthKey) ?? new Map();
+        const entry = byLabel.get(label) ?? { amount, count: 0 };
+        entry.count++;
+        byLabel.set(label, entry);
+        nonFixedAllowanceRemarksByMonth.set(monthKey, byLabel);
+      }
       // Added once each, straight to their anchor month, not evaluated per row — see
       // parseNonFixedAllowanceRules' own comment on why a one-time lump sum can't be a `test`.
       for (const tier of onceNonFixedAllowanceTiers) {
         nonFixedAllowanceByMonth.set(tier.anchorMonth, (nonFixedAllowanceByMonth.get(tier.anchorMonth) || 0) + tier.amount);
+        addNonFixedRemark(tier.anchorMonth, tier.label, tier.amount);
       }
 
       document.querySelectorAll('.review-row').forEach(li => {
@@ -4249,8 +4275,12 @@
         // condition is free to match a rest day or a blank-time row (e.g. `weekday == 0` for every
         // Sunday, worked or not), so this can't be gated on "was this day actually worked" the way
         // OT/rest/PH pay further down are.
-        const nonFixedAmt = rowNonFixedAllowance(buildTierRowContext(li, dateVal), nonFixedAllowanceTiers);
-        if (nonFixedAmt > 0) nonFixedAllowanceByMonth.set(monthKey, (nonFixedAllowanceByMonth.get(monthKey) || 0) + nonFixedAmt);
+        const nonFixedResult = rowNonFixedAllowanceBreakdown(buildTierRowContext(li, dateVal), nonFixedAllowanceTiers);
+        const nonFixedAmt = nonFixedResult.total;
+        if (nonFixedAmt > 0) {
+          nonFixedAllowanceByMonth.set(monthKey, (nonFixedAllowanceByMonth.get(monthKey) || 0) + nonFixedAmt);
+          for (const tier of nonFixedResult.matched) addNonFixedRemark(monthKey, tier.label, tier.amount);
+        }
 
         const isRestDayChecked = li.dataset.restDay === '1';
         const isDeclaredRestDay = weekdayIndex(dateVal) === restDayOfWeek;
@@ -4531,11 +4561,11 @@
       // consumer of this snapshot reads it off `totals` per month instead, so it's not duplicated
       // here as its own field. nonFixedAllowanceByMonth is kept as its own map (not folded into
       // `totals`) since a tier condition can match a month with no worked hours at all.
-      lastBreakdownForExport = { monthKeys, totals, allocated, restDayWorkedDatesByMonth, phWorkedDatesByMonth, nonFixedAllowanceByMonth, basicSalary, basicFullAmountByMonth, allowancesFullAmountByMonth, noticeClaim, leaveClaim, sickClaim, medicalBillsClaim };
+      lastBreakdownForExport = { monthKeys, totals, allocated, restDayWorkedDatesByMonth, phWorkedDatesByMonth, nonFixedAllowanceByMonth, nonFixedAllowanceRemarksByMonth, basicSalary, basicFullAmountByMonth, allowancesFullAmountByMonth, noticeClaim, leaveClaim, sickClaim, medicalBillsClaim };
       document.getElementById('exportDocxBtn').style.display = '';
       document.getElementById('exportPdfBtn').style.display = '';
       renderAllowancesBreakdown(monthKeys, allowancesFullAmountByMonth, allocated);
-      renderNonFixedAllowanceBreakdown(monthKeys, nonFixedAllowanceByMonth, allocated);
+      renderNonFixedAllowanceBreakdown(monthKeys, nonFixedAllowanceByMonth, allocated, nonFixedAllowanceRemarksByMonth);
       renderOvertimeBreakdown(monthKeys, totals, allocated);
       renderRestBreakdown(monthKeys, totals, restDayWorkedDatesByMonth, allocated);
       renderPublicHolidayBreakdown(monthKeys, totals, phWorkedDatesByMonth, allocated);
@@ -4588,7 +4618,26 @@
     // match a day with no worked hours at all), same recurring-not-prorated shape as OT/rest/PH.
     // Hidden entirely (same as the input fields above) when the feature is toggled off.
     /** Renders the Non-Fixed Allowance Breakdown table. */
-    function renderNonFixedAllowanceBreakdown(monthKeys, nonFixedAllowanceByMonth, allocated) {
+    // Builds the "12 days × $5/day (weekday==0); one-time $50 (one-time in 2025-03)" remarks text
+    // for one month, from the label->{amount,count} map recomputeMonthlyPayTotals built while
+    // evaluating tiers — a once-tier's label already reads "one-time in <month>" (see
+    // parseNonFixedAllowanceRules), so a count of 1 there is phrased without the "N days ×" prefix
+    // since it was never evaluated per-day in the first place.
+    /** Formats one month's matched non-fixed-allowance tiers into a human-readable remarks string. */
+    function formatNonFixedAllowanceRemarks(month, remarksByMonth) {
+      const byLabel = remarksByMonth && remarksByMonth.get(month);
+      if (!byLabel || byLabel.size === 0) return '';
+      const parts = [];
+      for (const [label, { amount, count }] of byLabel) {
+        if (label.startsWith('one-time in ')) {
+          parts.push(`${formatMoney(amount)} (${label})`);
+        } else {
+          parts.push(`${count} day${count === 1 ? '' : 's'} × ${formatMoney(amount)}/day (${label})`);
+        }
+      }
+      return parts.join('; ');
+    }
+    function renderNonFixedAllowanceBreakdown(monthKeys, nonFixedAllowanceByMonth, allocated, nonFixedAllowanceRemarksByMonth) {
       const el = document.getElementById('nonFixedAllowanceBreakdown');
       if (monthKeys.length === 0 || !document.getElementById('nonFixedAllowanceToggle').checked) {
         el.style.display = 'none';
@@ -4603,20 +4652,23 @@
         const computedClaim = fullAmount - paymentReceived;
         sumComputedClaim += computedClaim;
         const [yearStr, monthNumStr] = month.split('-');
+        const remarks = formatNonFixedAllowanceRemarks(month, nonFixedAllowanceRemarksByMonth);
         return `<tr>
       <td>${yearStr}</td>
       <td>${MONTH_ABBR[Number(monthNumStr) - 1]}</td>
       <td>${formatMoney(fullAmount)}</td>
       <td>${formatMoney(paymentReceived)}</td>
       <td>${formatMoney(computedClaim)}</td>
+      <td>${escapeHtml(remarks)}</td>
     </tr>`;
       }).join('');
       const totalRow = `<tr class="pay-total-row">
       <td colspan="4">Total</td>
       <td><strong>${formatMoney(sumComputedClaim)}</strong></td>
+      <td></td>
     </tr>`;
       el.innerHTML = `<h3>Non-Fixed Allowance Breakdown</h3><table class="pay-total-table">
-    <thead><tr><th>Year</th><th>Month</th><th>Full amount</th><th>Payment received</th><th>Computed claim</th></tr></thead>
+    <thead><tr><th>Year</th><th>Month</th><th>Full amount</th><th>Payment received</th><th>Computed claim</th><th>Remarks</th></tr></thead>
     <tbody>${rows}${totalRow}</tbody>
   </table>`;
     }
