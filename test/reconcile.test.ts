@@ -63,12 +63,13 @@ describe("reconcileAttempts", () => {
         expect(warnings).toHaveLength(0);
     });
 
-    it("drops a day with no majority (3-way split) and warns instead of guessing", () => {
+    it("defaults to 08:00-17:00 when there's no majority (3-way split), instead of dropping the day", () => {
         const attempts = [[times(1, 6, [800, 1700])], [times(1, 6, [800, 1800])], [times(1, 6, [900, 1700])]];
         const { entries, warnings } = reconcileAttempts(attempts, "test");
-        expect(entries).toHaveLength(0);
-        expect(warnings).toHaveLength(1);
-        expect(warnings[0].category).toBe("dropped_disagreement");
+        expect(entries).toHaveLength(1);
+        expect(entries[0]).toMatchObject({ times: [800, 1700], guessed: true });
+        expect(entries[0].notes).toMatch(/defaulted to 08:00/);
+        expect(warnings).toHaveLength(0);
     });
 
     it("excludes an implausible clock time from voting instead of treating it as disagreement", () => {
@@ -105,11 +106,13 @@ describe("reconcileAttempts", () => {
         expect(entries[0]).toMatchObject({ hoursWorked: 8 });
     });
 
-    it("drops a day when attempts disagree on the data model itself", () => {
+    it("defaults to 08:00-17:00 when attempts disagree on the data model itself, instead of dropping the day", () => {
         const attempts = [[times(1, 6, [800, 1700])], [rest(1, 6)], [hours(1, 6, 8)]];
         const { entries, warnings } = reconcileAttempts(attempts, "test");
-        expect(entries).toHaveLength(0);
-        expect(warnings[0].reason).toMatch(/data model itself/);
+        expect(entries).toHaveLength(1);
+        expect(entries[0]).toMatchObject({ times: [800, 1700], guessed: true });
+        expect(entries[0].notes).toMatch(/data model itself/);
+        expect(warnings).toHaveLength(0);
     });
 
     it("treats [2200, 600] and [600, 2200] as different readings when orderMatters is true (default)", () => {
@@ -135,11 +138,12 @@ describe("reconcileAttempts", () => {
         expect(warnings).toHaveLength(0);
     });
 
-    it("still requires at least 2 agreeing attempts even with requireFullParticipation true and only one mentions the day", () => {
+    it("still requires at least 2 agreeing attempts even with requireFullParticipation true and only one mentions the day — defaults instead of dropping", () => {
         const attempts = [[times(1, 6, [800, 1700])], [], []];
         const { entries, warnings } = reconcileAttempts(attempts, "test", true);
-        expect(entries).toHaveLength(0);
-        expect(warnings).toHaveLength(1);
+        expect(entries).toHaveLength(1);
+        expect(entries[0]).toMatchObject({ times: [800, 1700], guessed: true });
+        expect(warnings).toHaveLength(0);
     });
 
     it("merges multiple punch-log objects for the same day within one attempt, sorted ascending", () => {
@@ -148,11 +152,6 @@ describe("reconcileAttempts", () => {
         expect(entries[0].times).toEqual([800, 1700]);
     });
 
-    it("tags warnings with a YYYY-MM-DD date when year is provided", () => {
-        const attempts = [[times(1, 6, [800, 1700])], [times(1, 6, [800, 1800])], [times(1, 6, [900, 1700])]];
-        const { warnings } = reconcileAttempts(attempts, "test", true, 2025);
-        expect(warnings[0].date).toBe("2025-06-01");
-    });
 });
 
 describe("reconcileRosterAttempts", () => {
@@ -181,14 +180,15 @@ describe("reconcileRosterAttempts", () => {
         expect(entry!.notes).toMatch(/majority reading/);
     });
 
-    it("drops the time reading (but still reports the match) when confident attempts disagree with no majority", () => {
+    it("defaults to 08:00-17:00 (but still reports the match) when confident attempts disagree with no majority", () => {
         const attempts = [
             rosterAttempt([rosterRow({ workerName: "Ang See Choon", workerIc: "925A", actualTimeIn: 900, actualTimeOut: 1830 })]),
             rosterAttempt([rosterRow({ workerName: "Ang See Choon", workerIc: "925A", actualTimeIn: 900, actualTimeOut: 1900 })]),
         ];
         const { entry, warnings } = reconcileRosterAttempts(attempts, "roster.pdf p1", "Ang See Choon", "925A", 2025);
-        expect(entry).toMatchObject({ actualTimeIn: null, actualTimeOut: null, guessed: true, matchConfidence: "high" });
-        expect(warnings.some(w => w.category === "dropped_disagreement")).toBe(true);
+        expect(entry).toMatchObject({ actualTimeIn: 800, actualTimeOut: 1700, guessed: true, matchConfidence: "high" });
+        expect(entry!.notes).toMatch(/defaulted to 08:00/);
+        expect(warnings.some(w => w.category === "dropped_disagreement")).toBe(false);
     });
 
     it("reports no entry (needs manual pick) when no attempt confidently matches the target worker", () => {

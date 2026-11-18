@@ -411,7 +411,12 @@ export function reconcileAttempts(
                 notes: `majority reading (${majorityTimes.agreeCount}/${majorityTimes.totalCount} attempts agreed on ${majorityTimes.times.join(",")}) — not unanimous, please verify against the source PDF`,
             });
         } else if (attemptsThatMentionedDay > 0 || implausibleCount > 0 || noSignalCount > 0) {
-            // something was reported, but not unanimously — dropped rather than guessed
+            // Something was reported, but attempts couldn't agree on a reading — previously dropped
+            // entirely (a blank gap on the claim). Per explicit product decision: a blank cell is
+            // worse than a clearly-flagged guess, so this now defaults to a standard 08:00-17:00 shift
+            // instead of being left out. The entry's own `notes` carries the exact reason reconciliation
+            // couldn't do better, same as the majority-vote guess branch above, so the caseworker still
+            // sees it needs a closer look — it just isn't silently missing anymore.
             const reasons: string[] = [];
             if (requireFullParticipation && attemptsThatMentionedDay < effectiveTotal) {
                 reasons.push(`only ${attemptsThatMentionedDay}/${effectiveTotal} valid attempts reported anything for this day`);
@@ -435,11 +440,17 @@ export function reconcileAttempts(
                 reasons.push(`${noSignalCount} attempt(s) reported this date but with no determinable clock-time, hours, or rest-day value — excluded from voting`);
             }
             if (reasons.length === 0) continue; // e.g. lenient mode, single non-conflicting mention already accepted above
-            warnings.push({
-                source,
-                reason: `day=${day} month=${month}: not unanimous across scan attempts (${reasons.join("; ")}) — dropped rather than guessed, please check the source PDF for this date directly`,
-                category: "dropped_disagreement",
-                date: year ? `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}` : undefined,
+            entries.push({
+                day,
+                month,
+                times: [800, 1700],
+                hoursWorked: null,
+                otHours: null,
+                noBreak: null,
+                bbox: null,
+                guessed: true,
+                rest_day: false,
+                notes: `could not reconcile this date across scan attempts (${reasons.join("; ")}) — defaulted to 08:00–17:00, please verify against the source PDF directly`,
             });
         }
         // else: no attempt produced usable data for this day — left out entirely, surfaces later
@@ -608,24 +619,22 @@ export function reconcileRosterAttempts(
     const majority = bestTimeSig !== null && bestTimeCount > votes.length / 2;
 
     if (!unanimous && !majority) {
-        warnings.push({
-            source,
-            reason: "worker-roster page: target worker was identified, but scan attempts disagreed on actual time in/out with no majority — dropped rather than guessed, please check the source page directly",
-            category: "dropped_disagreement",
-            date: dateStr,
-        });
+        // Previously left actualTimeIn/Out null here (a blank gap on the claim) — per explicit
+        // product decision, defaults to a standard 08:00-17:00 shift instead, same as the
+        // non-roster reconcileAttempts fallback above. The entry's own `notes` still flags it for
+        // a closer look; no separate warning needed since the row itself is no longer blank.
         return {
             date: { day, month },
             entry: {
                 day,
                 month,
-                actualTimeIn: null,
-                actualTimeOut: null,
+                actualTimeIn: 800,
+                actualTimeOut: 1700,
                 mealBreakHours: null,
                 guessed: true,
                 matchConfidence: votes[0].confidence,
                 matchedRowIndex: indexInAllRows(votes[0].row),
-                notes: "target worker identified, but actual time in/out could not be reconciled across scan attempts — please verify against the source page",
+                notes: "target worker identified, but actual time in/out could not be reconciled across scan attempts — defaulted to 08:00–17:00, please verify against the source page",
             },
             allRows,
             warnings,
