@@ -204,7 +204,7 @@ export async function buildWorkerPersonalDetailsPdf(p: WorkerDetailsExportPayloa
         categoryTable(doc, p.nonFixedAllowance, null, () => "", "Earned non-fixed allowance vs Non-fixed allowance Received by Month");
 
         heading(doc, "Overtime payment", { red: true });
-        categoryTable(doc, p.overtime, "Hours", n => n.toFixed(1), "Earned Overtime vs Overtime Pay Received by Month");
+        categoryTable(doc, p.overtime, "Hours", n => n.toFixed(2), "Earned Overtime vs Overtime Pay Received by Month");
 
         heading(doc, "Payment for work on rest days", { red: true });
         categoryTable(doc, p.restDays, "Days", n => n.toFixed(1), "Earned Work on Rest days vs Work on Rest days Pay Received by Month");

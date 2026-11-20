@@ -1263,6 +1263,72 @@
       font-size: 13px;
       box-sizing: border-box;
     }
+
+    /* Collapsed: a translucent rail of dots. Hovered: opaque pill with labels. Width is driven by
+       .quick-nav-label's max-width transition, not the rail's own width, so collapse/expand
+       doesn't jump the rail's left edge around. */
+    .quick-nav {
+      position: fixed;
+      left: 10px;
+      top: 50%;
+      transform: translateY(-50%);
+      z-index: 1000;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      padding: 10px 8px;
+      border-radius: 16px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      opacity: 0.3;
+      transition: opacity 0.15s ease;
+      max-height: 80vh;
+      overflow-y: auto;
+    }
+    .quick-nav:empty { display: none; }
+    .quick-nav:hover {
+      opacity: 1;
+      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
+    }
+    .quick-nav-item {
+      display: flex;
+      align-items: center;
+      gap: 0;
+      text-decoration: none;
+      color: var(--text);
+      font-size: 13px;
+      white-space: nowrap;
+      cursor: pointer;
+      transition: gap 0.15s ease;
+    }
+    /* Collapsed, the label is a 0-width hidden span — a nonzero gap here would still pad the dot
+       off to the left of empty space (flex gap applies between slots regardless of their own
+       width), which is the lopsided-padding bug this fixes. Gap only kicks in alongside the
+       label's own max-width/opacity expand on hover. */
+    .quick-nav:hover .quick-nav-item {
+      gap: 8px;
+    }
+    .quick-nav-dot {
+      width: 8px;
+      height: 8px;
+      min-width: 8px;
+      border-radius: 50%;
+      background: var(--text);
+      opacity: 0.6;
+    }
+    .quick-nav-item:hover .quick-nav-dot {
+      opacity: 1;
+    }
+    .quick-nav-label {
+      max-width: 0;
+      overflow: hidden;
+      opacity: 0;
+      transition: max-width 0.15s ease, opacity 0.15s ease;
+    }
+    .quick-nav:hover .quick-nav-label {
+      max-width: 180px;
+      opacity: 1;
+    }
   </style>
 </head>
 
@@ -1271,6 +1337,11 @@
   <div class="theme-toggle-wrap">
     <button type="button" class="theme-toggle-btn" id="themeToggleBtn">🌙 Dark mode</button>
   </div>
+
+  <!-- Fixed left jump-nav — translucent dots, expands to labeled links on hover. Entries only
+       show once their target section actually exists/is visible (see updateQuickNav), so it
+       never offers a link to a section the current view has nothing in. -->
+  <nav class="quick-nav" id="quickNav" aria-label="Jump to section"></nav>
 
   <div class="container">
     <h1>Salary Claim Calculator</h1>
@@ -1348,7 +1419,7 @@
       </div>
 
       <form id="form">
-        <h2>Worker's schedule</h2>
+        <h2 id="workerScheduleHeading">Worker's schedule</h2>
         <div class="field">
           <h4>Worker's weekly rest day</h4>
           <div class="radio-group" id="restDayGroup">
@@ -1566,7 +1637,7 @@
 
         <hr />
 
-        <h2>Documents</h2>
+        <h2 id="documentsHeading">Documents</h2>
         <div class="upload-warning">⚠ Make sure every page — IPA letter and timesheets alike — is upright before
           uploading. A sideways page (common in scanned/photographed PDFs) can cause the scan to silently misread dates
           and times.</div>
@@ -1580,10 +1651,11 @@
         </div>
 
         <div class="field">
-          <h4 for="ipa">IPA letter (PDF or photo)</h4>
+          <h4 for="ipa">IPA letter (PDF or photo, optional)</h4>
           <div class="file-list">Employer/salary/OT-rate terms are read off it alongside the timesheets, in the same
-            submit.</div>
-          <input type="file" id="ipa" name="ipa" accept="application/pdf,image/*" required>
+            submit. Skip this if you'd rather fill in worker name, FIN, employer, salary, etc. by hand — the fields
+            stay editable below either way, and claims recompute as you fill them in.</div>
+          <input type="file" id="ipa" name="ipa" accept="application/pdf,image/*">
           <div class="stage-grid" id="ipaStage"></div>
         </div>
 
@@ -1846,6 +1918,65 @@
       localStorage.setItem('theme', next);
       applyTheme(next);
     });
+
+    // ===== Quick-nav (fixed left jump rail) =====
+    // Static list of every section this page can show; "visible" below is re-checked on each
+    // refresh rather than assumed, since most of these get their own display:none/'block' toggles
+    // scattered across the scan/history-load code paths (page-by-page review subsections, Summary,
+    // etc.) and a static list can't know which ones currently have anything in them.
+    const QUICK_NAV_ENTRIES = [
+      { id: 'workerScheduleHeading', label: "Worker's schedule" },
+      { id: 'documentsHeading', label: 'Documents' },
+      { id: 'ipaPageReviewHeading', label: 'IPA letter' },
+      { id: 'pageReviewListHeading', label: 'Timesheet' },
+      { id: 'bankPageReviewListHeading', label: 'Bank statement' },
+      { id: 'medicalPageReviewListHeading', label: 'Medical bills' },
+      { id: 'medicalCertPageReviewListHeading', label: 'Medical certificates' },
+      { id: 'payslipPageReviewListHeading', label: 'Payslips' },
+      { id: 'summarySection', label: 'Summary' },
+    ];
+    const quickNavEl = document.getElementById('quickNav');
+    /**
+     * Rebuilds the quick-nav rail's dots/links from QUICK_NAV_ENTRIES, keeping only the entries
+     * whose target currently exists and is actually visible (offsetParent !== null catches both
+     * the target's own display:none and any hidden ancestor, e.g. the whole history detail view
+     * being swapped out).
+     */
+    // Compared against this (not quickNavEl.innerHTML) to decide whether a rebuild is needed — the
+    // browser re-serializes entities like the apostrophe in "Worker's schedule" differently than
+    // escapeHtml wrote them, so comparing our built string against the DOM's own readback never
+    // matched and reassigned on every single animation frame forever.
+    let lastQuickNavHtml = null;
+    function updateQuickNav() {
+      const html = QUICK_NAV_ENTRIES
+        .filter(({ id }) => {
+          const el = document.getElementById(id);
+          return el && el.offsetParent !== null;
+        })
+        .map(({ id, label }) => `<a class="quick-nav-item" data-target="${id}"><span class="quick-nav-dot"></span><span class="quick-nav-label">${escapeHtml(label)}</span></a>`)
+        .join('');
+      if (html === lastQuickNavHtml) return;
+      lastQuickNavHtml = html;
+      quickNavEl.innerHTML = html;
+    }
+    quickNavEl.addEventListener('click', (e) => {
+      const item = e.target.closest('.quick-nav-item');
+      if (!item) return;
+      document.getElementById(item.dataset.target)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+    // Rebuilt on every style mutation anywhere in the page (debounced to one rAF per batch) — far
+    // cheaper than hunting down and hooking every individual display-toggle call site, and the
+    // offsetParent check above means a stray extra rebuild is a no-op, not a correctness risk.
+    let quickNavRefreshQueued = false;
+    function scheduleQuickNavUpdate() {
+      if (quickNavRefreshQueued) return;
+      quickNavRefreshQueued = true;
+      requestAnimationFrame(() => { quickNavRefreshQueued = false; updateQuickNav(); });
+    }
+    new MutationObserver(scheduleQuickNavUpdate).observe(document.body, {
+      attributes: true, attributeFilter: ['style'], subtree: true, childList: true,
+    });
+    updateQuickNav();
 
     // ===== Top-level DOM refs and shared state =====
     const form = document.getElementById('form');
@@ -2352,7 +2483,13 @@
       }
     }
     document.getElementById('restDayGroup').addEventListener('change', updateHalfDayDefault);
-    updateHalfDayDefault();
+    // Deferred (not called straight away) — this can dispatch a synthetic 'change' event on the
+    // half-day radio, which cascades into recomputeAllGuardrails() and from there into every
+    // collectAll*Entries() helper, several of which close over `const`s (e.g.
+    // medicalCertPageReviewListEl) that are declared much further down this same script and are
+    // still in their temporal dead zone this early during initial evaluation. setTimeout(0) just
+    // pushes the call past the end of this script's synchronous run, after every such const exists.
+    setTimeout(updateHalfDayDefault, 0);
 
     // ===== One-off claim toggles: notice / annual leave / sick leave =====
     // Salary-in-lieu of termination notice — optional, off by default. Toggling it on defaults the
@@ -2969,55 +3106,67 @@
       // the source scan" pattern as every timesheet page — this is the ONLY place basic salary and
       // allowances are actually editable. The Summary section's IPA box is a separate, read-only
       // rendering of the same data (see ipaReviewEl below), not something to edit twice.
-      if (data.ipaImage || data.ipa || data.ipaWarning) {
-        ipaPageReviewEl.style.display = 'block';
-        document.getElementById('ipaPageReviewHeading').style.display = 'block';
-        ipaPageReviewEl.innerHTML = renderIpaCard(data.ipaImage, data.ipa, data.ipaWarning);
-        const ipaRescanControls = ipaPageReviewEl.querySelector('.page-rescan-controls');
-        if (ipaRescanControls) wireIpaRescanControls(ipaRescanControls);
-        if (data.ipa) {
-          // Salary/allowances feed the rate formulas every row's guardrails depend on, AND the
-          // Summary card's read-only figures — editing either one here needs to ripple through both,
-          // not just the row guardrails, otherwise Summary would keep showing the stale scanned
-          // value right next to rates already recomputed from the edited one. workingDaysPerWeek
-          // specifically also needs updateHalfDayDefault — getWorkDaysPerWeek() now reads straight
-          // off this field (see its own comment), so the half-day field's visibility needs
-          // re-checking on every edit, not just once at page load.
-          ipaPageReviewEl.querySelectorAll('.ipa-input').forEach(input => {
-            input.addEventListener('input', () => { renderIpaSummaryText(); recomputeAllGuardrails(); updateHalfDayDefault(); });
-          });
-          updateHalfDayDefault(); // reflects the freshly-scanned workingDaysPerWeek value immediately, not just after an edit
-        }
-      }
+      // The editable field grid (and the Summary card below) renders unconditionally now — no IPA
+      // upload is required, and a caseworker filling these in by hand still needs the same inputs
+      // and the same recompute-on-edit wiring as a scanned one would get.
+      ipaPageReviewEl.style.display = 'block';
+      document.getElementById('ipaPageReviewHeading').style.display = 'block';
+      ipaPageReviewEl.innerHTML = renderIpaCard(data.ipaImage, data.ipa, data.ipaWarning);
+      const ipaRescanControls = ipaPageReviewEl.querySelector('.page-rescan-controls');
+      if (ipaRescanControls) wireIpaRescanControls(ipaRescanControls);
+      // Salary/allowances feed the rate formulas every row's guardrails depend on, AND the
+      // Summary card's read-only figures — editing either one here needs to ripple through both,
+      // not just the row guardrails, otherwise Summary would keep showing the stale scanned
+      // value right next to rates already recomputed from the edited one. workingDaysPerWeek
+      // specifically also needs updateHalfDayDefault — getWorkDaysPerWeek() now reads straight
+      // off this field (see its own comment), so the half-day field's visibility needs
+      // re-checking on every edit, not just once at page load.
+      ipaPageReviewEl.querySelectorAll('.ipa-input').forEach(input => {
+        input.addEventListener('input', () => { renderIpaSummaryText(); recomputeAllGuardrails(); updateHalfDayDefault(); });
+      });
+      updateHalfDayDefault(); // reflects the freshly-scanned (or blank) workingDaysPerWeek value immediately, not just after an edit
 
-      if (data.ipa) {
-        ipaReviewEl.style.display = 'block';
-        // Must run before renderComputedRates() below — that function fills in the #ipaComputedRates
-        // placeholder that renderIpaSummaryText's own template creates, so calling it any earlier
-        // (before that placeholder exists in the DOM) would silently no-op and leave the bullets
-        // missing until the first edit.
-        renderIpaSummaryText();
-        renderComputedRates();
-      } else {
-        ipaReviewEl.style.display = 'none';
-        ipaReviewEl.innerHTML = '';
-      }
+      ipaReviewEl.style.display = 'block';
+      // Must run before renderComputedRates() below — that function fills in the #ipaComputedRates
+      // placeholder that renderIpaSummaryText's own template creates, so calling it any earlier
+      // (before that placeholder exists in the DOM) would silently no-op and leave the bullets
+      // missing until the first edit.
+      renderIpaSummaryText();
+      renderComputedRates();
       updateSummarySectionVisibility();
 
       // Shown even when zero pages came back (e.g. every file failed to read) so "Generate Excel (.xlsx)"
       // at the bottom always stays reachable after a scan completes.
       pageReviewsEl.style.display = 'block';
-      currentPageReviews = data.pageReviews || [];
       if (data.pageReviews && data.pageReviews.length > 0) {
         // Same order the server itself walked (pdfsPreviewPages, minus whatever the staging step
         // excluded) — zipped with data.pageReviews by position so each card knows its own
         // (fileIndex, pageIndex) for the per-page "Rotate + Rescan" action below.
-        const orderedKeys = pdfsPreviewPages
+        const rawOrderedKeys = pdfsPreviewPages
           .filter(p => !excludedPdfsPages.has(`${p.fileIndex}-${p.pageIndex}`))
           .map(p => `${p.fileIndex}-${p.pageIndex}`);
-        pageReviewList.innerHTML = data.pageReviews.map((page, idx) => renderPageReview(page, orderedKeys[idx], idx)).join('');
+        // Pages come back in upload order, not scan-date order — a caseworker who uploads
+        // September's timesheet before June's would otherwise see September first. Sort by each
+        // page's own earliest dated entry (ISO "YYYY-MM-DD" strings sort lexicographically in
+        // calendar order already); pages with no dated entries sort last, keeping their relative
+        // order. Permute orderedKeys identically so each card's rotate/rescan button still targets
+        // the right (fileIndex, pageIndex).
+        const pageMinDate = (page) => (page.entries || []).map(e => e.date).filter(Boolean).sort()[0] || null;
+        const order = data.pageReviews.map((page, idx) => idx);
+        order.sort((a, b) => {
+          const da = pageMinDate(data.pageReviews[a]);
+          const db = pageMinDate(data.pageReviews[b]);
+          if (da === null && db === null) return a - b;
+          if (da === null) return 1;
+          if (db === null) return -1;
+          return da < db ? -1 : da > db ? 1 : a - b;
+        });
+        const sortedPageReviews = order.map(i => data.pageReviews[i]);
+        const orderedKeys = order.map(i => rawOrderedKeys[i]);
+        currentPageReviews = sortedPageReviews;
+        pageReviewList.innerHTML = sortedPageReviews.map((page, idx) => renderPageReview(page, orderedKeys[idx], idx)).join('');
         pageReviewList.querySelectorAll('.page-rescan-controls').forEach(wireTimesheetRescanControls);
-        renderInterpretationDisagreements(data.pageReviews, orderedKeys);
+        renderInterpretationDisagreements(sortedPageReviews, orderedKeys);
         // Each page card was rendered with an empty placeholder list (see renderPageReview) — now
         // that they're in the DOM, populate each with the reviewRows whose `source` traces back to
         // that page, so the editable Start/End/Break inputs sit right beside their source image.
@@ -3026,7 +3175,7 @@
         // parens) that aren't safe to drop straight into a selector.
         const reviewRows = data.reviewRows || [];
         const lists = pageReviewList.querySelectorAll('.review-target-list');
-        data.pageReviews.forEach((page, idx) => {
+        sortedPageReviews.forEach((page, idx) => {
           const container = lists[idx];
           if (!container) return;
           // A row's `source` can be a comma-joined list (e.g. a multi-shift day whose shifts came
@@ -3326,6 +3475,30 @@
      * @param {HTMLElement} [beforeEl] - Insert before this element instead of appending at the end.
      */
     function appendReviewRow(container, row, beforeEl) {
+      // A restDay-tagged row (the model read a "rest"/"off"/"no work"-style mark, or this is the
+      // worker's genuinely declared rest day/public holiday — see buildReviewRows/
+      // detectAndInsertMissingDays) is only left blank when the date is ACTUALLY the declared
+      // weekly rest day, a public holiday, or already-flagged medical leave (MC) — those are the
+      // only dates with no statutory expectation of a timing. Checked here (not server-side,
+      // lib/jobs/timesheetJob.ts) because the declared rest day of week is only known once the
+      // caseworker has filled in the form client-side — the scan itself has no access to it. Any
+      // other restDay-tagged date (e.g. the source literally wrote "no work" on a date that isn't
+      // the declared rest day) defaults to a normal 08:00-17:00 workday instead, same convention
+      // as the "unclear mark" defaulting already done server-side for dates with no rest_day tag
+      // at all.
+      if (row.restDay && weekdayIndex(row.date) !== getDeclaredRestDayOfWeek() && !isPublicHoliday(row.date) && !isMedicalLeaveNote(row.notes)) {
+        row = {
+          ...row,
+          clockIn: row.clockIn ?? 800,
+          clockOut: row.clockOut ?? 1700,
+          breakHours: row.breakHours ?? getStandardBreakHours(),
+          restDay: false,
+          guessed: true,
+          notes: row.notes
+            ? `${row.notes} — not the declared rest day or a public holiday, defaulted to 08:00–17:00, please verify`
+            : 'Marked as a non-work day on the source, but this date is not the declared weekly rest day or a public holiday — defaulted to 08:00–17:00, please verify',
+        };
+      }
       const li = document.createElement('li');
       li.className = 'inline-review-row review-row' + (row.guessed ? ' flagged-row' : '') + (row.autoInserted ? ' missing-day-row' : '');
       // Carried through unedited so a flagged row the reviewer doesn't touch still gets highlighted
@@ -3356,9 +3529,9 @@
       li.innerHTML = `
     <div class="field-group weekday-group"><span class="weekday-label">${weekdayAbbr(row.date)}</span></div>
     <div class="field-group"><input type="date" class="f-date" value="${escapeHtml(row.date)}"></div>
-    <div class="field-group"><span class="field-label">In</span><input type="text" inputmode="numeric" maxlength="4" placeholder="0800" class="f-start time-input" value="${hhmmToTimeInput(row.clockIn)}" ${row.restDay ? 'disabled' : ''}></div>
-    <div class="field-group"><span class="field-label">Out</span><input type="text" inputmode="numeric" maxlength="4" placeholder="1700" class="f-end time-input" value="${hhmmToTimeInput(row.clockOut)}" ${row.restDay ? 'disabled' : ''}></div>
-    <div class="field-group"><span class="field-label">Break</span><input type="number" step="0.25" min="0" class="f-break" value="${row.breakHours ?? ''}" ${row.restDay ? 'disabled' : ''}></div>
+    <div class="field-group"><span class="field-label">In</span><input type="text" inputmode="numeric" maxlength="4" placeholder="0800" class="f-start time-input" value="${hhmmToTimeInput(row.clockIn)}"></div>
+    <div class="field-group"><span class="field-label">Out</span><input type="text" inputmode="numeric" maxlength="4" placeholder="1700" class="f-end time-input" value="${hhmmToTimeInput(row.clockOut)}"></div>
+    <div class="field-group"><span class="field-label">Break</span><input type="number" step="0.25" min="0" class="f-break" value="${row.breakHours ?? ''}"></div>
     <div class="field-group"><span class="field-label">OT</span><span class="ot-hours-display">—</span></div>
     <button type="button" class="row-delete-btn" title="Remove" aria-label="Remove"><svg viewBox="0 0 16 16" style="width:13px;height:13px;flex-shrink:0;" fill="currentColor" aria-hidden="true"><path d="M6 1a1 1 0 0 0-1 1v1H2.5a.5.5 0 0 0 0 1h.55l.65 9.1A1.5 1.5 0 0 0 5.2 15h5.6a1.5 1.5 0 0 0 1.5-1.4l.65-9.1h.55a.5.5 0 0 0 0-1H11V2a1 1 0 0 0-1-1H6zm0 2V2h4v1H6zM4.55 4h6.9l-.64 9h-5.62l-.64-9zM6.5 6a.5.5 0 0 1 .5.5v5a.5.5 0 0 1-1 0v-5a.5.5 0 0 1 .5-.5zm3 0a.5.5 0 0 1 .5.5v5a.5.5 0 0 1-1 0v-5a.5.5 0 0 1 .5-.5z"/></svg></button>
     ${row.notes ? `<div class="row-notes">${escapeHtml(row.notes)}</div>` : ''}
@@ -3817,8 +3990,24 @@
     /** Builds the condition-evaluation context (date/weekday/clock times/flags) for one review row. */
     function buildTierRowContext(li, dateVal) {
       const netHours = rowNetHours(li);
-      const clockIn = timeInputToHHMM(li.querySelector('.f-start').value);
+      let clockIn = timeInputToHHMM(li.querySelector('.f-start').value);
       let clockOut = timeInputToHHMM(li.querySelector('.f-end').value);
+      // A row with no real clock-out (a confirmed non-standard day off like an explicit "NO WORK"
+      // mark, a plain dash/blank rest mark the scan picked up, or — before this fallback existed —
+      // a genuinely untouched day) otherwise can never match a clock-time tier at all, even though
+      // the caseworker explicitly wants such days credited using the declared default shift rather
+      // than treated as a hard non-match. Excluded: the declared WEEKLY rest day and a public
+      // holiday — both are genuine "the worker plausibly didn't work at all" cases (per
+      // detectAndInsertMissingDays' own carve-outs), so fabricating a worked shift there would
+      // overstate the claim rather than just filling an evidence gap.
+      if (clockOut === null) {
+        const isDeclaredRestDay = weekdayIndex(dateVal) === getDeclaredRestDayOfWeek();
+        if (!isDeclaredRestDay && !isPublicHoliday(dateVal)) {
+          const defaultStart = timeInputToHHMM(document.getElementById('defaultShiftStart').value);
+          const defaultEnd = timeInputToHHMM(document.getElementById('defaultShiftEnd').value);
+          if (defaultStart !== null && defaultEnd !== null) { clockIn = defaultStart; clockOut = defaultEnd; }
+        }
+      }
       // An overnight shift's raw clock-out is a small bare HHMM (e.g. "0600" = 600) even though the
       // worker was still on shift well past 1700/2100 in elapsed-clock terms — shiftHoursClient
       // already wraps this for duration math, but a tier condition like "clockOut >= 2100" was
@@ -5153,11 +5342,14 @@
           const date = li.querySelector('.f-date').value;
           if (!date) return;
           const restDay = li.dataset.restDay === '1';
+          // In/Out/Break are never disabled now (a caseworker can always fill them in, even on a
+          // rest day/public holiday row with no scanned timing) — read whatever's actually in the
+          // inputs rather than force-nulling them just because restDay is set.
           rows.push({
             date,
-            clockIn: restDay ? null : timeInputToHHMM(li.querySelector('.f-start').value),
-            clockOut: restDay ? null : timeInputToHHMM(li.querySelector('.f-end').value),
-            breakHours: restDay ? null : (li.querySelector('.f-break').value === '' ? null : Number(li.querySelector('.f-break').value)),
+            clockIn: timeInputToHHMM(li.querySelector('.f-start').value),
+            clockOut: timeInputToHHMM(li.querySelector('.f-end').value),
+            breakHours: li.querySelector('.f-break').value === '' ? null : Number(li.querySelector('.f-break').value),
             restDay,
             guessed: li.dataset.guessed === '1',
             notes: li.dataset.notes || null,
@@ -5176,11 +5368,13 @@
         const date = li.querySelector('.f-date').value;
         if (!date) continue; // a row with no date can't be written anywhere — skip rather than error
         const restDay = li.dataset.restDay === '1';
+        // Same reasoning as collectAllReviewRowsWithSource above — In/Out/Break are never disabled,
+        // so trust whatever's actually typed in rather than force-nulling on restDay.
         rows.push({
           date,
-          clockIn: restDay ? null : timeInputToHHMM(li.querySelector('.f-start').value),
-          clockOut: restDay ? null : timeInputToHHMM(li.querySelector('.f-end').value),
-          breakHours: restDay ? null : (li.querySelector('.f-break').value === '' ? null : Number(li.querySelector('.f-break').value)),
+          clockIn: timeInputToHHMM(li.querySelector('.f-start').value),
+          clockOut: timeInputToHHMM(li.querySelector('.f-end').value),
+          breakHours: li.querySelector('.f-break').value === '' ? null : Number(li.querySelector('.f-break').value),
           restDay,
           guessed: li.dataset.guessed === '1',
           notes: li.dataset.notes || null,
@@ -5790,6 +5984,21 @@
     // to live) so the initial render and applyRescannedIpa below build the exact same markup and can
     // never visually drift apart — same reasoning applyRescannedTimesheetPage already relies on
     // renderPageReview for.
+    // Shape matches lib/ipa.ts's IpaFields — used whenever no IPA letter was uploaded/scanned, so
+    // the editable field grid (and the claim math reading off it) still renders with blank inputs
+    // instead of being skipped entirely.
+    /** Returns an all-blank IpaFields-shaped object for the no-IPA-uploaded case. */
+    function blankIpaFields() {
+      return {
+        workerName: null, workerFin: null, employerName: null, employerUen: null,
+        occupation: null, sector: null,
+        basicMonthlySalary: null, dailyBasicRate: null, hourlyBasicRate: null,
+        workingHoursPerDay: null, workingDaysPerWeek: null,
+        fixedMonthlyAllowances: [], fixedMonthlyDeductions: [],
+        wpValidityStart: null, wpValidityEnd: null, notes: null,
+      };
+    }
+
     /** Builds the IPA letter's page-review card HTML (thumbnail + rescan controls + editable fields). */
     function renderIpaCard(ipaImage, ipa, ipaWarning) {
       // Rotate/Rescan sits below the image, inside .page-review-image — same layout as every other
@@ -5808,7 +6017,7 @@
         </div>` : ''}
         <div class="page-review-details">
           <div class="page-review-source"><span>IPA letter</span></div>
-          ${ipa ? renderIpaFieldsEditable(ipa) : ''}
+          ${renderIpaFieldsEditable(ipa ?? blankIpaFields())}
           ${ipaWarning ? `<div class="row-notes">${escapeHtml(ipaWarning)}</div>` : ''}
           ${ipa?.notes ? `<div class="row-notes">${escapeHtml(ipa.notes)}</div>` : ''}
         </div>
@@ -5900,15 +6109,13 @@
       ipaPageReviewEl.innerHTML = renderIpaCard(result.ipaImage, result.ipa, result.ipaWarning);
       const controls = ipaPageReviewEl.querySelector('.page-rescan-controls');
       if (controls) wireIpaRescanControls(controls);
-      if (result.ipa) {
-        ipaPageReviewEl.querySelectorAll('.ipa-input').forEach(input => {
-          input.addEventListener('input', () => { renderIpaSummaryText(); recomputeAllGuardrails(); updateHalfDayDefault(); });
-        });
-        updateHalfDayDefault(); // reflects the rescanned workingDaysPerWeek value immediately
-        ipaReviewEl.style.display = 'block';
-        renderIpaSummaryText();
-        renderComputedRates();
-      }
+      ipaPageReviewEl.querySelectorAll('.ipa-input').forEach(input => {
+        input.addEventListener('input', () => { renderIpaSummaryText(); recomputeAllGuardrails(); updateHalfDayDefault(); });
+      });
+      updateHalfDayDefault(); // reflects the rescanned (or blank, on a failed extraction) workingDaysPerWeek value immediately
+      ipaReviewEl.style.display = 'block';
+      renderIpaSummaryText();
+      renderComputedRates();
       // Was unconditionally "success" even when result.ipa came back null (extraction genuinely
       // failed that pass — e.g. a bad rotation) — the fields on the right render as blank in that
       // case (renderIpaCard only calls renderIpaFieldsEditable when ipa is truthy), so a caseworker
@@ -6363,12 +6570,28 @@
       pageReviewsEl.style.display = 'block'; // reveal page-by-page review even if the main scan hasn't produced anything yet
       bankPageReviewListEl.style.display = 'block';
       document.getElementById('bankPageReviewListHeading').style.display = 'block';
-      const orderedKeys = done
+      const rawOrderedKeys = done
         ? bankStatementPreviewPages
           .filter(p => !excludedBankStatementPages.has(`${p.fileIndex}-${p.pageIndex}`))
           .map(p => `${p.fileIndex}-${p.pageIndex}`)
         : [];
-      bankPageReviewListEl.innerHTML = pages
+      // Pages come back in upload order, not transaction-date order — sort by each page's own
+      // earliest transaction date (same reasoning/approach as the timesheet pages sort above) so a
+      // statement page covering an earlier month doesn't show up after a later one. Permute
+      // rawOrderedKeys identically so rescan controls still target the right page.
+      const pageMinDate = (p) => (p.transactions || []).map(t => t.date).filter(Boolean).sort()[0] || null;
+      const order = pages.map((p, idx) => idx);
+      order.sort((a, b) => {
+        const da = pageMinDate(pages[a]);
+        const db = pageMinDate(pages[b]);
+        if (da === null && db === null) return a - b;
+        if (da === null) return 1;
+        if (db === null) return -1;
+        return da < db ? -1 : da > db ? 1 : a - b;
+      });
+      const sortedPages = order.map(i => pages[i]);
+      const orderedKeys = order.map(i => rawOrderedKeys[i]);
+      bankPageReviewListEl.innerHTML = sortedPages
         .map((p, idx) => renderBankPageCard(p, done ? orderedKeys[idx] : undefined, done ? idx : undefined))
         .join('');
       bankPageReviewListEl.querySelectorAll('.page-review-row').forEach(wireBankPageCard);
@@ -6727,12 +6950,26 @@
       pageReviewsEl.style.display = 'block';
       medicalPageReviewListEl.style.display = 'block';
       document.getElementById('medicalPageReviewListHeading').style.display = 'block';
-      const orderedKeys = done
+      const rawOrderedKeys = done
         ? medicalBillsPreviewPages
           .filter(p => !excludedMedicalBillsPages.has(`${p.fileIndex}-${p.pageIndex}`))
           .map(p => `${p.fileIndex}-${p.pageIndex}`)
         : [];
-      medicalPageReviewListEl.innerHTML = pages
+      // Sort by each page's earliest billed-entry date — same reasoning as the timesheet/bank
+      // sorts above. Permute rawOrderedKeys identically so rescan controls still target the right page.
+      const pageMinDate = (p) => (p.entries || []).map(e => e.date).filter(Boolean).sort()[0] || null;
+      const order = pages.map((p, idx) => idx);
+      order.sort((a, b) => {
+        const da = pageMinDate(pages[a]);
+        const db = pageMinDate(pages[b]);
+        if (da === null && db === null) return a - b;
+        if (da === null) return 1;
+        if (db === null) return -1;
+        return da < db ? -1 : da > db ? 1 : a - b;
+      });
+      const sortedPages = order.map(i => pages[i]);
+      const orderedKeys = order.map(i => rawOrderedKeys[i]);
+      medicalPageReviewListEl.innerHTML = sortedPages
         .map((p, idx) => renderMedicalPageCard(p, done ? orderedKeys[idx] : undefined, done ? idx : undefined))
         .join('');
       medicalPageReviewListEl.querySelectorAll('.page-review-row').forEach(wireMedicalPageCard);
@@ -7108,12 +7345,27 @@
       pageReviewsEl.style.display = 'block';
       medicalCertPageReviewListEl.style.display = 'block';
       document.getElementById('medicalCertPageReviewListHeading').style.display = 'block';
-      const orderedKeys = done
+      const rawOrderedKeys = done
         ? medicalCertificatesPreviewPages
           .filter(p => !excludedMedicalCertificatesPages.has(`${p.fileIndex}-${p.pageIndex}`))
           .map(p => `${p.fileIndex}-${p.pageIndex}`)
         : [];
-      medicalCertPageReviewListEl.innerHTML = pages
+      // Sort by each page's earliest leave-start date (leaveFrom, not a single `date` field for
+      // certs) — same reasoning as the other sections' sorts above. Permute rawOrderedKeys
+      // identically so rescan controls still target the right page.
+      const pageMinDate = (p) => (p.entries || []).map(e => e.leaveFrom).filter(Boolean).sort()[0] || null;
+      const order = pages.map((p, idx) => idx);
+      order.sort((a, b) => {
+        const da = pageMinDate(pages[a]);
+        const db = pageMinDate(pages[b]);
+        if (da === null && db === null) return a - b;
+        if (da === null) return 1;
+        if (db === null) return -1;
+        return da < db ? -1 : da > db ? 1 : a - b;
+      });
+      const sortedPages = order.map(i => pages[i]);
+      const orderedKeys = order.map(i => rawOrderedKeys[i]);
+      medicalCertPageReviewListEl.innerHTML = sortedPages
         .map((p, idx) => renderMedicalCertPageCard(p, done ? orderedKeys[idx] : undefined, done ? idx : undefined))
         .join('');
       medicalCertPageReviewListEl.querySelectorAll('.page-review-row').forEach(wireMedicalCertPageCard);
@@ -7763,12 +8015,28 @@
       pageReviewsEl.style.display = 'block';
       payslipPageReviewListEl.style.display = 'block';
       document.getElementById('payslipPageReviewListHeading').style.display = 'block';
-      const orderedKeys = done
+      const rawOrderedKeys = done
         ? payslipsPreviewPages
           .filter(p => !excludedPayslipsPages.has(`${p.fileIndex}-${p.pageIndex}`))
           .map(p => `${p.fileIndex}-${p.pageIndex}`)
         : [];
-      payslipPageReviewListEl.innerHTML = pages
+      // Sort by each page's earliest entry date — payslip entries can be dated at day/week/month
+      // granularity (date/weekStart/yearMonth), but all three are "YYYY-MM[-DD]" strings so
+      // lexicographic sort still orders them correctly. Permute rawOrderedKeys identically so
+      // rescan controls still target the right page.
+      const pageMinDate = (p) => (p.entries || []).map(e => e.date || e.weekStart || e.yearMonth).filter(Boolean).sort()[0] || null;
+      const order = pages.map((p, idx) => idx);
+      order.sort((a, b) => {
+        const da = pageMinDate(pages[a]);
+        const db = pageMinDate(pages[b]);
+        if (da === null && db === null) return a - b;
+        if (da === null) return 1;
+        if (db === null) return -1;
+        return da < db ? -1 : da > db ? 1 : a - b;
+      });
+      const sortedPages = order.map(i => pages[i]);
+      const orderedKeys = order.map(i => rawOrderedKeys[i]);
+      payslipPageReviewListEl.innerHTML = sortedPages
         .map((p, idx) => renderPayslipPageCard(p, done ? orderedKeys[idx] : undefined, done ? idx : undefined))
         .join('');
       payslipPageReviewListEl.querySelectorAll('.page-review-row').forEach(wirePayslipPageCard);

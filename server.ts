@@ -291,10 +291,9 @@ app.post(
         // auto-inserted default-shift row instead of a scanned one. An empty/missing `pdfs` field
         // is treated the same as zero files, not an error.
         const files = uploadedFields?.pdfs ?? [];
+        // IPA letter is optional — a caseworker may fill in worker/employer/salary fields by hand
+        // instead of uploading one (see public/index.html's blank-IPA render path).
         const ipaFile = uploadedFields?.ipa?.[0];
-        if (!ipaFile) {
-            return res.status(400).json({ error: "No IPA letter uploaded — it's required." });
-        }
 
         // Rotation degrees a human confirmed against the /api/preview thumbnails (public/index.html's
         // staging step) — applied below via rotateImage before anything else ever looks at a page's

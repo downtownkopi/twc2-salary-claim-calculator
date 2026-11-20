@@ -178,6 +178,16 @@ export async function runProcessJob(
 
     const timeEntries: TimeEntry[] = [];
     const restDays: RestDay[] = [];
+    // Dates where the source page had SOME mark but no clock times/hours/rest-day code could be
+    // determined (e.g. "no work"/"no"/"break" written in place of real times) — these get a
+    // default 08:00-17:00 shift in timeEntries below (not restDay:true — a genuine rest day/public
+    // holiday with no timing is the only case that should render blank), but buildReviewRows'
+    // own per-row notes logic (implausible/noBreak/multi-shift) has no way to know this shift was
+    // fabricated rather than scanned — so the note is stashed here and reattached to the matching
+    // reviewRow by date right after buildReviewRows runs.
+    const unclearMarkDefaults: { date: string; note: string }[] = [];
+    const DEFAULT_SHIFT_CLOCK_IN = 800;
+    const DEFAULT_SHIFT_CLOCK_OUT = 1700;
     // Days where the source page recorded only a total hours-worked(+OT) figure, no clock times
     // (lib/ocr.ts's PageDataModel "hours_total") — fillTimesheet's N/O columns need actual clock
     // times, so these can't be written to the spreadsheet yet. Kept here purely so the raw scan
@@ -584,10 +594,24 @@ export async function runProcessJob(
                 continue;
             }
             if (!entry.times || entry.times.length === 0) {
-                restDays.push({ year: pageYear, month: entry.month, day: entry.day, source, notes: entry.notes ? `unclear mark: ${entry.notes} — please verify` : "unclear mark — please verify", bbox: entry.bbox });
+                timeEntries.push({
+                    date: new Date(pageYear, entry.month - 1, entry.day),
+                    clockIn: DEFAULT_SHIFT_CLOCK_IN,
+                    clockOut: DEFAULT_SHIFT_CLOCK_OUT,
+                    source,
+                    guessed: true,
+                    noBreak: false,
+                    bbox: entry.bbox,
+                });
+                unclearMarkDefaults.push({
+                    date: entryDate,
+                    note: entry.notes
+                        ? `unclear mark (${entry.notes}) — no clock times found, defaulted to 08:00–17:00, please verify`
+                        : "unclear mark — no clock times found, defaulted to 08:00–17:00, please verify",
+                });
                 warnings.push({
                     source,
-                    reason: `day=${entry.day} month=${entry.month}: has a mark but no clock times/hours/leave-code could be determined${entry.notes ? ` (${entry.notes})` : ""} — recorded as unworked so it isn't auto-filled as a missing day, please verify against the source PDF`,
+                    reason: `day=${entry.day} month=${entry.month}: has a mark but no clock times/hours/leave-code could be determined${entry.notes ? ` (${entry.notes})` : ""} — defaulted to 08:00-17:00, please verify against the source PDF`,
                     category: "flagged_review",
                     date: entryDate,
                 });
@@ -666,17 +690,24 @@ export async function runProcessJob(
                 });
             }
         } else {
-            restDays.push({
-                year: pageYear,
-                month: entry.month,
-                day: entry.day,
+            timeEntries.push({
+                date: new Date(pageYear, entry.month - 1, entry.day),
+                clockIn: DEFAULT_SHIFT_CLOCK_IN,
+                clockOut: DEFAULT_SHIFT_CLOCK_OUT,
                 source,
-                notes: entry.notes ? `roster match, unclear time: ${entry.notes}` : "roster match, unclear actual time in/out — please verify",
+                guessed: true,
+                noBreak: false,
                 bbox: null,
+            });
+            unclearMarkDefaults.push({
+                date: entryDate,
+                note: entry.notes
+                    ? `roster match, unclear time (${entry.notes}) — no clock times found, defaulted to 08:00–17:00, please verify`
+                    : "roster match, unclear actual time in/out — no clock times found, defaulted to 08:00–17:00, please verify",
             });
             warnings.push({
                 source,
-                reason: `day=${entry.day} month=${entry.month}: target worker matched on the roster, but actual time in/out could not be determined — recorded as unworked so it isn't auto-filled as a missing day, please verify against the source PDF`,
+                reason: `day=${entry.day} month=${entry.month}: target worker matched on the roster, but actual time in/out could not be determined — defaulted to 08:00-17:00, please verify against the source PDF`,
                 category: "flagged_review",
                 date: entryDate,
             });
@@ -1164,20 +1195,27 @@ export async function runProcessJob(
                             }
                         } else {
                             // Matched the worker, but couldn't resolve a usable actual time in/out —
-                            // recorded as unworked (same convention as an "unclear mark" in the normal
-                            // path, lib/jobs/timesheetJob.ts's restDays.push below) so the date isn't
-                            // silently missing, rather than vanishing with no trace.
-                            restDays.push({
-                                year: pageYear,
-                                month: entry.month,
-                                day: entry.day,
+                            // defaulted to 08:00-17:00 (same convention as an "unclear mark" in the
+                            // normal path above) so the date isn't silently missing, rather than
+                            // vanishing with no trace.
+                            timeEntries.push({
+                                date: new Date(pageYear, entry.month - 1, entry.day),
+                                clockIn: DEFAULT_SHIFT_CLOCK_IN,
+                                clockOut: DEFAULT_SHIFT_CLOCK_OUT,
                                 source,
-                                notes: entry.notes ? `roster match, unclear time: ${entry.notes}` : "roster match, unclear actual time in/out — please verify",
+                                guessed: true,
+                                noBreak: false,
                                 bbox: null,
+                            });
+                            unclearMarkDefaults.push({
+                                date: entryDate,
+                                note: entry.notes
+                                    ? `roster match, unclear time (${entry.notes}) — no clock times found, defaulted to 08:00–17:00, please verify`
+                                    : "roster match, unclear actual time in/out — no clock times found, defaulted to 08:00–17:00, please verify",
                             });
                             warnings.push({
                                 source,
-                                reason: `day=${entry.day} month=${entry.month}: target worker matched on the roster, but actual time in/out could not be determined — recorded as unworked so it isn't auto-filled as a missing day, please verify against the source PDF`,
+                                reason: `day=${entry.day} month=${entry.month}: target worker matched on the roster, but actual time in/out could not be determined — defaulted to 08:00-17:00, please verify against the source PDF`,
                                 category: "flagged_review",
                                 date: entryDate,
                             });
@@ -1442,14 +1480,28 @@ export async function runProcessJob(
                         // date entirely when its row is genuinely blank) — it just couldn't map it to
                         // clock times, an hours figure, or a recognized rest_day/leave mark (e.g. a
                         // bare presence tick, or something illegible). Still counts as "this date was
-                        // purposefully accounted for on the source document", same as an explicit
-                        // rest_day — recorded here (not dropped) so the review UI shows a row for it
-                        // instead of the missing-day auto-insert fabricating a default-shift workday
-                        // over a day that plainly has SOMETHING written on it.
-                        restDays.push({ year: pageYear, month: entry.month, day: entry.day, source, notes: entry.notes ? `unclear mark: ${entry.notes} — please verify` : "unclear mark — please verify", bbox: entry.bbox });
+                        // purposefully accounted for on the source document", so it's defaulted to a
+                        // normal 08:00-17:00 workday (not restDay:true — that's reserved for a
+                        // genuine rest day/public holiday with no timing expected) with a note
+                        // flagging it for verification, same as the agentic path above.
+                        timeEntries.push({
+                            date: new Date(pageYear, entry.month - 1, entry.day),
+                            clockIn: DEFAULT_SHIFT_CLOCK_IN,
+                            clockOut: DEFAULT_SHIFT_CLOCK_OUT,
+                            source,
+                            guessed: true,
+                            noBreak: false,
+                            bbox: entry.bbox,
+                        });
+                        unclearMarkDefaults.push({
+                            date: entryDate,
+                            note: entry.notes
+                                ? `unclear mark (${entry.notes}) — no clock times found, defaulted to 08:00–17:00, please verify`
+                                : "unclear mark — no clock times found, defaulted to 08:00–17:00, please verify",
+                        });
                         warnings.push({
                             source,
-                            reason: `day=${entry.day} month=${entry.month}: has a mark but no clock times/hours/leave-code could be determined${entry.notes ? ` (${entry.notes})` : ""} — recorded as unworked so it isn't auto-filled as a missing day, please verify against the source PDF`,
+                            reason: `day=${entry.day} month=${entry.month}: has a mark but no clock times/hours/leave-code could be determined${entry.notes ? ` (${entry.notes})` : ""} — defaulted to 08:00-17:00, please verify against the source PDF`,
                             category: "flagged_review",
                             date: entryDate,
                         });
@@ -1619,6 +1671,15 @@ export async function runProcessJob(
     // this is the editable seed for the human-review step in the browser. Nothing gets written to
     // the spreadsheet until the reviewer submits their (possibly corrected) rows to /api/generate.
     const reviewRows = buildReviewRows(timeEntries, restDays, standardBreakHours);
+
+    // buildReviewRows computes its own `notes` per row (implausible/noBreak/multi-shift) with no
+    // way to know a single-shift row's 08:00-17:00 was fabricated rather than scanned — reattach
+    // the real "unclear mark, defaulted" explanation here so it still shows under the row (same
+    // .row-notes rendering every other note uses, see public/index.html's appendReviewRow).
+    for (const { date, note } of unclearMarkDefaults) {
+        const row = reviewRows.find(r => r.date === date && !r.restDay);
+        if (row) row.notes = note;
+    }
 
     // A day is "covered" once it has a review row at all (worked or rest day) — this is a
     // pre-generate PREVIEW of coverage, not the final word (fillTimesheetFromRows does its own

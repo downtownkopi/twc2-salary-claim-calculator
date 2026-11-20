@@ -245,7 +245,7 @@ export async function buildWorkerPersonalDetailsDocx(p: WorkerDetailsExportPaylo
                 categoryTable(p.nonFixedAllowance, null, () => "", "Earned non-fixed allowance vs Non-fixed allowance Received by Month"),
 
                 heading("Overtime payment", { red: true }),
-                categoryTable(p.overtime, "Hours", n => n.toFixed(1), "Earned Overtime vs Overtime Pay Received by Month"),
+                categoryTable(p.overtime, "Hours", n => n.toFixed(2), "Earned Overtime vs Overtime Pay Received by Month"),
 
                 heading("Payment for work on rest days", { red: true }),
                 categoryTable(p.restDays, "Days", n => n.toFixed(1), "Earned Work on Rest days vs Work on Rest days Pay Received by Month"),
