@@ -1297,27 +1297,34 @@
       text-decoration: none;
       color: var(--text);
       font-size: 13px;
+      font-weight: 600;
       white-space: nowrap;
       cursor: pointer;
-      transition: gap 0.15s ease;
+      padding: 5px 6px;
+      border-radius: 8px;
+      transition: gap 0.15s ease, background 0.15s ease, color 0.15s ease;
     }
     /* Collapsed, the label is a 0-width hidden span — a nonzero gap here would still pad the dot
        off to the left of empty space (flex gap applies between slots regardless of their own
        width), which is the lopsided-padding bug this fixes. Gap only kicks in alongside the
-       label's own max-width/opacity expand on hover. */
+       label's own max-width/opacity expand on hover. Item padding is symmetric either way, so it
+       doesn't reintroduce that same bug. */
     .quick-nav:hover .quick-nav-item {
       gap: 8px;
+    }
+    .quick-nav-item:hover {
+      background: var(--accent);
+      color: #fff;
     }
     .quick-nav-dot {
       width: 8px;
       height: 8px;
       min-width: 8px;
       border-radius: 50%;
-      background: var(--text);
-      opacity: 0.6;
+      background: var(--accent);
     }
     .quick-nav-item:hover .quick-nav-dot {
-      opacity: 1;
+      background: #fff;
     }
     .quick-nav-label {
       max-width: 0;
