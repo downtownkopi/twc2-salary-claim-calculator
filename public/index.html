@@ -1264,6 +1264,13 @@
       box-sizing: border-box;
     }
 
+    /* The "Add more X files" blocks — spaces the file picker apart from its own "Scan additional
+       files" button, same gap every other upload field already gets from its surrounding markup. */
+    .add-more-files input[type="file"] {
+      margin-bottom: 10px;
+      display: block;
+    }
+
     /* Collapsed: a translucent rail of dots. Hovered: opaque pill with labels. Width is driven by
        .quick-nav-label's max-width transition, not the rail's own width, so collapse/expand
        doesn't jump the rail's left edge around. */
@@ -1849,14 +1856,54 @@
     <div id="interpretationDisagreementPanel" style="display:none"></div>
     <h3 id="pageReviewListHeading" style="display:none">Timesheet files</h3>
     <div id="pageReviewList"></div>
+    <div class="add-more-files" id="pdfsAddMoreWrap" style="display:none">
+      <h4>Add more timesheet files</h4>
+      <div class="file-list">A new document came in after this claim was already scanned? Attach
+        just the new file(s) here — already-reviewed pages are left untouched.</div>
+      <input type="file" id="pdfsAddMoreInput" accept="application/pdf,image/*" multiple>
+      <button type="button" class="generate-btn" id="pdfsAddMoreBtn">Scan additional files</button>
+      <div class="status" id="pdfsAddMoreStatus"></div>
+    </div>
     <h3 id="bankPageReviewListHeading" style="display:none">Bank statement</h3>
     <div id="bankPageReviewList" style="display:none"></div>
+    <div class="add-more-files" id="bankStatementAddMoreWrap" style="display:none">
+      <h4>Add more bank statement files</h4>
+      <div class="file-list">A new statement came in after this was already scanned? Attach just
+        the new file(s) here — already-reviewed pages are left untouched.</div>
+      <input type="file" id="bankStatementAddMoreInput" accept=".pdf,image/*" multiple>
+      <button type="button" class="generate-btn" id="bankStatementAddMoreBtn">Scan additional files</button>
+      <div class="status" id="bankStatementAddMoreStatus"></div>
+    </div>
     <h3 id="medicalPageReviewListHeading" style="display:none">Medical bills</h3>
     <div id="medicalPageReviewList" style="display:none"></div>
+    <div class="add-more-files" id="medicalBillsAddMoreWrap" style="display:none">
+      <h4>Add more medical bill files</h4>
+      <div class="file-list">A new bill came in after this was already scanned? Attach just the
+        new file(s) here — already-reviewed pages are left untouched.</div>
+      <input type="file" id="medicalBillsAddMoreInput" accept=".pdf,image/*" multiple>
+      <button type="button" class="generate-btn" id="medicalBillsAddMoreBtn">Scan additional files</button>
+      <div class="status" id="medicalBillsAddMoreStatus"></div>
+    </div>
     <h3 id="medicalCertPageReviewListHeading" style="display:none">Medical certificates</h3>
     <div id="medicalCertPageReviewList" style="display:none"></div>
+    <div class="add-more-files" id="medicalCertificatesAddMoreWrap" style="display:none">
+      <h4>Add more medical certificate files</h4>
+      <div class="file-list">A new certificate came in after this was already scanned? Attach
+        just the new file(s) here — already-reviewed pages are left untouched.</div>
+      <input type="file" id="medicalCertificatesAddMoreInput" accept=".pdf,image/*" multiple>
+      <button type="button" class="generate-btn" id="medicalCertificatesAddMoreBtn">Scan additional files</button>
+      <div class="status" id="medicalCertificatesAddMoreStatus"></div>
+    </div>
     <h3 id="payslipPageReviewListHeading" style="display:none">Payslips</h3>
     <div id="payslipPageReviewList" style="display:none"></div>
+    <div class="add-more-files" id="payslipsAddMoreWrap" style="display:none">
+      <h4>Add more payslip files</h4>
+      <div class="file-list">A new payslip came in after this was already scanned? Attach just the
+        new file(s) here — already-reviewed pages are left untouched.</div>
+      <input type="file" id="payslipsAddMoreInput" accept=".pdf,image/*" multiple>
+      <button type="button" class="generate-btn" id="payslipsAddMoreBtn">Scan additional files</button>
+      <div class="status" id="payslipsAddMoreStatus"></div>
+    </div>
 
     <div class="extra-days-body-width">
       <div class="extra-days-claim-width">
@@ -2084,6 +2131,13 @@
     // so autoFlagChangedPages can still diff against it at Generate time, instead of only living
     // inside the submit handler's closure and vanishing once rendering finishes.
     let currentPageReviews = [];
+    // The last-scanned/last-loaded IPA fields object (lib/ipa.ts's IpaFields shape), or null if
+    // none was ever scanned — kept so collectCurrentIpaFields() can save back the fields NOT
+    // exposed as an editable input (employerUen/occupation/sector/hourlyBasicRate/
+    // workingHoursPerDay/wpValidityStart/End/notes/fixedMonthlyDeductions) unchanged, rather than
+    // the save silently dropping them just because the history "Save changes" flow only reads the
+    // 7 fields actually shown in the editable grid.
+    let currentIpa = null;
     // Cached by recomputeMonthlyPayTotals/refreshBankSummary each time either recomputes (both are
     // already wired to fire on every relevant edit) — updateOwedVsPaidBox reads both rather than
     // recomputing them itself, so it never has to know how either total is derived. null means "not
@@ -2185,6 +2239,26 @@
     // (as a string). Sent as `excludedIpaPages` on submit; server.ts's runProcessJob picks the first
     // page index NOT in this set as the one actually scanned.
     let excludedIpaPages = new Set();
+
+    // ===== Partial/incremental timesheet uploads =====
+    // Batch 0 is always the main submit's pdfsInput.files at scan time. Each "Add more timesheet
+    // files" scan (see wireAddMoreTimesheetFiles below) pushes its own File[] here, keyed by its
+    // index (batchId) — lets a post-scan page's "Rotate + Rescan" button re-attach the correct
+    // original File object regardless of which upload batch it came from (see
+    // wireTimesheetRescanControls, which now parses `${batchId}:${fileIndex}-${pageIndex}` out of
+    // a card's data-key instead of assuming batch 0 / pdfsInput.files).
+    let pdfsFileBatches = [];
+    // Mirrors pdfsPreviewPages (batch 0's own {fileIndex,pageIndex} list, populated by the pre-scan
+    // staging step) but for every OTHER batch — a batch added via "Add more timesheet files" skips
+    // the staging UI entirely (see the plan's scope cut), so its {fileIndex,pageIndex} list is
+    // learned via a silent /api/preview call instead and stored here, keyed by batchId. Batch 0
+    // itself is never stored here — `previewPagesForBatch(0)` reads the existing global
+    // `pdfsPreviewPages` directly, so the staging step doesn't need to also mirror into this object.
+    let pdfsPreviewPagesByBatch = {};
+    /** Returns the known {fileIndex,pageIndex} list for a given timesheet upload batch. */
+    function previewPagesForBatch(batchId) {
+      return batchId === 0 ? pdfsPreviewPages : (pdfsPreviewPagesByBatch[batchId] || []);
+    }
 
     // ===== Timesheet/IPA staging preview (pre-scan rotate/exclude step) =====
     // Both pdfs and ipa staging grids are now page-level (rotate/delete per page) — the only real
@@ -2768,6 +2842,10 @@
       // breakdown will just be missing that allowance until they do.
       await parseNonFixedAllowanceRules();
       pageReviewList.innerHTML = '';
+      // A fresh "Extract details" submit starts the whole timesheet batch over from scratch — any
+      // files added via "Add more timesheet files" in a previous round are no longer relevant, so
+      // batch 0 is reset to exactly what's in pdfsInput right now.
+      pdfsFileBatches = [[...pdfsInput.files]];
       generateStatusEl.className = 'status';
       generateStatusEl.textContent = '';
       lastRenderedEventCount = 0;
@@ -2824,6 +2902,9 @@
       ipaPageReviewEl.innerHTML = '';
       document.getElementById('ipaPageReviewHeading').style.display = 'none';
       document.getElementById('pageReviewListHeading').style.display = 'none';
+      document.getElementById('pdfsAddMoreWrap').style.display = 'none';
+      document.getElementById('pdfsAddMoreInput').value = '';
+      document.getElementById('pdfsAddMoreStatus').textContent = '';
       totalOwedCache = null;
       totalPaidCache = null;
       owedBreakdownCache = null;
@@ -2892,6 +2973,20 @@
         withScanMilestones('Payslips', payslipsInput, payslipsScanPromise || runPayslipsScan()),
       ]);
       if (!mainErrored) {
+        // Every "Add more X files" control becomes available once the submit finishes — not just
+        // for sections that actually had files this time. A caseworker who didn't have a bank
+        // statement/payslip/etc. on hand yet when they first scanned still needs a way to add one
+        // later without re-running the whole claim, same as the IPA letter's own "Scan IPA letter"
+        // button never gates on whether one was attached originally. Each render*LivePages function
+        // only shows its own wrap when it actually has pages (pages.length === 0 returns before
+        // ever reaching that point) — so a section with zero files this round would otherwise never
+        // get the option at all.
+        pageReviewsEl.style.display = 'block';
+        if (!viewingHistoryRecord) {
+          ['pdfsAddMoreWrap', 'bankStatementAddMoreWrap', 'medicalBillsAddMoreWrap', 'medicalCertificatesAddMoreWrap', 'payslipsAddMoreWrap'].forEach(id => {
+            document.getElementById(id).style.display = 'block';
+          });
+        }
         const mainCost = mainResult.status === 'fulfilled' && typeof mainResult.value === 'number' ? mainResult.value : 0;
         const bankCost = bankResult.status === 'fulfilled' && typeof bankResult.value === 'number' ? bankResult.value : 0;
         const medicalCost = medicalResult.status === 'fulfilled' && typeof medicalResult.value === 'number' ? medicalResult.value : 0;
@@ -3116,6 +3211,7 @@
       // The editable field grid (and the Summary card below) renders unconditionally now — no IPA
       // upload is required, and a caseworker filling these in by hand still needs the same inputs
       // and the same recompute-on-edit wiring as a scanned one would get.
+      currentIpa = data.ipa || null;
       ipaPageReviewEl.style.display = 'block';
       document.getElementById('ipaPageReviewHeading').style.display = 'block';
       ipaPageReviewEl.innerHTML = renderIpaCard(data.ipaImage, data.ipa, data.ipaWarning);
@@ -3148,10 +3244,22 @@
       if (data.pageReviews && data.pageReviews.length > 0) {
         // Same order the server itself walked (pdfsPreviewPages, minus whatever the staging step
         // excluded) — zipped with data.pageReviews by position so each card knows its own
-        // (fileIndex, pageIndex) for the per-page "Rotate + Rescan" action below.
+        // (fileIndex, pageIndex) for the per-page "Rotate + Rescan" action below. This is always
+        // batch 0 (the main submit) — a later "Add more timesheet files" scan goes through
+        // mergeTimesheetPageBatch instead, never through this initial-render path.
         const rawOrderedKeys = pdfsPreviewPages
           .filter(p => !excludedPdfsPages.has(`${p.fileIndex}-${p.pageIndex}`))
-          .map(p => `${p.fileIndex}-${p.pageIndex}`);
+          .map(p => {
+            const plainKey = `${p.fileIndex}-${p.pageIndex}`;
+            const compositeKey = `0:${plainKey}`;
+            // Migrate (copy, not move) any rotation chosen during pre-scan staging onto the
+            // batch-aware key — pdfsRotations is sent to the server as-is at submit time under the
+            // plain key, but the post-scan Rotate+Rescan flow (wireTimesheetRescanControls) now
+            // reads/writes it under the composite key, so this page's rotation baseline needs to
+            // carry over the first time it's rendered post-scan.
+            if (pdfsRotations[plainKey] !== undefined) pdfsRotations[compositeKey] = pdfsRotations[plainKey];
+            return compositeKey;
+          });
         // Pages come back in upload order, not scan-date order — a caseworker who uploads
         // September's timesheet before June's would otherwise see September first. Sort by each
         // page's own earliest dated entry (ISO "YYYY-MM-DD" strings sort lexicographically in
@@ -3174,6 +3282,11 @@
         pageReviewList.innerHTML = sortedPageReviews.map((page, idx) => renderPageReview(page, orderedKeys[idx], idx)).join('');
         pageReviewList.querySelectorAll('.page-rescan-controls').forEach(wireTimesheetRescanControls);
         renderInterpretationDisagreements(sortedPageReviews, orderedKeys);
+        // "Add more timesheet files" — lets a caseworker scan just a newly-arrived document later
+        // without re-scanning this batch. Never offered for a reopened history record (its original
+        // uploaded files are long gone from temp storage, same reasoning as viewingHistoryRecord's
+        // other uses).
+        if (!viewingHistoryRecord) document.getElementById('pdfsAddMoreWrap').style.display = 'block';
         // Each page card was rendered with an empty placeholder list (see renderPageReview) — now
         // that they're in the DOM, populate each with the reviewRows whose `source` traces back to
         // that page, so the editable Start/End/Break inputs sit right beside their source image.
@@ -5603,8 +5716,13 @@
       // The <ul class="inline-review-list"> is left empty here — populated right after this page's
       // card lands in the DOM (see the /api/process success handler) with the reviewRows that trace
       // back to this exact page, so the editable Start/End/Break inputs sit right beside the image.
+      // `key` is `${batchId}:${fileIndex}-${pageIndex}` — batchId distinguishes which upload batch
+      // (the main submit, or a later "Add more timesheet files" scan) this page's File object lives
+      // in, since pdfsFileBatches can now hold more than one File[] (see wireTimesheetRescanControls).
+      const [keyBatchId, keyRest] = key !== undefined ? key.split(':') : [undefined, undefined];
+      const [keyFileIndex, keyPageIndex] = keyRest !== undefined ? keyRest.split('-') : [undefined, undefined];
       const rescanHtml = key !== undefined ? `
-        <div class="page-rescan-controls" data-file-index="${key.split('-')[0]}" data-page-index="${key.split('-')[1]}" data-key="${escapeHtml(key)}">
+        <div class="page-rescan-controls" data-batch-id="${keyBatchId}" data-file-index="${keyFileIndex}" data-page-index="${keyPageIndex}" data-key="${escapeHtml(key)}">
           <button type="button" class="page-rotate-btn" title="Rotate this page before rescanning">⟳ Rotate</button>
           <button type="button" class="page-rescan-btn">Rescan this page</button>
           <button type="button" class="page-revert-btn" title="Revert this page's fields to their last-scanned values">↺ Revert</button>
@@ -5677,6 +5795,7 @@
     // wherever that page's rotation already stood, no separate state needed.
     /** Wires one timesheet page card's Rotate/Rescan buttons. */
     function wireTimesheetRescanControls(controls) {
+      const batchId = Number(controls.dataset.batchId);
       const fileIndex = Number(controls.dataset.fileIndex);
       const pageIndex = Number(controls.dataset.pageIndex);
       const key = controls.dataset.key;
@@ -5699,20 +5818,18 @@
       });
 
       rescanBtn.addEventListener('click', async () => {
-        const file = pdfsInput.files[fileIndex];
+        // Resolves against the batch this page actually came from — batch 0 is the main submit's
+        // pdfsInput.files, any higher batchId is a later "Add more timesheet files" scan (see
+        // pdfsFileBatches above).
+        const file = pdfsFileBatches[batchId]?.[fileIndex];
         if (!file) {
           statusEl.className = 'page-rescan-status error';
           statusEl.textContent = 'Original file no longer attached (selection changed since the scan ran) — re-upload and rescan the whole batch instead.';
           return;
         }
-        // /api/process requires an IPA letter on every request, not just the first — re-attach
-        // whatever's still in the IPA input (same "same session" assumption as the pdfs file above).
+        // IPA is optional (see server.ts) — re-attach it only if one's still selected, same as the
+        // main submit handler.
         const ipaFile = ipaInput.files[0];
-        if (!ipaFile) {
-          statusEl.className = 'page-rescan-status error';
-          statusEl.textContent = 'IPA letter no longer attached (selection changed since the scan ran) — re-attach it before rescanning a single page.';
-          return;
-        }
         const hint = promptRescanHint();
         if (hint === null) return;
         rescanBtn.disabled = true;
@@ -5721,13 +5838,13 @@
 
         // Excludes every OTHER page of this same file — only the target page actually gets
         // (re-)scanned; the rest of the batch, and the rest of this file, is left untouched.
-        const pageCount = pdfsPreviewPages.filter(p => p.fileIndex === fileIndex).length;
+        const pageCount = previewPagesForBatch(batchId).filter(p => p.fileIndex === fileIndex).length;
         const excluded = [];
         for (let pi = 0; pi < pageCount; pi++) if (pi !== pageIndex) excluded.push(`0-${pi}`);
 
         const formData = new FormData();
         formData.append('pdfs', file);
-        formData.append('ipa', ipaFile);
+        if (ipaFile) formData.append('ipa', ipaFile);
         formData.append('rotations', JSON.stringify({ pdfs: { [`0-${pageIndex}`]: pdfsRotations[key] || 0 }, ipa: ipaRotations }));
         formData.append('excludedPages', JSON.stringify(excluded));
         formData.append('excludedIpaPages', JSON.stringify([...excludedIpaPages]));
@@ -5816,6 +5933,190 @@
       spliceRescannedPage(rowEl, result.pageReviews[0], key, result.reviewRows);
     }
 
+    // ===== Partial/incremental timesheet uploads ("Add more timesheet files") =====
+    // Scans ONLY newly-selected files and merges the result into the already-rendered review,
+    // instead of re-scanning (and re-paying for) a batch that was already reviewed. Existing page
+    // cards are never replaced — new cards are appended, then every card (old + new) is reordered
+    // in the DOM by date, same comparator the initial render's sort uses. This preserves
+    // manually-added rows, auto-inserted missing-day placeholders, and any hand-edits already made
+    // to existing rows — none of that lives anywhere except the live DOM, so a full re-render from
+    // a fresh server response would have silently discarded all of it.
+    /**
+     * Merges a newly-scanned batch's pages/rows into the already-rendered timesheet review.
+     * @param {object[]} newPageReviews - The new batch's raw page review objects.
+     * @param {object[]} newReviewRows - The new batch's raw review rows.
+     * @param {number} batchId - Which upload batch these came from (see pdfsFileBatches).
+     */
+    function mergeTimesheetPageBatch(newPageReviews, newReviewRows, batchId) {
+      // Unhides the list + heading unconditionally — if this section had zero files in the
+      // original submit, nothing ever set these visible (renderFinalResult/renderLivePages both
+      // only do so inside their own "pages.length > 0" branch), so without this the newly-merged
+      // cards would render into a still-display:none container and silently not appear.
+      pageReviewsEl.style.display = 'block';
+      document.getElementById('pageReviewListHeading').style.display = 'block';
+      // 1. Build this batch's composite keys. No rotation to migrate — this batch skipped the
+      // pre-scan staging step entirely (see the plan's scope cut), so every page starts at
+      // rotation 0, same as any page's first-ever scan.
+      const previewPages = previewPagesForBatch(batchId);
+      const orderedKeys = previewPages.map(p => `${batchId}:${p.fileIndex}-${p.pageIndex}`);
+
+      // 2. Disambiguate source collisions against every page already shown (e.g. two different
+      // uploads both containing a file literally named "timesheet.pdf") — source strings drive
+      // row-to-card matching below, so a collision here would misfile rows onto the wrong card.
+      const existingSources = new Set(currentPageReviews.map(p => p.source));
+      const dedupedPageReviews = newPageReviews.map(page => {
+        if (!existingSources.has(page.source)) {
+          existingSources.add(page.source);
+          return page;
+        }
+        let n = 2;
+        while (existingSources.has(`${page.source} (${n})`)) n++;
+        const newSource = `${page.source} (${n})`;
+        existingSources.add(newSource);
+        newReviewRows.forEach(r => {
+          if (r.source.split(', ').includes(page.source)) {
+            r.source = r.source.split(', ').map(s => s === page.source ? newSource : s).join(', ');
+          }
+        });
+        return { ...page, source: newSource };
+      });
+
+      // 3. Supersede stale placeholders: a new real row's date that was only covered by an
+      // auto-inserted-missing-day row, or an "unclear mark ... defaulted" row (see the rest-day/
+      // public-holiday defaulting fix), gets replaced by the new real data rather than duplicated.
+      // A genuine collision with a DIFFERENT already-scanned real row is flagged on both sides
+      // instead of guessed at — this app never silently picks a "winner" between two real readings.
+      const isDefaultedPlaceholderNote = (notes) => !!notes && /defaulted to 08:00.17:00, please verify/.test(notes);
+      const newDates = new Set(newReviewRows.map(r => r.date));
+      const conflictNote = '⚠ another entry already exists for this date — please reconcile';
+      for (const li of [...pageReviewList.querySelectorAll('.review-row')]) {
+        const dateVal = li.querySelector('.f-date').value;
+        if (!newDates.has(dateVal)) continue;
+        const isPlaceholder = li.dataset.source === 'auto-inserted (missing day)' || isDefaultedPlaceholderNote(li.dataset.notes);
+        if (isPlaceholder) {
+          li.remove();
+          continue;
+        }
+        const existingNotes = li.dataset.notes || '';
+        if (!existingNotes.includes(conflictNote)) {
+          li.dataset.notes = existingNotes ? `${existingNotes} — ${conflictNote}` : conflictNote;
+          li.insertAdjacentHTML('beforeend', `<div class="row-notes">${escapeHtml(conflictNote)}</div>`);
+        }
+        for (const r of newReviewRows) {
+          if (r.date === dateVal) r.notes = r.notes ? `${r.notes} — ${conflictNote}` : conflictNote;
+        }
+      }
+
+      // 4. Render the new batch's own cards — exactly like the initial render builds a page card,
+      // just appended after whatever's already there instead of replacing it.
+      const startIndex = currentPageReviews.length;
+      currentPageReviews.push(...dedupedPageReviews);
+      const newCardsHtml = dedupedPageReviews.map((page, idx) => renderPageReview(page, orderedKeys[idx], startIndex + idx)).join('');
+      pageReviewList.insertAdjacentHTML('beforeend', newCardsHtml);
+      const newCardEls = [...pageReviewList.querySelectorAll('.page-review-row')].slice(startIndex);
+      newCardEls.forEach(cardEl => {
+        const controls = cardEl.querySelector('.page-rescan-controls');
+        if (controls) wireTimesheetRescanControls(controls);
+      });
+      newCardEls.forEach((cardEl, idx) => {
+        const page = dedupedPageReviews[idx];
+        const container = cardEl.querySelector('.review-target-list');
+        const matching = newReviewRows.filter(r => r.source.split(', ').includes(page.source));
+        if (matching.length === 0) {
+          container.innerHTML = '<li class="empty">No entries extracted from this page</li>';
+        } else {
+          for (const row of matching) appendReviewRow(container, row);
+        }
+        const droppedSlot = cardEl.querySelector('.page-dropped-dates-slot');
+        if (droppedSlot) droppedSlot.innerHTML = renderDroppedDatesNote(page, matching);
+        wireRosterPicker(container, page);
+        const addBtn = cardEl.querySelector('.page-add-day-btn');
+        const extraList = cardEl.querySelector('.page-extra-list');
+        addBtn.addEventListener('click', () => {
+          appendReviewRow(extraList, { date: '', clockIn: null, clockOut: null, breakHours: 1, restDay: false, guessed: false, notes: null, source: 'manually added' });
+        });
+      });
+
+      // 5. Reorder every card (old + new) chronologically by its own min dated entry — appendChild
+      // on an already-attached node just MOVES it, so this repositions without rebuilding any
+      // card's contents/listeners. Critical: this is what keeps step 3's surviving rows, hand-
+      // edits, and manually-added rows intact instead of wiping them in a full re-render.
+      const pageMinDate = (page) => (page.entries || []).map(e => e.date).filter(Boolean).sort()[0] || null;
+      const cardEls = [...pageReviewList.querySelectorAll('.page-review-row')];
+      const order = cardEls.map((el, idx) => idx);
+      order.sort((a, b) => {
+        const da = pageMinDate(currentPageReviews[Number(cardEls[a].dataset.reviewIndex)]);
+        const db = pageMinDate(currentPageReviews[Number(cardEls[b].dataset.reviewIndex)]);
+        if (da === null && db === null) return a - b;
+        if (da === null) return 1;
+        if (db === null) return -1;
+        return da < db ? -1 : da > db ? 1 : a - b;
+      });
+      for (const i of order) pageReviewList.appendChild(cardEls[i]);
+
+      // 6. Same post-merge recompute every other render path already relies on — both already read
+      // live DOM state (confirmed during planning), so merging rows in beforehand is enough; no
+      // extra plumbing needed here.
+      detectAndInsertMissingDays();
+      recomputeAllGuardrails();
+    }
+
+    document.getElementById('pdfsAddMoreBtn').addEventListener('click', async () => {
+      const input = document.getElementById('pdfsAddMoreInput');
+      const statusEl = document.getElementById('pdfsAddMoreStatus');
+      const btn = document.getElementById('pdfsAddMoreBtn');
+      if (input.files.length === 0) {
+        statusEl.className = 'status error';
+        statusEl.textContent = 'Choose at least one file first.';
+        return;
+      }
+      const batchId = pdfsFileBatches.push([...input.files]) - 1;
+      btn.disabled = true;
+      statusEl.className = 'status loading';
+      statusEl.innerHTML = '<span class="spinner"></span>Scanning additional file(s)…';
+
+      try {
+        // Silent /api/preview call — learns this batch's {fileIndex,pageIndex} list (needed so its
+        // own pages' Rotate+Rescan buttons can later resolve back to the right File) without
+        // showing the pre-scan rotate/exclude staging grid the main submit gets (scope cut).
+        const previewFormData = new FormData();
+        for (const file of input.files) previewFormData.append('pdfs', file);
+        const previewRes = await fetch('/api/preview', { method: 'POST', body: previewFormData });
+        const previewData = await previewRes.json();
+        if (!previewRes.ok) throw new Error(previewData.error || `Server returned ${previewRes.status}`);
+        pdfsPreviewPagesByBatch[batchId] = (previewData.pdfsPreview || []).map(p => ({ fileIndex: p.fileIndex, pageIndex: p.pageIndex }));
+
+        const formData = new FormData();
+        for (const file of input.files) formData.append('pdfs', file);
+        formData.append('standardBreakHours', getStandardBreakHours());
+        const scanHintVal = document.getElementById('scanHint').value.trim();
+        if (scanHintVal) formData.append('interpretationHint', scanHintVal);
+        if (currentYear && currentYear.length > 0) formData.append('fallbackYear', currentYear[0]);
+        const claimStart = document.getElementById('contractStartDate').value;
+        if (claimStart) formData.append('claimStartDate', claimStart);
+        const claimEnd = document.getElementById('contractEndDate').value;
+        if (claimEnd) formData.append('claimEndDate', claimEnd);
+
+        const res = await fetch('/api/process', { method: 'POST', body: formData });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || `Server returned ${res.status}`);
+        const polled = await pollSinglePageJob('/api/process', data.jobId);
+        const result = polled.result;
+        if (!result || !result.pageReviews || result.pageReviews.length === 0) {
+          throw new Error('Scan finished but returned no pages — double-check the file(s) and try again.');
+        }
+        mergeTimesheetPageBatch(result.pageReviews, result.reviewRows || [], batchId);
+        statusEl.className = 'status success';
+        statusEl.textContent = `Added ${result.pageReviews.length} page(s).`;
+        input.value = '';
+      } catch (err) {
+        statusEl.className = 'status error';
+        statusEl.textContent = 'Error: ' + err.message;
+      } finally {
+        btn.disabled = false;
+      }
+    });
+
     // ===== Interpretation-disagreement resolution (post-scan) =====
     // Some pages' independent agentic attempts can disagree not just on exact digits (normal
     // reading noise, already resolved server-side by reconciliation voting) but on what KIND of
@@ -5851,7 +6152,11 @@
         const d = page.interpretationDisagreement;
         const key = orderedKeys[idx];
         if (!d || !key) return;
-        const fileIndex = Number(key.split('-')[0]);
+        // key is `${batchId}:${fileIndex}-${pageIndex}` — this feature only ever fires on batch 0
+        // pages (interpretation disagreement is detected within one single scan request's own
+        // multi-attempt reconciliation, and renderInterpretationDisagreements is only ever called
+        // from the initial batch-0 render, never from the "Add more timesheet files" merge path).
+        const fileIndex = Number(key.split(':')[1].split('-')[0]);
         const groupKey = `${fileIndex}:${d.conflictType}`;
         if (!groups.has(groupKey)) groups.set(groupKey, { fileIndex, conflictType: d.conflictType, pages: [] });
         groups.get(groupKey).pages.push({ reviewIndex: idx, key, page });
@@ -5866,7 +6171,7 @@
       const groupList = [...groups.values()];
       panelEl.style.display = 'block';
       panelEl.innerHTML = groupList.map((group, groupIdx) => {
-        const pageNumbers = group.pages.map(p => Number(p.key.split('-')[1]) + 1).join(', ');
+        const pageNumbers = group.pages.map(p => Number(p.key.split(':')[1].split('-')[1]) + 1).join(', ');
         const candidates = group.pages[0].page.interpretationDisagreement.candidates;
         const candidateHtml = candidates.map((c, ci) => {
           const sample = c.rows.slice(0, 6).map(r => `<li class="empty">${escapeHtml(formatLiveEntry(parsedEntryToLiveShape(r)))}</li>`).join('');
@@ -5929,7 +6234,7 @@
         // Excludes every page of this file EXCEPT the ones in this disagreement group — only those
         // get (re-)scanned, same exclude-list mechanism the single-page "Rotate + Rescan" flow
         // already relies on (wireTimesheetRescanControls above), just targeting several pages at once.
-        const targetPageIndices = new Set(group.pages.map(p => Number(p.key.split('-')[1])));
+        const targetPageIndices = new Set(group.pages.map(p => Number(p.key.split(':')[1].split('-')[1])));
         const pageCount = pdfsPreviewPages.filter(p => p.fileIndex === group.fileIndex).length;
         const excluded = [];
         for (let pi = 0; pi < pageCount; pi++) if (!targetPageIndices.has(pi)) excluded.push(`${group.fileIndex}-${pi}`);
@@ -6011,17 +6316,23 @@
       // Rotate/Rescan sits below the image, inside .page-review-image — same layout as every other
       // page card (renderPageReview, renderBankPageCard, renderMedicalPageCard,
       // renderMedicalCertPageCard), not in the details column.
+      // The scan/rescan button itself always renders now (not gated on ipaImage) — IPA is
+      // optional, so a claim can reach this card with no IPA ever having been uploaded at all;
+      // without this, there was no way to attach one afterward short of re-running the whole
+      // claim scan. Rotate/Revert stay gated on ipaImage — they only make sense against an
+      // already-scanned page (a brand-new upload's rotation is corrected via the pre-scan staging
+      // grid above instead, same as the very first scan would be).
       return `
       <div class="page-review-row">
-        ${ipaImage ? `<div class="page-review-image">
-          <img src="${imageSrc(ipaImage)}" alt="IPA letter">
+        <div class="page-review-image">
+          ${ipaImage ? `<img src="${imageSrc(ipaImage)}" alt="IPA letter">` : `<div class="review-hint">No IPA letter uploaded yet.</div>`}
           ${viewingHistoryRecord ? '' : `<div class="page-rescan-controls">
-            <button type="button" class="page-rotate-btn" title="Rotate this page before rescanning">⟳ Rotate</button>
-            <button type="button" class="page-rescan-btn">Rescan IPA</button>
-            <button type="button" class="page-revert-btn" title="Revert this page's fields to their last-scanned values">↺ Revert</button>
+            ${ipaImage ? '<button type="button" class="page-rotate-btn" title="Rotate this page before rescanning">⟳ Rotate</button>' : ''}
+            <button type="button" class="page-rescan-btn">${ipaImage ? 'Rescan IPA' : 'Scan IPA letter'}</button>
+            ${ipaImage ? '<button type="button" class="page-revert-btn" title="Revert this page\'s fields to their last-scanned values">↺ Revert</button>' : ''}
           </div>
           <div class="page-rescan-status"></div>`}
-        </div>` : ''}
+        </div>
         <div class="page-review-details">
           <div class="page-review-source"><span>IPA letter</span></div>
           ${renderIpaFieldsEditable(ipa ?? blankIpaFields())}
@@ -6046,7 +6357,9 @@
       // server-rotated as of the last (re)scan; this just tracks what's pending since then.
       let previewDelta = 0;
 
-      rotateBtn.addEventListener('click', () => {
+      // Absent when no IPA has ever been scanned yet (see renderIpaCard) — nothing to rotate
+      // against until a first scan exists, so there's nothing to wire here in that case.
+      if (rotateBtn) rotateBtn.addEventListener('click', () => {
         // The IPA upload can be multi-page — this rotates whichever page index is actually in use
         // (the first one not dropped in staging), same resolution logic server.ts's runProcessJob
         // applies, so this button keeps rotating the right page even if page 0 was deleted earlier.
@@ -6063,7 +6376,7 @@
         const ipaFile = ipaInput.files[0];
         if (!ipaFile) {
           statusEl.className = 'page-rescan-status error';
-          statusEl.textContent = 'IPA letter no longer attached (selection changed since the scan ran) — re-attach it before rescanning.';
+          statusEl.textContent = 'No IPA letter attached — choose one in the Documents section above, then click this button again.';
           return;
         }
         const hint = promptRescanHint();
@@ -6113,6 +6426,10 @@
     // actually rescanned" approach applyRescannedTimesheetPage uses for a single timesheet page.
     /** Splices a rescanned IPA result into the IPA card and the read-only Summary reflection. */
     function applyRescannedIpa(result) {
+      // A failed rescan (result.ipa === null) keeps whatever was last successfully scanned/edited —
+      // same "don't blank out good data on a bad rescan" reasoning as the card itself only showing
+      // blank fields on a genuine failure, not silently losing the previous values.
+      if (result.ipa) currentIpa = result.ipa;
       ipaPageReviewEl.innerHTML = renderIpaCard(result.ipaImage, result.ipa, result.ipaWarning);
       const controls = ipaPageReviewEl.querySelector('.page-rescan-controls');
       if (controls) wireIpaRescanControls(controls);
@@ -6174,6 +6491,31 @@
     ${ipaField('dailyBasicRate', 'Declared daily basic rate ($)', f.dailyBasicRate)}
     ${ipaField('workingDaysPerWeek', 'Working days/week', f.workingDaysPerWeek)}
   </div>`;
+    }
+
+    // Only 7 of IpaFields' fields are actually editable here (see renderIpaFieldsEditable above) —
+    // the rest (employerUen/occupation/sector/hourlyBasicRate/workingHoursPerDay/wpValidityStart/
+    // End/notes/fixedMonthlyDeductions) have no input anywhere in this UI, so they're carried
+    // through from currentIpa (the last-scanned/last-loaded object) unchanged rather than silently
+    // dropped. Mirrors collectAllReviewRowsWithSource's "read the live DOM, not a cached array"
+    // approach for the one thing this UI DOES let a caseworker edit.
+    /** Reads the 7 editable IPA inputs into a full IpaFields-shaped object, ready to save to history. */
+    function collectCurrentIpaFields() {
+      const panel = document.getElementById('ipaPageReview');
+      if (!panel) return currentIpa;
+      const text = (field) => { const v = panel.querySelector(`input[data-field="${field}"]`)?.value; return v ? v : null; };
+      const num = (field) => { const v = panel.querySelector(`input[data-field="${field}"]`)?.value; return v === '' || v === undefined ? null : Number(v); };
+      const allowanceTotal = num('fixedMonthlyAllowances');
+      return {
+        ...(currentIpa || blankIpaFields()),
+        workerName: text('workerName'),
+        workerFin: text('workerFin'),
+        employerName: text('employerName'),
+        basicMonthlySalary: num('basicMonthlySalary'),
+        fixedMonthlyAllowances: allowanceTotal === null ? [] : [{ type: 'edited total', amount: allowanceTotal }],
+        dailyBasicRate: num('dailyBasicRate'),
+        workingDaysPerWeek: num('workingDaysPerWeek'),
+      };
     }
 
     // Read-only rollup for the Summary section — plain text, not inputs, since Summary isn't meant
@@ -6304,6 +6646,14 @@
     let bankStatementRotations = {};
     let excludedBankStatementPages = new Set();
     let bankStatementPreviewPages = []; // {fileIndex, pageIndex} in file/page order — see pdfsPreviewPages
+    // Partial/incremental upload support — same pattern as pdfsFileBatches/previewPagesForBatch for
+    // the timesheet section. Batch 0 is always the main submit's bankStatementInput.files.
+    let bankStatementFileBatches = [];
+    let bankStatementPreviewPagesByBatch = {};
+    /** Returns the known {fileIndex,pageIndex} list for a given bank-statement upload batch. */
+    function previewPagesForBankBatch(batchId) {
+      return batchId === 0 ? bankStatementPreviewPages : (bankStatementPreviewPagesByBatch[batchId] || []);
+    }
 
     /** Renders one staging-page thumbnail (image + rotate/delete buttons) for the bank statement upload. */
     function renderBankStageTile(key, label, imageB64) {
@@ -6539,8 +6889,13 @@
     // controls needed on a page that's still mid-scan as part of the same batch).
     /** Renders one bank-statement page-review card: source thumbnail, editable transactions, optional rescan controls. */
     function renderBankPageCard(p, key, reviewIndex) {
+      // `key` is `${batchId}:${fileIndex}-${pageIndex}` — same scheme as the timesheet section's
+      // renderPageReview, letting a page's Rotate+Rescan button resolve the right File object even
+      // when it came from a later "Add more bank statement files" scan rather than the main submit.
+      const [keyBatchId, keyRest] = key !== undefined ? key.split(':') : [undefined, undefined];
+      const [keyFileIndex, keyPageIndex] = keyRest !== undefined ? keyRest.split('-') : [undefined, undefined];
       const rescanHtml = key !== undefined ? `
-        <div class="page-rescan-controls" data-file-index="${key.split('-')[0]}" data-page-index="${key.split('-')[1]}" data-key="${escapeHtml(key)}">
+        <div class="page-rescan-controls" data-batch-id="${keyBatchId}" data-file-index="${keyFileIndex}" data-page-index="${keyPageIndex}" data-key="${escapeHtml(key)}">
           <button type="button" class="page-rotate-btn" title="Rotate this page before rescanning">⟳ Rotate</button>
           <button type="button" class="page-rescan-btn">Rescan this page</button>
           <button type="button" class="page-revert-btn" title="Revert this page's fields to their last-scanned values">↺ Revert</button>
@@ -6577,10 +6932,19 @@
       pageReviewsEl.style.display = 'block'; // reveal page-by-page review even if the main scan hasn't produced anything yet
       bankPageReviewListEl.style.display = 'block';
       document.getElementById('bankPageReviewListHeading').style.display = 'block';
+      // Always batch 0 (the main submit) — a later "Add more bank statement files" scan goes
+      // through mergeBankPageBatch instead, never through this live/initial-render path.
       const rawOrderedKeys = done
         ? bankStatementPreviewPages
           .filter(p => !excludedBankStatementPages.has(`${p.fileIndex}-${p.pageIndex}`))
-          .map(p => `${p.fileIndex}-${p.pageIndex}`)
+          .map(p => {
+            const plainKey = `${p.fileIndex}-${p.pageIndex}`;
+            const compositeKey = `0:${plainKey}`;
+            // Migrate (copy) any rotation chosen during pre-scan staging onto the batch-aware key —
+            // see the timesheet section's identical comment on why this is a copy, not a rename.
+            if (bankStatementRotations[plainKey] !== undefined) bankStatementRotations[compositeKey] = bankStatementRotations[plainKey];
+            return compositeKey;
+          })
         : [];
       // Pages come back in upload order, not transaction-date order — sort by each page's own
       // earliest transaction date (same reasoning/approach as the timesheet pages sort above) so a
@@ -6603,6 +6967,10 @@
         .join('');
       bankPageReviewListEl.querySelectorAll('.page-review-row').forEach(wireBankPageCard);
       if (done) bankPageReviewListEl.querySelectorAll('.page-rescan-controls').forEach(wireBankRescanControls);
+      // "Add more bank statement files" — same reasoning as the timesheet section's equivalent:
+      // never offered for a reopened history record (original files are long gone by then), and
+      // only once the batch is actually done (mid-scan, there's nothing stable to add onto yet).
+      if (done && !viewingHistoryRecord) document.getElementById('bankStatementAddMoreWrap').style.display = 'block';
       refreshBankSummary();
     }
 
@@ -6635,6 +7003,7 @@
     // the fresh result back into its card.
     /** Wires a bank-statement page's rotate + rescan controls, splicing the fresh single-page result back into its card. */
     function wireBankRescanControls(controls) {
+      const batchId = Number(controls.dataset.batchId);
       const fileIndex = Number(controls.dataset.fileIndex);
       const pageIndex = Number(controls.dataset.pageIndex);
       const key = controls.dataset.key;
@@ -6653,7 +7022,7 @@
       });
 
       rescanBtn.addEventListener('click', async () => {
-        const file = bankStatementInput.files[fileIndex];
+        const file = bankStatementFileBatches[batchId]?.[fileIndex];
         if (!file) {
           statusEl.className = 'page-rescan-status error';
           statusEl.textContent = 'Original file no longer attached (selection changed since the scan ran) — re-upload and rescan the whole batch instead.';
@@ -6665,7 +7034,7 @@
         statusEl.className = 'page-rescan-status';
         statusEl.textContent = 'Rescanning…';
 
-        const pageCount = bankStatementPreviewPages.filter(p => p.fileIndex === fileIndex).length;
+        const pageCount = previewPagesForBankBatch(batchId).filter(p => p.fileIndex === fileIndex).length;
         const excluded = [];
         for (let pi = 0; pi < pageCount; pi++) if (pi !== pageIndex) excluded.push(`0-${pi}`);
 
@@ -6709,6 +7078,123 @@
       refreshBankSummary();
     }
 
+    // ===== Partial/incremental bank-statement uploads ("Add more bank statement files") =====
+    // Same DOM-preserving append-then-reorder approach as the timesheet section's
+    // mergeTimesheetPageBatch — existing cards (and any hand-edited amounts/manually-added rows
+    // inside them) are never touched, new cards are appended, then every card is repositioned by
+    // date. No placeholder/supersede step here (unlike timesheet) — this section has no
+    // auto-inserted-missing-day concept, so a newly-scanned page is simply appended.
+    /**
+     * Merges a newly-scanned batch's pages into the already-rendered bank-statement review.
+     * @param {object[]} newPages - The new batch's raw page objects (same shape renderBankPageCard takes).
+     * @param {number} batchId - Which upload batch these came from (see bankStatementFileBatches).
+     */
+    function mergeBankPageBatch(newPages, batchId) {
+      // Unhides the list + heading unconditionally — if this section had zero files in the
+      // original submit, nothing ever set these visible (renderBankLivePages only does so inside
+      // its own "pages.length > 0" branch), so without this the newly-merged cards would render
+      // into a still-display:none container and silently not appear.
+      pageReviewsEl.style.display = 'block';
+      bankPageReviewListEl.style.display = 'block';
+      document.getElementById('bankPageReviewListHeading').style.display = 'block';
+      const previewPages = previewPagesForBankBatch(batchId);
+      const orderedKeys = previewPages.map(p => `${batchId}:${p.fileIndex}-${p.pageIndex}`);
+
+      // Disambiguate source collisions against every page already shown (e.g. two different
+      // uploads both containing a file literally named "statement.pdf").
+      const existingSources = new Set([...bankPageReviewListEl.querySelectorAll('.page-review-source span')].map(el => el.textContent));
+      const dedupedPages = newPages.map(page => {
+        if (!existingSources.has(page.source)) {
+          existingSources.add(page.source);
+          return page;
+        }
+        let n = 2;
+        while (existingSources.has(`${page.source} (${n})`)) n++;
+        const newSource = `${page.source} (${n})`;
+        existingSources.add(newSource);
+        return { ...page, source: newSource };
+      });
+
+      const startIndex = bankPageReviewListEl.querySelectorAll('.page-review-row').length;
+      const newCardsHtml = dedupedPages.map((p, idx) => renderBankPageCard(p, orderedKeys[idx], startIndex + idx)).join('');
+      bankPageReviewListEl.insertAdjacentHTML('beforeend', newCardsHtml);
+      const newCardEls = [...bankPageReviewListEl.querySelectorAll('.page-review-row')].slice(startIndex);
+      newCardEls.forEach(wireBankPageCard);
+      newCardEls.forEach(cardEl => {
+        const controls = cardEl.querySelector('.page-rescan-controls');
+        if (controls) wireBankRescanControls(controls);
+      });
+
+      // Reorder every card (old + new) chronologically by its own earliest transaction date, read
+      // straight off the live DOM — this section has no persisted "current pages" array (unlike
+      // the timesheet section's currentPageReviews), nor does it need one: every transaction's
+      // date already lives in its own row's dataset, kept in sync by wireBankRow.
+      const cardMinDate = (cardEl) => [...cardEl.querySelectorAll('.bt-row')].map(tr => tr.dataset.date).filter(Boolean).sort()[0] || null;
+      const cardEls = [...bankPageReviewListEl.querySelectorAll('.page-review-row')];
+      const order = cardEls.map((el, idx) => idx);
+      order.sort((a, b) => {
+        const da = cardMinDate(cardEls[a]);
+        const db = cardMinDate(cardEls[b]);
+        if (da === null && db === null) return a - b;
+        if (da === null) return 1;
+        if (db === null) return -1;
+        return da < db ? -1 : da > db ? 1 : a - b;
+      });
+      for (const i of order) bankPageReviewListEl.appendChild(cardEls[i]);
+
+      refreshBankSummary();
+    }
+
+    document.getElementById('bankStatementAddMoreBtn').addEventListener('click', async () => {
+      const input = document.getElementById('bankStatementAddMoreInput');
+      const statusEl = document.getElementById('bankStatementAddMoreStatus');
+      const btn = document.getElementById('bankStatementAddMoreBtn');
+      if (input.files.length === 0) {
+        statusEl.className = 'status error';
+        statusEl.textContent = 'Choose at least one file first.';
+        return;
+      }
+      const batchId = bankStatementFileBatches.push([...input.files]) - 1;
+      btn.disabled = true;
+      statusEl.className = 'status loading';
+      statusEl.innerHTML = '<span class="spinner"></span>Scanning additional file(s)…';
+
+      try {
+        // Silent /api/preview call — learns this batch's {fileIndex,pageIndex} list (needed so its
+        // own pages' Rotate+Rescan buttons can later resolve back to the right File), same reason
+        // and approach as the timesheet section's "Add more timesheet files" handler. The scan
+        // response's own page list can't be used for this directly: its page ordering/count
+        // reflects reconciliation across scan attempts, not a guaranteed 1:1 map back to
+        // (fileIndex, pageIndex) the way /api/preview's own pdf-rendering pass is.
+        const previewFormData = new FormData();
+        for (const file of input.files) previewFormData.append('bankStatement', file);
+        const previewRes = await fetch('/api/preview', { method: 'POST', body: previewFormData });
+        const previewData = await previewRes.json();
+        if (!previewRes.ok) throw new Error(previewData.error || `Server returned ${previewRes.status}`);
+        bankStatementPreviewPagesByBatch[batchId] = (previewData.bankStatementPreview || []).map(p => ({ fileIndex: p.fileIndex, pageIndex: p.pageIndex }));
+
+        const formData = new FormData();
+        for (const file of input.files) formData.append('statements', file);
+        const res = await fetch('/api/bank-statement', { method: 'POST', body: formData });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || `Server returned ${res.status}`);
+        const polled = await pollSinglePageJob('/api/bank-statement', data.jobId);
+        const newPages = polled.pages || [];
+        if (newPages.length === 0) {
+          throw new Error('Scan finished but returned no pages — double-check the file(s) and try again.');
+        }
+        mergeBankPageBatch(newPages, batchId);
+        statusEl.className = 'status success';
+        statusEl.textContent = `Added ${newPages.length} page(s).`;
+        input.value = '';
+      } catch (err) {
+        statusEl.className = 'status error';
+        statusEl.textContent = 'Error: ' + err.message;
+      } finally {
+        btn.disabled = false;
+      }
+    });
+
     // Runs as part of the main "Extract details" submit (see form's submit listener below),
     // not its own button — optional, so it's a silent no-op if nothing's attached. Runs concurrently
     // with the main timesheet/IPA scan (Promise.allSettled in the submit handler), independent job
@@ -6717,6 +7203,12 @@
     /** Runs the full bank statement scan (all staged pages), polling to completion and updating owed-vs-paid. */
     async function runBankStatementScan() {
       const files = [...bankStatementInput.files];
+      // A fresh "Extract details" submit starts the whole bank-statement batch over from scratch —
+      // same reasoning as pdfsFileBatches' reset in the timesheet submit handler.
+      bankStatementFileBatches = [files];
+      document.getElementById('bankStatementAddMoreWrap').style.display = 'none';
+      document.getElementById('bankStatementAddMoreInput').value = '';
+      document.getElementById('bankStatementAddMoreStatus').textContent = '';
       if (files.length === 0) {
         // Nothing to check payments against — rather than leave the Owed vs Paid box hidden
         // indefinitely, assume $0 paid so far (the worst case) and say so explicitly in the box
@@ -6772,6 +7264,14 @@
     let medicalBillsRotations = {};
     let excludedMedicalBillsPages = new Set();
     let medicalBillsPreviewPages = []; // {fileIndex, pageIndex} in file/page order — see pdfsPreviewPages
+    // Partial/incremental upload support — same pattern as pdfsFileBatches/previewPagesForBatch for
+    // the timesheet section. Batch 0 is always the main submit's medicalBillsInput.files.
+    let medicalBillsFileBatches = [];
+    let medicalBillsPreviewPagesByBatch = {};
+    /** Returns the known {fileIndex,pageIndex} list for a given medical-bills upload batch. */
+    function previewPagesForMedicalBillsBatch(batchId) {
+      return batchId === 0 ? medicalBillsPreviewPages : (medicalBillsPreviewPagesByBatch[batchId] || []);
+    }
 
     /** Renders one staging-page thumbnail (image + rotate/delete buttons) for the medical bills upload. */
     function renderMedicalStageTile(key, label, imageB64) {
@@ -6928,8 +7428,13 @@
     // renderBankPageCard.
     /** Renders one medical-bill page-review card: source thumbnail, editable entries, optional rescan controls. */
     function renderMedicalPageCard(p, key, reviewIndex) {
+      // `key` is `${batchId}:${fileIndex}-${pageIndex}` — same scheme as the timesheet section's
+      // renderPageReview, so a page's Rotate+Rescan button resolves the right File object even
+      // when it came from a later "Add more medical bill files" scan.
+      const [keyBatchId, keyRest] = key !== undefined ? key.split(':') : [undefined, undefined];
+      const [keyFileIndex, keyPageIndex] = keyRest !== undefined ? keyRest.split('-') : [undefined, undefined];
       const rescanHtml = key !== undefined ? `
-        <div class="page-rescan-controls" data-file-index="${key.split('-')[0]}" data-page-index="${key.split('-')[1]}" data-key="${escapeHtml(key)}">
+        <div class="page-rescan-controls" data-batch-id="${keyBatchId}" data-file-index="${keyFileIndex}" data-page-index="${keyPageIndex}" data-key="${escapeHtml(key)}">
           <button type="button" class="page-rotate-btn" title="Rotate this page before rescanning">⟳ Rotate</button>
           <button type="button" class="page-rescan-btn">Rescan this page</button>
           <button type="button" class="page-revert-btn" title="Revert this page's fields to their last-scanned values">↺ Revert</button>
@@ -6957,10 +7462,19 @@
       pageReviewsEl.style.display = 'block';
       medicalPageReviewListEl.style.display = 'block';
       document.getElementById('medicalPageReviewListHeading').style.display = 'block';
+      // Always batch 0 (the main submit) — a later "Add more medical bill files" scan goes through
+      // mergeMedicalBillsPageBatch instead, never through this live/initial-render path.
       const rawOrderedKeys = done
         ? medicalBillsPreviewPages
           .filter(p => !excludedMedicalBillsPages.has(`${p.fileIndex}-${p.pageIndex}`))
-          .map(p => `${p.fileIndex}-${p.pageIndex}`)
+          .map(p => {
+            const plainKey = `${p.fileIndex}-${p.pageIndex}`;
+            const compositeKey = `0:${plainKey}`;
+            // Migrate (copy) any rotation chosen during pre-scan staging onto the batch-aware key —
+            // see the timesheet section's identical comment on why this is a copy, not a rename.
+            if (medicalBillsRotations[plainKey] !== undefined) medicalBillsRotations[compositeKey] = medicalBillsRotations[plainKey];
+            return compositeKey;
+          })
         : [];
       // Sort by each page's earliest billed-entry date — same reasoning as the timesheet/bank
       // sorts above. Permute rawOrderedKeys identically so rescan controls still target the right page.
@@ -6981,12 +7495,15 @@
         .join('');
       medicalPageReviewListEl.querySelectorAll('.page-review-row').forEach(wireMedicalPageCard);
       if (done) medicalPageReviewListEl.querySelectorAll('.page-rescan-controls').forEach(wireMedicalRescanControls);
+      // "Add more medical bill files" — same reasoning as the timesheet/bank sections' equivalents.
+      if (done && !viewingHistoryRecord) document.getElementById('medicalBillsAddMoreWrap').style.display = 'block';
       refreshMedicalBillsClaim();
     }
 
     // Same rotate-then-rescan pattern as wireBankRescanControls.
     /** Wires a medical-bill page's rotate + rescan controls, splicing the fresh single-page result back into its card. */
     function wireMedicalRescanControls(controls) {
+      const batchId = Number(controls.dataset.batchId);
       const fileIndex = Number(controls.dataset.fileIndex);
       const pageIndex = Number(controls.dataset.pageIndex);
       const key = controls.dataset.key;
@@ -7005,7 +7522,7 @@
       });
 
       rescanBtn.addEventListener('click', async () => {
-        const file = medicalBillsInput.files[fileIndex];
+        const file = medicalBillsFileBatches[batchId]?.[fileIndex];
         if (!file) {
           statusEl.className = 'page-rescan-status error';
           statusEl.textContent = 'Original file no longer attached (selection changed since the scan ran) — re-upload and rescan the whole batch instead.';
@@ -7017,7 +7534,7 @@
         statusEl.className = 'page-rescan-status';
         statusEl.textContent = 'Rescanning…';
 
-        const pageCount = medicalBillsPreviewPages.filter(p => p.fileIndex === fileIndex).length;
+        const pageCount = previewPagesForMedicalBillsBatch(batchId).filter(p => p.fileIndex === fileIndex).length;
         const excluded = [];
         for (let pi = 0; pi < pageCount; pi++) if (pi !== pageIndex) excluded.push(`0-${pi}`);
 
@@ -7060,6 +7577,112 @@
       statusEl.textContent = 'Rescanned — bills updated below.';
       refreshMedicalBillsClaim();
     }
+
+    // ===== Partial/incremental medical-bill uploads ("Add more medical bill files") =====
+    // Same DOM-preserving append-then-reorder approach as mergeTimesheetPageBatch/
+    // mergeBankPageBatch — existing cards (and any hand-edited dates/amounts/manually-added rows
+    // inside them) are never touched, new cards are appended, then every card is repositioned by
+    // date. No placeholder/supersede step — this section has no auto-inserted-missing-day concept.
+    /**
+     * Merges a newly-scanned batch's pages into the already-rendered medical-bills review.
+     * @param {object[]} newPages - The new batch's raw page objects (same shape renderMedicalPageCard takes).
+     * @param {number} batchId - Which upload batch these came from (see medicalBillsFileBatches).
+     */
+    function mergeMedicalBillsPageBatch(newPages, batchId) {
+      // Unhides the list + heading unconditionally — same reasoning as mergeBankPageBatch's
+      // identical fix: renderMedicalLivePages only sets these visible inside its own
+      // "pages.length > 0" branch.
+      pageReviewsEl.style.display = 'block';
+      medicalPageReviewListEl.style.display = 'block';
+      document.getElementById('medicalPageReviewListHeading').style.display = 'block';
+      const previewPages = previewPagesForMedicalBillsBatch(batchId);
+      const orderedKeys = previewPages.map(p => `${batchId}:${p.fileIndex}-${p.pageIndex}`);
+
+      const existingSources = new Set([...medicalPageReviewListEl.querySelectorAll('.page-review-source span')].map(el => el.textContent));
+      const dedupedPages = newPages.map(page => {
+        if (!existingSources.has(page.source)) {
+          existingSources.add(page.source);
+          return page;
+        }
+        let n = 2;
+        while (existingSources.has(`${page.source} (${n})`)) n++;
+        const newSource = `${page.source} (${n})`;
+        existingSources.add(newSource);
+        return { ...page, source: newSource };
+      });
+
+      const startIndex = medicalPageReviewListEl.querySelectorAll('.page-review-row').length;
+      const newCardsHtml = dedupedPages.map((p, idx) => renderMedicalPageCard(p, orderedKeys[idx], startIndex + idx)).join('');
+      medicalPageReviewListEl.insertAdjacentHTML('beforeend', newCardsHtml);
+      const newCardEls = [...medicalPageReviewListEl.querySelectorAll('.page-review-row')].slice(startIndex);
+      newCardEls.forEach(wireMedicalPageCard);
+      newCardEls.forEach(cardEl => {
+        const controls = cardEl.querySelector('.page-rescan-controls');
+        if (controls) wireMedicalRescanControls(controls);
+      });
+
+      // Reorder every card (old + new) by its own earliest billed date, read straight off the live
+      // DOM's own date inputs (date is directly editable here, unlike the bank section's fixed
+      // scanned-row dates) — no persisted "current pages" array needed.
+      const cardMinDate = (cardEl) => [...cardEl.querySelectorAll('.mb-date-input')].map(el => el.value).filter(Boolean).sort()[0] || null;
+      const cardEls = [...medicalPageReviewListEl.querySelectorAll('.page-review-row')];
+      const order = cardEls.map((el, idx) => idx);
+      order.sort((a, b) => {
+        const da = cardMinDate(cardEls[a]);
+        const db = cardMinDate(cardEls[b]);
+        if (da === null && db === null) return a - b;
+        if (da === null) return 1;
+        if (db === null) return -1;
+        return da < db ? -1 : da > db ? 1 : a - b;
+      });
+      for (const i of order) medicalPageReviewListEl.appendChild(cardEls[i]);
+
+      refreshMedicalBillsClaim();
+    }
+
+    document.getElementById('medicalBillsAddMoreBtn').addEventListener('click', async () => {
+      const input = document.getElementById('medicalBillsAddMoreInput');
+      const statusEl = document.getElementById('medicalBillsAddMoreStatus');
+      const btn = document.getElementById('medicalBillsAddMoreBtn');
+      if (input.files.length === 0) {
+        statusEl.className = 'status error';
+        statusEl.textContent = 'Choose at least one file first.';
+        return;
+      }
+      const batchId = medicalBillsFileBatches.push([...input.files]) - 1;
+      btn.disabled = true;
+      statusEl.className = 'status loading';
+      statusEl.innerHTML = '<span class="spinner"></span>Scanning additional file(s)…';
+
+      try {
+        const previewFormData = new FormData();
+        for (const file of input.files) previewFormData.append('medicalBills', file);
+        const previewRes = await fetch('/api/preview', { method: 'POST', body: previewFormData });
+        const previewData = await previewRes.json();
+        if (!previewRes.ok) throw new Error(previewData.error || `Server returned ${previewRes.status}`);
+        medicalBillsPreviewPagesByBatch[batchId] = (previewData.medicalBillsPreview || []).map(p => ({ fileIndex: p.fileIndex, pageIndex: p.pageIndex }));
+
+        const formData = new FormData();
+        for (const file of input.files) formData.append('medicalBills', file);
+        const res = await fetch('/api/medical-bills', { method: 'POST', body: formData });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || `Server returned ${res.status}`);
+        const polled = await pollSinglePageJob('/api/medical-bills', data.jobId);
+        const newPages = polled.pages || [];
+        if (newPages.length === 0) {
+          throw new Error('Scan finished but returned no pages — double-check the file(s) and try again.');
+        }
+        mergeMedicalBillsPageBatch(newPages, batchId);
+        statusEl.className = 'status success';
+        statusEl.textContent = `Added ${newPages.length} page(s).`;
+        input.value = '';
+      } catch (err) {
+        statusEl.className = 'status error';
+        statusEl.textContent = 'Error: ' + err.message;
+      } finally {
+        btn.disabled = false;
+      }
+    });
 
     // Independent of the timesheet/basic-salary flow — a caseworker can review medical bills before
     // a claim breakdown even exists, so this doesn't gate on lastBreakdownForExport the way
@@ -7123,6 +7746,12 @@
     /** Runs the full medical bills scan (all staged pages), polling to completion and updating the claim. */
     async function runMedicalBillsScan() {
       const files = [...medicalBillsInput.files];
+      // A fresh "Extract details" submit starts the whole medical-bills batch over from scratch —
+      // same reasoning as pdfsFileBatches' reset in the timesheet submit handler.
+      medicalBillsFileBatches = [files];
+      document.getElementById('medicalBillsAddMoreWrap').style.display = 'none';
+      document.getElementById('medicalBillsAddMoreInput').value = '';
+      document.getElementById('medicalBillsAddMoreStatus').textContent = '';
       if (files.length === 0) return;
 
       medicalBillsStatusEl.className = 'status';
@@ -7160,6 +7789,14 @@
     let medicalCertificatesRotations = {};
     let excludedMedicalCertificatesPages = new Set();
     let medicalCertificatesPreviewPages = []; // {fileIndex, pageIndex} in file/page order — see pdfsPreviewPages
+    // Partial/incremental upload support — same pattern as pdfsFileBatches/previewPagesForBatch for
+    // the timesheet section. Batch 0 is always the main submit's medicalCertificatesInput.files.
+    let medicalCertificatesFileBatches = [];
+    let medicalCertificatesPreviewPagesByBatch = {};
+    /** Returns the known {fileIndex,pageIndex} list for a given medical-certificates upload batch. */
+    function previewPagesForMedicalCertBatch(batchId) {
+      return batchId === 0 ? medicalCertificatesPreviewPages : (medicalCertificatesPreviewPagesByBatch[batchId] || []);
+    }
 
     /** Renders one staging-page thumbnail (image + rotate/delete buttons) for the medical certificates upload. */
     function renderMedicalCertStageTile(key, label, imageB64) {
@@ -7323,8 +7960,13 @@
     // renderMedicalPageCard.
     /** Renders one medical-certificate page-review card: source thumbnail, editable entries, optional rescan controls. */
     function renderMedicalCertPageCard(p, key, reviewIndex) {
+      // `key` is `${batchId}:${fileIndex}-${pageIndex}` — same scheme as the timesheet section's
+      // renderPageReview, so a page's Rotate+Rescan button resolves the right File object even
+      // when it came from a later "Add more medical certificate files" scan.
+      const [keyBatchId, keyRest] = key !== undefined ? key.split(':') : [undefined, undefined];
+      const [keyFileIndex, keyPageIndex] = keyRest !== undefined ? keyRest.split('-') : [undefined, undefined];
       const rescanHtml = key !== undefined ? `
-        <div class="page-rescan-controls" data-file-index="${key.split('-')[0]}" data-page-index="${key.split('-')[1]}" data-key="${escapeHtml(key)}">
+        <div class="page-rescan-controls" data-batch-id="${keyBatchId}" data-file-index="${keyFileIndex}" data-page-index="${keyPageIndex}" data-key="${escapeHtml(key)}">
           <button type="button" class="page-rotate-btn" title="Rotate this page before rescanning">⟳ Rotate</button>
           <button type="button" class="page-rescan-btn">Rescan this page</button>
           <button type="button" class="page-revert-btn" title="Revert this page's fields to their last-scanned values">↺ Revert</button>
@@ -7352,10 +7994,19 @@
       pageReviewsEl.style.display = 'block';
       medicalCertPageReviewListEl.style.display = 'block';
       document.getElementById('medicalCertPageReviewListHeading').style.display = 'block';
+      // Always batch 0 (the main submit) — a later "Add more medical certificate files" scan goes
+      // through mergeMedicalCertPageBatch instead, never through this live/initial-render path.
       const rawOrderedKeys = done
         ? medicalCertificatesPreviewPages
           .filter(p => !excludedMedicalCertificatesPages.has(`${p.fileIndex}-${p.pageIndex}`))
-          .map(p => `${p.fileIndex}-${p.pageIndex}`)
+          .map(p => {
+            const plainKey = `${p.fileIndex}-${p.pageIndex}`;
+            const compositeKey = `0:${plainKey}`;
+            // Migrate (copy) any rotation chosen during pre-scan staging onto the batch-aware key —
+            // see the timesheet section's identical comment on why this is a copy, not a rename.
+            if (medicalCertificatesRotations[plainKey] !== undefined) medicalCertificatesRotations[compositeKey] = medicalCertificatesRotations[plainKey];
+            return compositeKey;
+          })
         : [];
       // Sort by each page's earliest leave-start date (leaveFrom, not a single `date` field for
       // certs) — same reasoning as the other sections' sorts above. Permute rawOrderedKeys
@@ -7377,12 +8028,15 @@
         .join('');
       medicalCertPageReviewListEl.querySelectorAll('.page-review-row').forEach(wireMedicalCertPageCard);
       if (done) medicalCertPageReviewListEl.querySelectorAll('.page-rescan-controls').forEach(wireMedicalCertRescanControls);
+      // "Add more medical certificate files" — same reasoning as the other sections' equivalents.
+      if (done && !viewingHistoryRecord) document.getElementById('medicalCertificatesAddMoreWrap').style.display = 'block';
       refreshMedicalCertGuardrails();
     }
 
     // Same rotate-then-rescan pattern as wireMedicalRescanControls.
     /** Wires a medical-certificate page's rotate + rescan controls, splicing the fresh single-page result back into its card. */
     function wireMedicalCertRescanControls(controls) {
+      const batchId = Number(controls.dataset.batchId);
       const fileIndex = Number(controls.dataset.fileIndex);
       const pageIndex = Number(controls.dataset.pageIndex);
       const key = controls.dataset.key;
@@ -7401,7 +8055,7 @@
       });
 
       rescanBtn.addEventListener('click', async () => {
-        const file = medicalCertificatesInput.files[fileIndex];
+        const file = medicalCertificatesFileBatches[batchId]?.[fileIndex];
         if (!file) {
           statusEl.className = 'page-rescan-status error';
           statusEl.textContent = 'Original file no longer attached (selection changed since the scan ran) — re-upload and rescan the whole batch instead.';
@@ -7413,7 +8067,7 @@
         statusEl.className = 'page-rescan-status';
         statusEl.textContent = 'Rescanning…';
 
-        const pageCount = medicalCertificatesPreviewPages.filter(p => p.fileIndex === fileIndex).length;
+        const pageCount = previewPagesForMedicalCertBatch(batchId).filter(p => p.fileIndex === fileIndex).length;
         const excluded = [];
         for (let pi = 0; pi < pageCount; pi++) if (pi !== pageIndex) excluded.push(`0-${pi}`);
 
@@ -7457,6 +8111,112 @@
       refreshMedicalCertGuardrails();
     }
 
+    // ===== Partial/incremental medical-certificate uploads ("Add more medical certificate files") =====
+    // Same DOM-preserving append-then-reorder approach as mergeTimesheetPageBatch/
+    // mergeBankPageBatch/mergeMedicalBillsPageBatch — existing cards (and any hand-edited leave
+    // dates/manually-added rows inside them) are never touched, new cards are appended, then every
+    // card is repositioned by date. No placeholder/supersede step — this section has no
+    // auto-inserted-missing-day concept.
+    /**
+     * Merges a newly-scanned batch's pages into the already-rendered medical-certificates review.
+     * @param {object[]} newPages - The new batch's raw page objects (same shape renderMedicalCertPageCard takes).
+     * @param {number} batchId - Which upload batch these came from (see medicalCertificatesFileBatches).
+     */
+    function mergeMedicalCertPageBatch(newPages, batchId) {
+      // Unhides the list + heading unconditionally — same reasoning as mergeBankPageBatch's
+      // identical fix: renderMedicalCertLivePages only sets these visible inside its own
+      // "pages.length > 0" branch.
+      pageReviewsEl.style.display = 'block';
+      medicalCertPageReviewListEl.style.display = 'block';
+      document.getElementById('medicalCertPageReviewListHeading').style.display = 'block';
+      const previewPages = previewPagesForMedicalCertBatch(batchId);
+      const orderedKeys = previewPages.map(p => `${batchId}:${p.fileIndex}-${p.pageIndex}`);
+
+      const existingSources = new Set([...medicalCertPageReviewListEl.querySelectorAll('.page-review-source span')].map(el => el.textContent));
+      const dedupedPages = newPages.map(page => {
+        if (!existingSources.has(page.source)) {
+          existingSources.add(page.source);
+          return page;
+        }
+        let n = 2;
+        while (existingSources.has(`${page.source} (${n})`)) n++;
+        const newSource = `${page.source} (${n})`;
+        existingSources.add(newSource);
+        return { ...page, source: newSource };
+      });
+
+      const startIndex = medicalCertPageReviewListEl.querySelectorAll('.page-review-row').length;
+      const newCardsHtml = dedupedPages.map((p, idx) => renderMedicalCertPageCard(p, orderedKeys[idx], startIndex + idx)).join('');
+      medicalCertPageReviewListEl.insertAdjacentHTML('beforeend', newCardsHtml);
+      const newCardEls = [...medicalCertPageReviewListEl.querySelectorAll('.page-review-row')].slice(startIndex);
+      newCardEls.forEach(wireMedicalCertPageCard);
+      newCardEls.forEach(cardEl => {
+        const controls = cardEl.querySelector('.page-rescan-controls');
+        if (controls) wireMedicalCertRescanControls(controls);
+      });
+
+      // Reorder every card (old + new) by its own earliest leave-start date, read straight off the
+      // live DOM's own leaveFrom inputs — no persisted "current pages" array needed.
+      const cardMinDate = (cardEl) => [...cardEl.querySelectorAll('.mc-leave-from-input')].map(el => el.value).filter(Boolean).sort()[0] || null;
+      const cardEls = [...medicalCertPageReviewListEl.querySelectorAll('.page-review-row')];
+      const order = cardEls.map((el, idx) => idx);
+      order.sort((a, b) => {
+        const da = cardMinDate(cardEls[a]);
+        const db = cardMinDate(cardEls[b]);
+        if (da === null && db === null) return a - b;
+        if (da === null) return 1;
+        if (db === null) return -1;
+        return da < db ? -1 : da > db ? 1 : a - b;
+      });
+      for (const i of order) medicalCertPageReviewListEl.appendChild(cardEls[i]);
+
+      refreshMedicalCertGuardrails();
+    }
+
+    document.getElementById('medicalCertificatesAddMoreBtn').addEventListener('click', async () => {
+      const input = document.getElementById('medicalCertificatesAddMoreInput');
+      const statusEl = document.getElementById('medicalCertificatesAddMoreStatus');
+      const btn = document.getElementById('medicalCertificatesAddMoreBtn');
+      if (input.files.length === 0) {
+        statusEl.className = 'status error';
+        statusEl.textContent = 'Choose at least one file first.';
+        return;
+      }
+      const batchId = medicalCertificatesFileBatches.push([...input.files]) - 1;
+      btn.disabled = true;
+      statusEl.className = 'status loading';
+      statusEl.innerHTML = '<span class="spinner"></span>Scanning additional file(s)…';
+
+      try {
+        const previewFormData = new FormData();
+        for (const file of input.files) previewFormData.append('medicalCertificates', file);
+        const previewRes = await fetch('/api/preview', { method: 'POST', body: previewFormData });
+        const previewData = await previewRes.json();
+        if (!previewRes.ok) throw new Error(previewData.error || `Server returned ${previewRes.status}`);
+        medicalCertificatesPreviewPagesByBatch[batchId] = (previewData.medicalCertificatesPreview || []).map(p => ({ fileIndex: p.fileIndex, pageIndex: p.pageIndex }));
+
+        const formData = new FormData();
+        for (const file of input.files) formData.append('medicalCertificates', file);
+        const res = await fetch('/api/medical-certificates', { method: 'POST', body: formData });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || `Server returned ${res.status}`);
+        const polled = await pollSinglePageJob('/api/medical-certificates', data.jobId);
+        const newPages = polled.pages || [];
+        if (newPages.length === 0) {
+          throw new Error('Scan finished but returned no pages — double-check the file(s) and try again.');
+        }
+        mergeMedicalCertPageBatch(newPages, batchId);
+        statusEl.className = 'status success';
+        statusEl.textContent = `Added ${newPages.length} page(s).`;
+        input.value = '';
+      } catch (err) {
+        statusEl.className = 'status error';
+        statusEl.textContent = 'Error: ' + err.message;
+      } finally {
+        btn.disabled = false;
+      }
+    });
+
     /** Polls a medical-certificates scan job until done/error, rendering live page results along the way. */
     async function pollMedicalCertJobUntilDone(jobId) {
       let consecutiveFailures = 0;
@@ -7486,6 +8246,12 @@
     /** Runs the full medical certificates scan (all staged pages), polling to completion. */
     async function runMedicalCertificatesScan() {
       const files = [...medicalCertificatesInput.files];
+      // A fresh "Extract details" submit starts the whole medical-certificates batch over from
+      // scratch — same reasoning as pdfsFileBatches' reset in the timesheet submit handler.
+      medicalCertificatesFileBatches = [files];
+      document.getElementById('medicalCertificatesAddMoreWrap').style.display = 'none';
+      document.getElementById('medicalCertificatesAddMoreInput').value = '';
+      document.getElementById('medicalCertificatesAddMoreStatus').textContent = '';
       if (files.length === 0) return;
 
       medicalCertificatesStatusEl.className = 'status';
@@ -7522,6 +8288,14 @@
     let payslipsRotations = {};
     let excludedPayslipsPages = new Set();
     let payslipsPreviewPages = []; // {fileIndex, pageIndex} in file/page order — see pdfsPreviewPages
+    // Partial/incremental upload support — same pattern as pdfsFileBatches/previewPagesForBatch for
+    // the timesheet section. Batch 0 is always the main submit's payslipsInput.files.
+    let payslipsFileBatches = [];
+    let payslipsPreviewPagesByBatch = {};
+    /** Returns the known {fileIndex,pageIndex} list for a given payslips upload batch. */
+    function previewPagesForPayslipsBatch(batchId) {
+      return batchId === 0 ? payslipsPreviewPages : (payslipsPreviewPagesByBatch[batchId] || []);
+    }
 
     /** Renders one staging-page thumbnail (image + rotate/delete buttons) for the payslip upload. */
     function renderPayslipStageTile(key, label, imageB64) {
@@ -7993,8 +8767,13 @@
     // renderMedicalCertPageCard.
     /** Renders one payslip page-review card: source thumbnail, editable entries, optional rescan controls. */
     function renderPayslipPageCard(p, key, reviewIndex) {
+      // `key` is `${batchId}:${fileIndex}-${pageIndex}` — same scheme as the timesheet section's
+      // renderPageReview, so a page's Rotate+Rescan button resolves the right File object even
+      // when it came from a later "Add more payslip files" scan.
+      const [keyBatchId, keyRest] = key !== undefined ? key.split(':') : [undefined, undefined];
+      const [keyFileIndex, keyPageIndex] = keyRest !== undefined ? keyRest.split('-') : [undefined, undefined];
       const rescanHtml = key !== undefined ? `
-        <div class="page-rescan-controls" data-file-index="${key.split('-')[0]}" data-page-index="${key.split('-')[1]}" data-key="${escapeHtml(key)}">
+        <div class="page-rescan-controls" data-batch-id="${keyBatchId}" data-file-index="${keyFileIndex}" data-page-index="${keyPageIndex}" data-key="${escapeHtml(key)}">
           <button type="button" class="page-rotate-btn" title="Rotate this page before rescanning">⟳ Rotate</button>
           <button type="button" class="page-rescan-btn">Rescan this page</button>
           <button type="button" class="page-revert-btn" title="Revert this page's fields to their last-scanned values">↺ Revert</button>
@@ -8022,10 +8801,19 @@
       pageReviewsEl.style.display = 'block';
       payslipPageReviewListEl.style.display = 'block';
       document.getElementById('payslipPageReviewListHeading').style.display = 'block';
+      // Always batch 0 (the main submit) — a later "Add more payslip files" scan goes through
+      // mergePayslipPageBatch instead, never through this live/initial-render path.
       const rawOrderedKeys = done
         ? payslipsPreviewPages
           .filter(p => !excludedPayslipsPages.has(`${p.fileIndex}-${p.pageIndex}`))
-          .map(p => `${p.fileIndex}-${p.pageIndex}`)
+          .map(p => {
+            const plainKey = `${p.fileIndex}-${p.pageIndex}`;
+            const compositeKey = `0:${plainKey}`;
+            // Migrate (copy) any rotation chosen during pre-scan staging onto the batch-aware key —
+            // see the timesheet section's identical comment on why this is a copy, not a rename.
+            if (payslipsRotations[plainKey] !== undefined) payslipsRotations[compositeKey] = payslipsRotations[plainKey];
+            return compositeKey;
+          })
         : [];
       // Sort by each page's earliest entry date — payslip entries can be dated at day/week/month
       // granularity (date/weekStart/yearMonth), but all three are "YYYY-MM[-DD]" strings so
@@ -8048,12 +8836,15 @@
         .join('');
       payslipPageReviewListEl.querySelectorAll('.page-review-row').forEach(wirePayslipPageCard);
       if (done) payslipPageReviewListEl.querySelectorAll('.page-rescan-controls').forEach(wirePayslipRescanControls);
+      // "Add more payslip files" — same reasoning as the other sections' equivalents.
+      if (done && !viewingHistoryRecord) document.getElementById('payslipsAddMoreWrap').style.display = 'block';
       refreshPayslipDerivedTotals();
     }
 
     // Same rotate-then-rescan pattern as wireMedicalCertRescanControls.
     /** Wires a payslip page's rotate + rescan controls, splicing the fresh single-page result back into its card. */
     function wirePayslipRescanControls(controls) {
+      const batchId = Number(controls.dataset.batchId);
       const fileIndex = Number(controls.dataset.fileIndex);
       const pageIndex = Number(controls.dataset.pageIndex);
       const key = controls.dataset.key;
@@ -8072,7 +8863,7 @@
       });
 
       rescanBtn.addEventListener('click', async () => {
-        const file = payslipsInput.files[fileIndex];
+        const file = payslipsFileBatches[batchId]?.[fileIndex];
         if (!file) {
           statusEl.className = 'page-rescan-status error';
           statusEl.textContent = 'Original file no longer attached (selection changed since the scan ran) — re-upload and rescan the whole batch instead.';
@@ -8084,7 +8875,7 @@
         statusEl.className = 'page-rescan-status';
         statusEl.textContent = 'Rescanning…';
 
-        const pageCount = payslipsPreviewPages.filter(p => p.fileIndex === fileIndex).length;
+        const pageCount = previewPagesForPayslipsBatch(batchId).filter(p => p.fileIndex === fileIndex).length;
         const excluded = [];
         for (let pi = 0; pi < pageCount; pi++) if (pi !== pageIndex) excluded.push(`0-${pi}`);
 
@@ -8128,6 +8919,115 @@
       refreshPayslipDerivedTotals();
     }
 
+    // ===== Partial/incremental payslip uploads ("Add more payslip files") =====
+    // Same DOM-preserving append-then-reorder approach as the other 4 sections' merge functions —
+    // existing cards (and any hand-edited OT hours/manually-added rows inside them) are never
+    // touched, new cards are appended, then every card is repositioned by date. No placeholder/
+    // supersede step — this section has no auto-inserted-missing-day concept.
+    /**
+     * Merges a newly-scanned batch's pages into the already-rendered payslips review.
+     * @param {object[]} newPages - The new batch's raw page objects (same shape renderPayslipPageCard takes).
+     * @param {number} batchId - Which upload batch these came from (see payslipsFileBatches).
+     */
+    function mergePayslipPageBatch(newPages, batchId) {
+      // Unhides the list + heading unconditionally — same reasoning as mergeBankPageBatch's
+      // identical fix: renderPayslipLivePages only sets these visible inside its own
+      // "pages.length > 0" branch.
+      pageReviewsEl.style.display = 'block';
+      payslipPageReviewListEl.style.display = 'block';
+      document.getElementById('payslipPageReviewListHeading').style.display = 'block';
+      const previewPages = previewPagesForPayslipsBatch(batchId);
+      const orderedKeys = previewPages.map(p => `${batchId}:${p.fileIndex}-${p.pageIndex}`);
+
+      const existingSources = new Set([...payslipPageReviewListEl.querySelectorAll('.page-review-source span')].map(el => el.textContent));
+      const dedupedPages = newPages.map(page => {
+        if (!existingSources.has(page.source)) {
+          existingSources.add(page.source);
+          return page;
+        }
+        let n = 2;
+        while (existingSources.has(`${page.source} (${n})`)) n++;
+        const newSource = `${page.source} (${n})`;
+        existingSources.add(newSource);
+        return { ...page, source: newSource };
+      });
+
+      const startIndex = payslipPageReviewListEl.querySelectorAll('.page-review-row').length;
+      const newCardsHtml = dedupedPages.map((p, idx) => renderPayslipPageCard(p, orderedKeys[idx], startIndex + idx)).join('');
+      payslipPageReviewListEl.insertAdjacentHTML('beforeend', newCardsHtml);
+      const newCardEls = [...payslipPageReviewListEl.querySelectorAll('.page-review-row')].slice(startIndex);
+      newCardEls.forEach(wirePayslipPageCard);
+      newCardEls.forEach(cardEl => {
+        const controls = cardEl.querySelector('.page-rescan-controls');
+        if (controls) wirePayslipRescanControls(controls);
+      });
+
+      // Reorder every card (old + new) by its own earliest entry date, read straight off the live
+      // DOM — payslip entries can be dated at day/week/month granularity (same three input classes
+      // collectAllPayslipEntries reads), but all three are "YYYY-MM[-DD]" strings so lexicographic
+      // sort still orders them correctly. No persisted "current pages" array needed.
+      const cardMinDate = (cardEl) => [...cardEl.querySelectorAll('.payslip-row')]
+        .map(tr => tr.querySelector('.payslip-date-input').value || tr.querySelector('.payslip-week-start-input').value || tr.querySelector('.payslip-month-input').value)
+        .filter(Boolean).sort()[0] || null;
+      const cardEls = [...payslipPageReviewListEl.querySelectorAll('.page-review-row')];
+      const order = cardEls.map((el, idx) => idx);
+      order.sort((a, b) => {
+        const da = cardMinDate(cardEls[a]);
+        const db = cardMinDate(cardEls[b]);
+        if (da === null && db === null) return a - b;
+        if (da === null) return 1;
+        if (db === null) return -1;
+        return da < db ? -1 : da > db ? 1 : a - b;
+      });
+      for (const i of order) payslipPageReviewListEl.appendChild(cardEls[i]);
+
+      refreshPayslipDerivedTotals();
+    }
+
+    document.getElementById('payslipsAddMoreBtn').addEventListener('click', async () => {
+      const input = document.getElementById('payslipsAddMoreInput');
+      const statusEl = document.getElementById('payslipsAddMoreStatus');
+      const btn = document.getElementById('payslipsAddMoreBtn');
+      if (input.files.length === 0) {
+        statusEl.className = 'status error';
+        statusEl.textContent = 'Choose at least one file first.';
+        return;
+      }
+      const batchId = payslipsFileBatches.push([...input.files]) - 1;
+      btn.disabled = true;
+      statusEl.className = 'status loading';
+      statusEl.innerHTML = '<span class="spinner"></span>Scanning additional file(s)…';
+
+      try {
+        const previewFormData = new FormData();
+        for (const file of input.files) previewFormData.append('payslips', file);
+        const previewRes = await fetch('/api/preview', { method: 'POST', body: previewFormData });
+        const previewData = await previewRes.json();
+        if (!previewRes.ok) throw new Error(previewData.error || `Server returned ${previewRes.status}`);
+        payslipsPreviewPagesByBatch[batchId] = (previewData.payslipsPreview || []).map(p => ({ fileIndex: p.fileIndex, pageIndex: p.pageIndex }));
+
+        const formData = new FormData();
+        for (const file of input.files) formData.append('payslips', file);
+        const res = await fetch('/api/payslips', { method: 'POST', body: formData });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || `Server returned ${res.status}`);
+        const polled = await pollSinglePageJob('/api/payslips', data.jobId);
+        const newPages = polled.pages || [];
+        if (newPages.length === 0) {
+          throw new Error('Scan finished but returned no pages — double-check the file(s) and try again.');
+        }
+        mergePayslipPageBatch(newPages, batchId);
+        statusEl.className = 'status success';
+        statusEl.textContent = `Added ${newPages.length} page(s).`;
+        input.value = '';
+      } catch (err) {
+        statusEl.className = 'status error';
+        statusEl.textContent = 'Error: ' + err.message;
+      } finally {
+        btn.disabled = false;
+      }
+    });
+
     /** Polls a payslip scan job until done/error, rendering live page results along the way. */
     async function pollPayslipJobUntilDone(jobId) {
       let consecutiveFailures = 0;
@@ -8156,6 +9056,12 @@
     /** Runs the full payslip scan (all staged pages), polling to completion. */
     async function runPayslipsScan() {
       const files = [...payslipsInput.files];
+      // A fresh "Extract details" submit starts the whole payslips batch over from scratch — same
+      // reasoning as pdfsFileBatches' reset in the timesheet submit handler.
+      payslipsFileBatches = [files];
+      document.getElementById('payslipsAddMoreWrap').style.display = 'none';
+      document.getElementById('payslipsAddMoreInput').value = '';
+      document.getElementById('payslipsAddMoreStatus').textContent = '';
       if (files.length === 0) return;
 
       payslipsStatusEl.className = 'status';
@@ -8340,6 +9246,12 @@
       document.getElementById('scanFormWrap').style.display = 'none';
       currentHistoryScanId = record.id;
       currentHistoryScanType = record.scanType;
+      // Set here (not just by loadTimesheetHistoryRecord) so every one of the 5 loaders correctly
+      // suppresses "Add more X files" / rescan controls that need an original File object long
+      // gone from temp storage by now — a caseworker opening a bank/medical/payslip record
+      // directly (never having viewed a timesheet one first this session) would otherwise still
+      // see this flag at its stale default.
+      viewingHistoryRecord = true;
       // Opened from the admin dashboard: no Save (editing another caseworker's case data is out of
       // scope — see viewingAsAdminReadOnly's own comment), and "Back" returns to the admin scans
       // table instead of the personal history list.
@@ -8352,18 +9264,26 @@
       ipaReviewEl.style.display = 'none';
       pageReviewList.innerHTML = '';
       document.getElementById('pageReviewListHeading').style.display = 'none';
+      // "Add more timesheet files" never makes sense for a reopened history record — the original
+      // uploaded files are long gone from temp storage by then (same reasoning viewingHistoryRecord
+      // already captures for the IPA/timesheet rescan controls) — see renderFinalResult's own guard.
+      document.getElementById('pdfsAddMoreWrap').style.display = 'none';
       bankPageReviewListEl.innerHTML = '';
       bankPageReviewListEl.style.display = 'none';
       document.getElementById('bankPageReviewListHeading').style.display = 'none';
+      document.getElementById('bankStatementAddMoreWrap').style.display = 'none';
       medicalPageReviewListEl.innerHTML = '';
       medicalPageReviewListEl.style.display = 'none';
       document.getElementById('medicalPageReviewListHeading').style.display = 'none';
+      document.getElementById('medicalBillsAddMoreWrap').style.display = 'none';
       medicalCertPageReviewListEl.innerHTML = '';
       medicalCertPageReviewListEl.style.display = 'none';
       document.getElementById('medicalCertPageReviewListHeading').style.display = 'none';
+      document.getElementById('medicalCertificatesAddMoreWrap').style.display = 'none';
       payslipPageReviewListEl.innerHTML = '';
       payslipPageReviewListEl.style.display = 'none';
       document.getElementById('payslipPageReviewListHeading').style.display = 'none';
+      document.getElementById('payslipsAddMoreWrap').style.display = 'none';
       ['monthlyPayTotals', 'allowancesBreakdown', 'overtimeBreakdown', 'restBreakdown', 'publicHolidayBreakdown', 'payslipBreakdown', 'bankResults', 'medicalBillsResults', 'owedVsPaidBox'].forEach(id => {
         const el = document.getElementById(id);
         el.style.display = 'none';
@@ -8381,7 +9301,6 @@
       // before — not just "happens to be empty on a fresh page load".
       pdfsPreviewPages = [];
       excludedPdfsPages = new Set();
-      viewingHistoryRecord = true;
       renderFinalResult(record.result);
     }
 
@@ -8442,10 +9361,15 @@
       statusEl.textContent = 'Saving…';
       try {
         const rows = collector();
+        // Timesheet is the only scan type with a second editable thing (the IPA fields, next to
+        // reviewRows) — the other 4 types have nothing else editable, so `ipa` stays undefined and
+        // the server leaves their stored result untouched beyond `rows` (see server.ts's PUT route
+        // and lib/history.ts's updateScanEditableFields).
+        const ipa = currentHistoryScanType === 'timesheet' ? collectCurrentIpaFields() : undefined;
         const res = await fetch(`/api/history/${currentHistoryScanId}`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ rows }),
+          body: JSON.stringify({ rows, ipa }),
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || `Server returned ${res.status}`);

@@ -225,12 +225,19 @@ const EDITABLE_FIELD_BY_SCAN_TYPE: Record<ScanType, string> = {
  *
  * @returns `true` if the scan was found (and owned by this user) and updated, `false` otherwise.
  */
-export function updateScanEditableFields(id: string, userId: number, newRows: unknown[]): boolean {
+export function updateScanEditableFields(id: string, userId: number, newRows: unknown[], newIpa?: unknown): boolean {
     const scan = getScanForOwner(id, userId);
     if (!scan) return false;
     const field = EDITABLE_FIELD_BY_SCAN_TYPE[scan.scan_type];
     const result = JSON.parse(scan.result_json) as Record<string, unknown>;
     result[field] = newRows;
+    // A timesheet scan is the only type with a second editable thing alongside its rows — the IPA
+    // fields (worker/employer/salary/rate), editable in the same page-by-page review card. Ignored
+    // for every other scan type even if somehow sent, same "only touch what this scan type actually
+    // has" scoping as `field` above.
+    if (scan.scan_type === "timesheet" && newIpa !== undefined) {
+        result.ipa = newIpa;
+    }
     db.prepare(`UPDATE scans SET result_json = @resultJson WHERE id = @id`).run({ id, resultJson: JSON.stringify(result) });
     return true;
 }

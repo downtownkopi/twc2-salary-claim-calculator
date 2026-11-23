@@ -796,7 +796,11 @@ app.put("/api/history/:id", express.json({ limit: "5mb" }), (req, res) => {
     const userId = getAuthedUser(req).id;
     const rows = req.body?.rows;
     if (!Array.isArray(rows)) return res.status(400).json({ error: "rows (array) required" });
-    const updated = updateScanEditableFields(req.params.id, userId, rows);
+    // Only a timesheet scan has a second editable thing alongside its rows (the IPA fields —
+    // worker/employer/salary/rate — editable in the same review card); undefined for every other
+    // scan type, and updateScanEditableFields ignores it unless the scan is actually a timesheet.
+    const ipa = req.body?.ipa;
+    const updated = updateScanEditableFields(req.params.id, userId, rows, ipa);
     if (!updated) return res.status(404).json({ error: "scan not found" });
     res.json({ success: true });
 });
