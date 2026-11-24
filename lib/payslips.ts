@@ -15,6 +15,11 @@ export type PayslipEntry = {
     // elsewhere in this app). Display/reference only: never substituted into the actual claim math,
     // since a wrong (too-low) rate here could well be the very thing the claim is about.
     hourlyRate: number | null;
+    // The net/take-home pay stated for that same period, if printed — used as an alternative
+    // "payment received" source to the bank statement (see getPayslipPaidByMonth in
+    // public/index.html). Same "what the slip itself says" philosophy as hourlyRate: the model
+    // reports the printed figure as-is, never a computed basic+OT sum of its own.
+    netPay: number | null;
     // Where on the page image this figure was read from, as fractions (0-1) of the image's
     // width/height — lets the review UI draw a highlight box over the source image on hover.
     // null if the model didn't return a usable box; this is best-effort, not pixel-exact.
@@ -42,6 +47,7 @@ For each OT-hours figure found, report:
 - yearMonth: YYYY-MM, ONLY if granularity is "month", otherwise null
 - overtimeHours: the number of overtime hours stated for that period (a plain number, not a dollar amount)
 - hourlyRate: the per-hour overtime RATE, if one is printed alongside the hours (e.g. "68 hrs x $5.63" -> hourlyRate 5.63, or a column/field literally labeled "OT rate" or "hourly rate"). A plain number, no dollar sign. null if no such rate is printed anywhere near the overtime hours figure — do not compute it yourself by dividing a total by the hours.
+- netPay: the NET pay (take-home pay after deductions) stated for this same period, if printed anywhere on the slip — a field literally labeled "net pay", "take-home pay", "amount paid", or similar. A plain number, no dollar sign. null if no such figure is printed. Report exactly what's printed — do not add up basic pay, overtime pay, and allowances yourself to compute this.
 - bbox: the location of the overtime-hours figure on the page, as an object {x, y, w, h} where each value is a FRACTION of the full image's width/height (0 = left/top edge, 1 = right/bottom edge) — e.g. a figure in the exact center would be roughly {x: 0.45, y: 0.45, w: 0.1, h: 0.03}. Box it tight around just that figure (and its row/line if it's part of a table row), not the whole table or page. Omit this field (or use null) if you can't estimate a location.
 
 Do not compute or infer any date math yourself (e.g. don't work out which date a month starts or ends on) — just report the dates/month exactly as printed.
@@ -106,6 +112,7 @@ export async function extractPayslipEntries(base64Image: string, temperature = 0
             yearMonth: strOrNull(t.yearMonth),
             overtimeHours: numOrNull(t.overtimeHours) ?? 0,
             hourlyRate: numOrNull(t.hourlyRate),
+            netPay: numOrNull(t.netPay),
             bbox: bboxOrNull(t.bbox),
             confirmedByAttempts: null,
         }))
@@ -141,19 +148,20 @@ function entryKey(t: PayslipEntry): string {
  */
 export function mergePayslipEntries(attempts: PayslipEntry[][]): PayslipEntry[] {
     const total = attempts.length;
-    const groups = new Map<string, { hoursCounts: Map<number, number>; rateCounts: Map<number | null, number>; sample: PayslipEntry; seenIn: Set<number> }>();
+    const groups = new Map<string, { hoursCounts: Map<number, number>; rateCounts: Map<number | null, number>; netPayCounts: Map<number | null, number>; sample: PayslipEntry; seenIn: Set<number> }>();
 
     attempts.forEach((attempt, attemptIdx) => {
         for (const t of attempt) {
             const key = entryKey(t);
             let group = groups.get(key);
             if (!group) {
-                group = { hoursCounts: new Map(), rateCounts: new Map(), sample: t, seenIn: new Set() };
+                group = { hoursCounts: new Map(), rateCounts: new Map(), netPayCounts: new Map(), sample: t, seenIn: new Set() };
                 groups.set(key, group);
             }
             group.seenIn.add(attemptIdx);
             group.hoursCounts.set(t.overtimeHours, (group.hoursCounts.get(t.overtimeHours) ?? 0) + 1);
             group.rateCounts.set(t.hourlyRate, (group.rateCounts.get(t.hourlyRate) ?? 0) + 1);
+            group.netPayCounts.set(t.netPay, (group.netPayCounts.get(t.netPay) ?? 0) + 1);
         }
     });
 
@@ -174,6 +182,7 @@ export function mergePayslipEntries(attempts: PayslipEntry[][]): PayslipEntry[] 
         ...group.sample,
         overtimeHours: majority(group.hoursCounts, group.sample.overtimeHours),
         hourlyRate: majority(group.rateCounts, group.sample.hourlyRate),
+        netPay: majority(group.netPayCounts, group.sample.netPay),
         confirmedByAttempts: { seen: group.seenIn.size, total },
     }));
 }

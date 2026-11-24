@@ -2168,6 +2168,12 @@
     // explicitly picked in the Overtime Breakdown table). Plain object, not DOM-derived, so it
     // survives every table re-render triggered by recomputeMonthlyPayTotals.
     let otSourceByMonth = {};
+    // Per-month caseworker choice of DAYS-CLAIMED source, monthKey -> 'timesheet' | 'payslip' —
+    // same shape/persistence reasoning as otSourceByMonth above, but for whether basic salary
+    // assumes a full month worked from the payslip (see the Basic Salary Breakdown's own override
+    // radio). Absent means "auto": assume a full month only for a month with no real timesheet
+    // rows of its own (see recomputeMonthlyPayTotals' generalized per-month fallback).
+    let daySourceByMonth = {};
     // Caseworker choice of OT RATE source, 'ipa' | 'payslip' — a completely separate axis from
     // otSourceByMonth above (that one picks which HOURS figure to use, per month; this one picks
     // which RATE the whole claim multiplies by). A single global choice, not per-month — set once
@@ -2180,6 +2186,11 @@
     // computed one — is the one to actually claim against; never auto-picked toward whichever is more
     // or less favorable.
     let otRateSource = 'computed';
+    // Which source(s) "Payment received" (Basic Salary/Allowances/Overtime/Rest-day/Public-holiday
+    // breakdown tables) pulls from — a single global pick, same approach as otRateSource. Defaults
+    // to 'bank' (the existing, unchanged behavior) since that's the only source that's always been
+    // extracted; 'payslip' or 'both' are opt-in once a payslip's net-pay figure is on file.
+    let paymentReceivedSource = 'bank';
     // Snapshot of the `totals` Map recomputeMonthlyPayTotals just built (after the payslip OT-source
     // override is applied) — recomputeMonthlyOtCap reads this directly instead of re-deriving OT
     // hours from rows itself, so the 72h/month cap warning always agrees with whichever OT source is
@@ -4652,12 +4663,16 @@
         }
       });
 
-      // With no timesheet attached at all, there's no day-level evidence to prorate basic salary
-      // against — assume a full month worked for any month the payslip itself covers, rather than
-      // leaving daysClaimed at 0 (which would otherwise zero out the Basic Salary Breakdown entirely
-      // for a payslip-only claim). Only kicks in when a month has genuinely nothing claimed yet, and
-      // never applies at all once even one timesheet file is attached — a real (even partial)
-      // timesheet's actual coverage is never overridden by an assumption.
+      // When a month has no day-level timesheet evidence, there's nothing to prorate basic salary
+      // against — assume a full month worked for any such month the payslip itself covers, rather
+      // than leaving daysClaimed at 0 (which would otherwise zero out the Basic Salary Breakdown
+      // for that month). Generalized to run PER MONTH (monthsWithTimesheetRows, populated by the
+      // row loop above) rather than gating on the whole claim having zero timesheet files — a
+      // claim can have a timesheet for some months and rely on the payslip for others; each month
+      // is judged on its own coverage. Only kicks in when a month has genuinely nothing claimed yet
+      // AND has no real timesheet rows of its own — a real (even partial) timesheet month's actual
+      // coverage is never overridden by an assumption, unless the caseworker explicitly forces it
+      // via the per-month override radio in the Basic Salary Breakdown table (daySourceByMonth).
       //
       // Still clamped against the declared claim period, same as detectAndInsertMissingDays does for
       // the timesheet case (day-level, not that function's week-boundary-aware version — there's no
@@ -4665,11 +4680,23 @@
       // already a blanket assumption). E.g. a claim period starting 2025-09-03 must not count
       // 2025-09-01/02 toward September's days claimed, even though the payslip's own period covers
       // the whole month — the caseworker's declared employment start is the more specific fact.
-      if (pdfsInput.files.length === 0) {
+      {
         const contractStartVal = document.getElementById('contractStartDate').value;
         const contractEndVal = document.getElementById('contractEndDate').value;
         for (const monthKey of getPayslipCoveredMonths()) {
-          if (claimedDatesByMonth.has(monthKey)) continue;
+          // Caseworker's explicit per-month pick (see the Basic Salary Breakdown's override radio)
+          // takes priority over the automatic default; undefined means "auto" below.
+          const forced = daySourceByMonth[monthKey];
+          if (forced === 'timesheet') continue; // explicitly: never assume, use timesheet rows as-is (even if that means $0 claimed)
+          if (forced !== 'payslip') {
+            // Auto: only assume a full month when this month genuinely has no day-level rows of
+            // its own AND nothing's already been claimed for it — a real (even partial) timesheet
+            // month's actual coverage is left untouched.
+            if (monthsWithTimesheetRows.has(monthKey)) continue;
+            if (claimedDatesByMonth.has(monthKey)) continue;
+          }
+          // forced === 'payslip' falls through unconditionally below, (re)applying the full-month
+          // assumption even over a month with real timesheet rows — the caseworker's explicit override.
           const [fy, fm] = monthKey.split('-').map(Number);
           const daysInMonth = new Date(fy, fm, 0).getDate();
           const fullMonthDates = new Set();
@@ -4726,11 +4753,15 @@
       lastMonthlyTotals = totals;
 
       const el = document.getElementById('monthlyPayTotals');
-      // Union of all three — a month made up entirely of rest days (no valid netHours row at all)
+      // Union of all four — a month made up entirely of rest days (no valid netHours row at all)
       // still needs to show up here with $0 OT/rest-day/PH pay, not silently vanish from the table;
       // nonFixedAllowanceByMonth is included too since a tier condition can match a month with no
-      // worked hours at all (see its own comment above).
-      const monthKeys = [...new Set([...totals.keys(), ...claimedDatesByMonth.keys(), ...nonFixedAllowanceByMonth.keys()])].sort();
+      // worked hours at all (see its own comment above). getPayslipCoveredMonths() is included so a
+      // payslip-covered month's row (and its day-source override radio) never disappears just
+      // because the caseworker forced that month to 'timesheet' and it genuinely has zero real
+      // rows — the toggle needs to stay reachable to flip back.
+      const payslipCoveredMonths = getPayslipCoveredMonths();
+      const monthKeys = [...new Set([...totals.keys(), ...claimedDatesByMonth.keys(), ...nonFixedAllowanceByMonth.keys(), ...payslipCoveredMonths])].sort();
       const basicSalary = getBasicMonthlySalary();
       if (monthKeys.length === 0 || otRate === null || basicSalary === null) {
         el.style.display = 'none';
@@ -4788,14 +4819,29 @@
       // is October's, etc.) — a transaction's OWN month is never what it's earned-vs-paid against;
       // it's attributed to the month before it instead, across all four breakdown tables (basic,
       // overtime, rest days, public holidays all share this same paidByMonth/allocated pair).
+      // Which source(s) feed "payment received" — a global pick (paymentReceivedSource), same
+      // single-toggle-not-per-month approach as otRateSource. 'both' unions the two maps and sums
+      // whatever lands on the same month; it's on the caseworker to delete/amend rows if a bank
+      // transaction and a payslip's net pay turn out to double-count the same real payment (same
+      // "flag, don't auto-correct" philosophy the rest of this app uses).
       const paidByMonth = new Map();
-      collectAllBankTransactions().forEach(t => {
-        if (!t.date || t.direction === 'debit') return;
-        const [ty, tm] = t.date.slice(0, 7).split('-').map(Number);
-        const earnedForMonth = new Date(ty, tm - 1 - 1, 1); // one calendar month before the payment date
-        const monthKey = `${earnedForMonth.getFullYear()}-${String(earnedForMonth.getMonth() + 1).padStart(2, '0')}`;
-        paidByMonth.set(monthKey, (paidByMonth.get(monthKey) || 0) + t.amount);
-      });
+      if (paymentReceivedSource !== 'payslip') {
+        collectAllBankTransactions().forEach(t => {
+          if (!t.date || t.direction === 'debit') return;
+          const [ty, tm] = t.date.slice(0, 7).split('-').map(Number);
+          const earnedForMonth = new Date(ty, tm - 1 - 1, 1); // one calendar month before the payment date
+          const monthKey = `${earnedForMonth.getFullYear()}-${String(earnedForMonth.getMonth() + 1).padStart(2, '0')}`;
+          paidByMonth.set(monthKey, (paidByMonth.get(monthKey) || 0) + t.amount);
+        });
+      }
+      if (paymentReceivedSource !== 'bank') {
+        // No arrears shift here, unlike the bank branch above — a payslip entry's own period
+        // already IS the month it covers (a September payslip states September's pay), not a later
+        // payment date needing to be shifted back to the month it compensates for.
+        getPayslipPaidByMonth().forEach((amount, monthKey) => {
+          paidByMonth.set(monthKey, (paidByMonth.get(monthKey) || 0) + amount);
+        });
+      }
       const allocated = allocatePaymentsWaterfall(monthKeys, basicFullAmountByMonth, allowancesFullAmountByMonth, nonFixedAllowanceByMonth, totals, paidByMonth);
 
       // Grand total across every month, added as a bottom Total row — each month's own row is a
@@ -4821,11 +4867,23 @@
         const computedClaim = fullAmount - paymentReceived;
         sumComputedClaim += computedClaim;
 
+        // Toggle only appears for a month the payslip actually covers — same "only offer a choice
+        // once there's a genuine alternative" gate as the Overtime Breakdown's own hours-source
+        // toggle. Lets a caseworker force "assume full month from payslip" even over a month with
+        // real (but maybe incomplete/unreliable) timesheet rows, or force "no, use the timesheet
+        // as-is" for a month that would otherwise auto-assume a full month from the payslip.
+        const daySource = daySourceByMonth[month] || (monthsWithTimesheetRows.has(month) ? 'timesheet' : 'payslip');
+        const daySourceToggle = payslipCoveredMonths.has(month) ? `
+      <div class="pay-total-sub">
+        <label><input type="radio" name="day-source-${month}" value="timesheet"${daySource === 'timesheet' ? ' checked' : ''}> Use timesheet days</label>
+        <label><input type="radio" name="day-source-${month}" value="payslip"${daySource === 'payslip' ? ' checked' : ''}> Assume full month (payslip)</label>
+      </div>` : '';
+
         return `<tr>
       <td>${yearStr}</td>
       <td>${MONTH_ABBR[Number(monthNumStr) - 1]}</td>
       <td>${isFullMonth ? 'Yes' : 'No'}</td>
-      <td>${daysClaimed} / ${workingDaysInMonth}</td>
+      <td>${daysClaimed} / ${workingDaysInMonth}${daySourceToggle}</td>
       <td>${formatMoney(fullAmount)}</td>
       <td>${formatMoney(paymentReceived)}</td>
       <td>${formatMoney(computedClaim)}</td>
@@ -4839,6 +4897,16 @@
     <thead><tr><th>Year</th><th>Month</th><th>Full month</th><th>Days claimed</th><th>Full amount</th><th>Payment received</th><th>Computed claim</th></tr></thead>
     <tbody>${rows}${totalRow}</tbody>
   </table>`;
+      el.querySelectorAll('input[type="radio"][name^="day-source-"]').forEach(input => {
+        input.addEventListener('change', () => {
+          const month = input.name.slice('day-source-'.length);
+          daySourceByMonth[month] = input.value;
+          // A full recompute (not refreshPayslipDerivedTotals) — unlike the OT hours toggle, this
+          // one changes claimedDatesByMonth itself, which basicFullAmountByMonth/proration/the
+          // whole waterfall allocation depends on, so every downstream table needs rebuilding.
+          recomputeMonthlyPayTotals();
+        });
+      });
       // The headline "amount owed" figure is the GROSS entitlement across every category — basic
       // salary (sumTotal, just computed above) plus OT/rest-day-worked/public-holiday-worked pay,
       // summed straight from `totals` rather than from each render function's own return value, so
@@ -6914,9 +6982,27 @@
     /** Rebuilds the Summary section's bank-results table/total from the live editable rows, and cascades to owed-vs-paid. */
     function refreshBankSummary() {
       const transactions = collectAllBankTransactions();
-      if (transactions.length > 0) {
+      const payslipPaidByMonth = getPayslipPaidByMonth();
+      const payslipTotalPaid = [...payslipPaidByMonth.values()].reduce((sum, v) => sum + v, 0);
+      // Same "only offer the toggle once there's a genuine alternative" approach as otRateSource's
+      // own toggle (renderIpaSummaryText) — no point showing a bank-vs-payslip choice when only one
+      // of the two has ever had anything to show.
+      const showSourceToggle = payslipTotalPaid > 0;
+      const sourceToggleHtml = showSourceToggle ? `
+      <div class="pay-total-sub">
+        <label><input type="radio" name="payment-received-source" value="bank"${paymentReceivedSource === 'bank' ? ' checked' : ''}> Use bank statement (${formatMoney(transactions.filter(t => t.direction !== 'debit').reduce((sum, t) => sum + t.amount, 0))})</label>
+        <label><input type="radio" name="payment-received-source" value="payslip"${paymentReceivedSource === 'payslip' ? ' checked' : ''}> Use payslip net pay (${formatMoney(payslipTotalPaid)})</label>
+        <label><input type="radio" name="payment-received-source" value="both"${paymentReceivedSource === 'both' ? ' checked' : ''}> Use both (sum of both — delete/amend rows to resolve any double-counted payment)</label>
+      </div>` : '';
+      if (transactions.length > 0 || showSourceToggle) {
         bankResultsEl.style.display = 'block';
-        bankResultsEl.innerHTML = `<h3>Bank statement — matched payments</h3>${formatBankTransactionsTable(transactions)}`;
+        bankResultsEl.innerHTML = `<h3>Bank statement — matched payments</h3>${sourceToggleHtml}${transactions.length > 0 ? formatBankTransactionsTable(transactions) : '<div class="review-hint">No matched bank transactions.</div>'}`;
+        bankResultsEl.querySelectorAll('input[name="payment-received-source"]').forEach(input => {
+          input.addEventListener('change', () => {
+            paymentReceivedSource = input.value;
+            refreshBankSummary();
+          });
+        });
       } else {
         bankResultsEl.style.display = 'none';
         bankResultsEl.innerHTML = '';
@@ -6924,12 +7010,15 @@
       // This only ever runs once a bank statement scan has actually produced page data (or the
       // reviewer edited/deleted an existing row) — never speculatively — so an empty list here is a
       // confirmed "$0 matched", not "never checked". That distinction is what lets
-      // updateOwedVsPaidBox tell "nothing paid" apart from "we don't know".
+      // updateOwedVsPaidBox tell "nothing paid" apart from "we don't know". Respects
+      // paymentReceivedSource the same way recomputeMonthlyPayTotals' own paidByMonth does, so the
+      // headline Owed-vs-Paid figure never disagrees with the per-month breakdown tables below it.
       // Credits only, same rule as paidByMonth above — a debit isn't the employer clawing back
       // wages, so it doesn't reduce how much has been "paid".
-      totalPaidCache = transactions.filter(t => t.direction !== 'debit').reduce((sum, t) => sum + t.amount, 0);
+      const bankTotal = transactions.filter(t => t.direction !== 'debit').reduce((sum, t) => sum + t.amount, 0);
+      totalPaidCache = (paymentReceivedSource !== 'payslip' ? bankTotal : 0) + (paymentReceivedSource !== 'bank' ? payslipTotalPaid : 0);
       paidIsAssumedZero = false; // a real scan ran — whatever it found (even $0) is confirmed, not assumed
-      recomputeMonthlyPayTotals(); // payment breakdown's per-month "payment received"/"computed claim" columns read bank data too
+      recomputeMonthlyPayTotals(); // payment breakdown's per-month "payment received"/"computed claim" columns read bank/payslip data too
       updateSummarySectionVisibility();
       updateOwedVsPaidBox();
     }
@@ -8476,6 +8565,7 @@
       </td>
       <td><input type="number" step="0.1" min="0" class="payslip-hours-input" value="${Number.isFinite(t.overtimeHours) ? t.overtimeHours : 0}" style="width:70px"></td>
       <td><input type="number" step="0.01" min="0" class="payslip-rate-input" value="${Number.isFinite(t.hourlyRate) ? t.hourlyRate : ''}" placeholder="—" style="width:70px"></td>
+      <td><input type="number" step="0.01" min="0" class="payslip-netpay-input" value="${Number.isFinite(t.netPay) ? t.netPay : ''}" placeholder="—" style="width:80px"></td>
       <td>${t.confirmedByAttempts && t.confirmedByAttempts.seen < t.confirmedByAttempts.total ? `<div class="pay-total-sub">⚠ only ${t.confirmedByAttempts.seen}/${t.confirmedByAttempts.total} scan passes caught this — worth double-checking against the source page</div>` : ''}</td>
       <td><button type="button" class="row-delete-btn payslip-delete-btn" title="Remove" aria-label="Remove"><svg viewBox="0 0 16 16" style="width:13px;height:13px;flex-shrink:0;" fill="currentColor" aria-hidden="true"><path d="M6 1a1 1 0 0 0-1 1v1H2.5a.5.5 0 0 0 0 1h.55l.65 9.1A1.5 1.5 0 0 0 5.2 15h5.6a1.5 1.5 0 0 0 1.5-1.4l.65-9.1h.55a.5.5 0 0 0 0-1H11V2a1 1 0 0 0-1-1H6zm0 2V2h4v1H6zM4.55 4h6.9l-.64 9h-5.62l-.64-9zM6.5 6a.5.5 0 0 1 .5.5v5a.5.5 0 0 1-1 0v-5a.5.5 0 0 1 .5-.5zm3 0a.5.5 0 0 1 .5.5v5a.5.5 0 0 1-1 0v-5a.5.5 0 0 1 .5-.5z"/></svg></button></td>
     </tr>`;
@@ -8485,7 +8575,7 @@
     function formatPayslipEntriesTableEditable(entries) {
       const rows = entries.map(t => formatPayslipEntryRow(t, false)).join('');
       return `<table class="pay-total-table">
-    <thead><tr><th>Period</th><th>Date(s)</th><th>OT hours</th><th>Hourly rate</th><th></th></tr></thead>
+    <thead><tr><th>Period</th><th>Date(s)</th><th>OT hours</th><th>Hourly rate</th><th>Net pay</th><th></th></tr></thead>
     <tbody>${rows}</tbody>
   </table>`;
     }
@@ -8504,6 +8594,7 @@
         yearMonth: tr.querySelector('.payslip-month-input').value || null,
         overtimeHours: Number(tr.querySelector('.payslip-hours-input').value) || 0,
         hourlyRate: tr.querySelector('.payslip-rate-input').value !== '' ? Number(tr.querySelector('.payslip-rate-input').value) : null,
+        netPay: tr.querySelector('.payslip-netpay-input').value !== '' ? Number(tr.querySelector('.payslip-netpay-input').value) : null,
         source: tr.dataset.source,
         confirmedByAttempts: tr.dataset.confirmedSeen !== '' ? { seen: Number(tr.dataset.confirmedSeen), total: Number(tr.dataset.confirmedTotal) } : null,
       }));
@@ -8584,6 +8675,37 @@
         const hoursPerDay = entry.overtimeHours / dayMonthKeys.length;
         for (const monthKey of dayMonthKeys) {
           byMonth.set(monthKey, (byMonth.get(monthKey) || 0) + hoursPerDay);
+        }
+      }
+      return byMonth;
+    }
+
+    // Same day-weighted proration as getPayslipOtHoursByMonth above (a net-pay figure straddling a
+    // month boundary is split proportionally, not duplicated into both months) — used as an
+    // alternative "payment received" source to the bank statement (see paymentReceivedSource /
+    // recomputeMonthlyPayTotals). Entries with no netPay on file contribute nothing. Summed (not
+    // overwritten) across entries touching the same month, same as bank transactions already are —
+    // more than one payslip genuinely covering overlapping dates is possible (e.g. a corrected
+    // re-issue alongside the original), and the caseworker reviewing the Payslip table can delete
+    // whichever shouldn't count.
+    /** Aggregates every payslip entry's net pay into a monthKey -> dollars Map, prorating across month boundaries where needed. */
+    function getPayslipPaidByMonth() {
+      const byMonth = new Map();
+      for (const entry of collectAllPayslipEntries()) {
+        const range = payslipPeriodRange(entry);
+        if (!range || !Number.isFinite(entry.netPay) || entry.netPay <= 0) continue;
+        const start = new Date(range.start);
+        const end = new Date(range.end);
+        if (isNaN(start) || isNaN(end) || end < start) continue;
+
+        const dayMonthKeys = [];
+        for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+          dayMonthKeys.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`);
+        }
+        if (dayMonthKeys.length === 0) continue;
+        const paidPerDay = entry.netPay / dayMonthKeys.length;
+        for (const monthKey of dayMonthKeys) {
+          byMonth.set(monthKey, (byMonth.get(monthKey) || 0) + paidPerDay);
         }
       }
       return byMonth;
@@ -8748,7 +8870,12 @@
         renderIpaSummaryText();
         renderComputedRates(); // must follow immediately — see renderIpaSummaryText's own call-site comment
       }
-      recomputeMonthlyPayTotals();
+      // Same reasoning as the IPA toggle above — the "Payment received" source toggle (see
+      // refreshBankSummary) only shows once a payslip net-pay figure exists, and its own radio
+      // labels show the current payslip total, so it needs refreshing on every payslip edit too
+      // (refreshBankSummary already calls recomputeMonthlyPayTotals internally).
+      if (typeof refreshBankSummary === 'function') refreshBankSummary();
+      else recomputeMonthlyPayTotals();
       updateClaimPeriodPayslipWarning();
     }
 
@@ -8764,7 +8891,7 @@
         monthGroup.style.display = select.value === 'month' ? '' : 'none';
         refreshPayslipDerivedTotals();
       });
-      tr.querySelectorAll('.payslip-date-input, .payslip-week-start-input, .payslip-week-end-input, .payslip-month-input, .payslip-hours-input, .payslip-rate-input').forEach(input => {
+      tr.querySelectorAll('.payslip-date-input, .payslip-week-start-input, .payslip-week-end-input, .payslip-month-input, .payslip-hours-input, .payslip-rate-input, .payslip-netpay-input').forEach(input => {
         input.addEventListener('input', refreshPayslipDerivedTotals);
         input.addEventListener('change', refreshPayslipDerivedTotals);
       });
@@ -8825,7 +8952,7 @@
       addBtn.addEventListener('click', () => {
         const container = card.querySelector('.payslip-table-container');
         if (!container.querySelector('tbody')) container.innerHTML = formatPayslipEntriesTableEditable([]);
-        const row = { granularity: 'month', date: null, weekStart: null, weekEnd: null, yearMonth: '', overtimeHours: 0, hourlyRate: null, bbox: null, source: addBtn.dataset.source, confirmedByAttempts: null };
+        const row = { granularity: 'month', date: null, weekStart: null, weekEnd: null, yearMonth: '', overtimeHours: 0, hourlyRate: null, netPay: null, bbox: null, source: addBtn.dataset.source, confirmedByAttempts: null };
         container.querySelector('tbody').insertAdjacentHTML('beforeend', formatPayslipEntryRow(row, true));
         wirePayslipRow(container.querySelector('tbody').lastElementChild);
         refreshPayslipDerivedTotals();
