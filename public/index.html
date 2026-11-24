@@ -560,7 +560,8 @@
       font-weight: 600;
     }
 
-    .pay-total-table input {
+    .pay-total-table input,
+    .pay-total-table select {
       background: var(--bg);
       border: 1px solid var(--border);
       color: var(--text);
@@ -568,6 +569,11 @@
       border-radius: 4px;
       font-size: 12px;
       box-sizing: border-box;
+      /* date/month pickers and <select> otherwise render a touch taller than a plain number input
+         even with identical padding/border (native calendar-icon/dropdown-arrow chrome) — fixing
+         the height explicitly is what actually makes every row's inputs line up, not just the
+         shared padding/font-size above. */
+      height: 28px;
     }
 
     .pay-total-table .bt-amount {
@@ -1942,13 +1948,11 @@
       <div class="extra-days-body-width">
         <div class="extra-days-claim-width">
           <div class="review-actions">
-            <button type="button" class="generate-btn" id="generateBtn">Generate Excel (.xlsx)</button>
             <button type="button" class="generate-btn" id="exportDocxBtn" style="display:none">Generate Word Doc
               (.docx)</button>
             <button type="button" class="generate-btn" id="exportPdfBtn" style="display:none">Generate PDF
               (.pdf)</button>
           </div>
-          <div class="status" id="generateStatus"></div>
           <div class="status" id="exportDocxStatus"></div>
           <div class="status" id="exportPdfStatus"></div>
         </div>
@@ -2097,8 +2101,8 @@
             ? `Overpaid by ${formatMoney(-delta)}`
             : `✓ Fully paid — no shortfall detected`}
     </div>
-    <div class="owed-vs-paid-formula">${owedFormula} − Bank statement payments received (${formatMoney(totalPaidCache)}) = ${formatMoney(Math.abs(delta))}</div>
-    ${paidIsAssumedZero ? `<div class="owed-vs-paid-sub">No bank statement attached — assuming $0 paid so far. Attach one to check against an actual figure.</div>` : ''}`;
+    <div class="owed-vs-paid-formula">${owedFormula} − Payments received (${formatMoney(totalPaidCache)}) = ${formatMoney(Math.abs(delta))}</div>
+    ${paidIsAssumedZero ? `<div class="owed-vs-paid-sub">No bank statement or payslip pay figure attached — assuming $0 paid so far. Attach one to check against an actual figure.</div>` : ''}`;
     }
     // Click-to-enlarge for every review/preview image — both the final page-by-page review
     // (.page-review-image, timesheet pages/IPA letter/bank statement) and the pre-upload staging
@@ -2128,17 +2132,16 @@
       }
     });
 
-    const generateBtn = document.getElementById('generateBtn');
-    const generateStatusEl = document.getElementById('generateStatus');
     const exportDocxBtn = document.getElementById('exportDocxBtn');
     const exportDocxStatusEl = document.getElementById('exportDocxStatus');
     const exportPdfBtn = document.getElementById('exportPdfBtn');
     const exportPdfStatusEl = document.getElementById('exportPdfStatus');
     let currentYear = null; // captured once the scan finishes (server-detected — see renderFinalResult), reused when generating
     let currentCostByModel = null; // { [modelId]: costUsd } — captured once the scan finishes, shown in the final status line
-    // The /api/process response's pageReviews (pre-edit, reconciled OCR output per page) — kept here
-    // so autoFlagChangedPages can still diff against it at Generate time, instead of only living
-    // inside the submit handler's closure and vanishing once rendering finishes.
+    // The /api/process response's pageReviews (pre-edit, reconciled OCR output per page) — kept
+    // here so rescan/merge logic (spliceRescannedPage, mergeTimesheetPageBatch) can look a page up
+    // by its reviewIndex, instead of only living inside the submit handler's closure and vanishing
+    // once rendering finishes.
     let currentPageReviews = [];
     // The last-scanned/last-loaded IPA fields object (lib/ipa.ts's IpaFields shape), or null if
     // none was ever scanned — kept so collectCurrentIpaFields() can save back the fields NOT
@@ -2186,11 +2189,6 @@
     // computed one — is the one to actually claim against; never auto-picked toward whichever is more
     // or less favorable.
     let otRateSource = 'computed';
-    // Which source(s) "Payment received" (Basic Salary/Allowances/Overtime/Rest-day/Public-holiday
-    // breakdown tables) pulls from — a single global pick, same approach as otRateSource. Defaults
-    // to 'bank' (the existing, unchanged behavior) since that's the only source that's always been
-    // extracted; 'payslip' or 'both' are opt-in once a payslip's net-pay figure is on file.
-    let paymentReceivedSource = 'bank';
     // Snapshot of the `totals` Map recomputeMonthlyPayTotals just built (after the payslip OT-source
     // override is applied) — recomputeMonthlyOtCap reads this directly instead of re-deriving OT
     // hours from rows itself, so the 72h/month cap warning always agrees with whichever OT source is
@@ -2866,8 +2864,6 @@
       // files added via "Add more timesheet files" in a previous round are no longer relevant, so
       // batch 0 is reset to exactly what's in pdfsInput right now.
       pdfsFileBatches = [[...pdfsInput.files]];
-      generateStatusEl.className = 'status';
-      generateStatusEl.textContent = '';
       lastRenderedEventCount = 0;
       const agentEventFeedEl = document.getElementById('agentEventFeed');
       agentEventFeedEl.innerHTML = '';
@@ -3220,8 +3216,8 @@
     function renderFinalResult(data) {
       // server-detected (runProcessJob's prescan) — an array, not a single value, since an upload
       // can genuinely span a year boundary (each page keeps its own resolved year server-side).
-      // Purely informational here (the /api/generate call no longer needs a year at all — each
-      // row already carries its own full date).
+      // Purely informational here (shown in the status line) — every row already carries its own
+      // full date, so nothing downstream actually needs this.
       currentYear = data.years;
       currentCostByModel = data.costByModel || null;
       notifyIfPermitted('Scan complete', `Done in ${formatDuration(data.durationMs)} — ready to review.`);
@@ -3260,8 +3256,8 @@
       renderComputedRates();
       updateSummarySectionVisibility();
 
-      // Shown even when zero pages came back (e.g. every file failed to read) so "Generate Excel (.xlsx)"
-      // at the bottom always stays reachable after a scan completes.
+      // Shown even when zero pages came back (e.g. every file failed to read) so "Generate Word
+      // Doc (.docx)"/"Generate PDF (.pdf)" at the bottom always stay reachable after a scan completes.
       pageReviewsEl.style.display = 'block';
       if (data.pageReviews && data.pageReviews.length > 0) {
         // Same order the server itself walked (pdfsPreviewPages, minus whatever the staging step
@@ -3359,47 +3355,6 @@
       recomputeMonthlyOtCap();
       return data.costUsd;
     }
-
-    generateBtn.addEventListener('click', async () => {
-      const rows = collectAllReviewRows();
-      if (rows.length === 0) {
-        generateStatusEl.className = 'status error';
-        generateStatusEl.textContent = 'No rows to generate — add at least one day first.';
-        return;
-      }
-      autoFlagChangedPages(); // fire-and-forget, doesn't block Generate
-      generateBtn.disabled = true;
-      generateStatusEl.className = 'status loading';
-      generateStatusEl.innerHTML = '<span class="spinner"></span>Generating spreadsheet…';
-
-      try {
-        const res = await fetch('/api/generate', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ rows, workerFin: getIpaTextField('workerFin') }),
-        });
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.error || `Server returned ${res.status}`);
-
-        generateStatusEl.className = 'status success';
-        generateStatusEl.textContent = `Generated.`;
-        const bytes = Uint8Array.from(atob(data.file), c => c.charCodeAt(0));
-        const blob = new Blob([bytes], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = data.filename;
-        document.body.appendChild(a);
-        a.click();
-        a.remove();
-        URL.revokeObjectURL(url);
-      } catch (err) {
-        generateStatusEl.className = 'status error';
-        generateStatusEl.textContent = 'Error: ' + err.message;
-      } finally {
-        generateBtn.disabled = false;
-      }
-    });
 
     // Builds the exact per-month rows/totals the Worker Personal Details docx needs, straight off
     // lastBreakdownForExport (the same monthKeys/totals/allocated recomputeMonthlyPayTotals just
@@ -3661,8 +3616,8 @@
       // salary proration untouched), just never as overtime.
       li.dataset.autoInserted = row.autoInserted ? '1' : '';
       li.dataset.bbox = row.bbox ? JSON.stringify(row.bbox) : '';
-      // Not read by collectAllReviewRows (the /api/generate export doesn't need page attribution)
-      // but needed by collectAllReviewRowsWithSource (the history "Save changes" path) to persist
+      // Not read by collectAllReviewRows (that collector doesn't need page attribution) but needed
+      // by collectAllReviewRowsWithSource (the history "Save changes" path) to persist
       // the real source back — losing it would silently detach every row from its page on reload
       // (renderFinalResult matches a page's rows by `source`), and overwriting a special marker
       // like "auto-inserted (missing day)" with a page source would lose that distinction too.
@@ -4469,8 +4424,8 @@
       }
       li.classList.toggle('ph-flag', showPhNote);
 
-      // Advisory only, same as the guardrails above — never changes what fillTimesheetFromRows
-      // writes (rest days are already skipped there). Just surfaces to the caseworker, at review
+      // Advisory only, same as the guardrails above — never changes the actual claim computation.
+      // Just surfaces to the caseworker, at review
       // time, that an MC day falls outside every uploaded medical certificate's leave range, since
       // this app has no link between a timesheet job and a medical-certificates job to check
       // automatically server-side. Checked against Medical certificates (leaveFrom/leaveTo), NOT
@@ -4819,29 +4774,25 @@
       // is October's, etc.) — a transaction's OWN month is never what it's earned-vs-paid against;
       // it's attributed to the month before it instead, across all four breakdown tables (basic,
       // overtime, rest days, public holidays all share this same paidByMonth/allocated pair).
-      // Which source(s) feed "payment received" — a global pick (paymentReceivedSource), same
-      // single-toggle-not-per-month approach as otRateSource. 'both' unions the two maps and sums
-      // whatever lands on the same month; it's on the caseworker to delete/amend rows if a bank
-      // transaction and a payslip's net pay turn out to double-count the same real payment (same
-      // "flag, don't auto-correct" philosophy the rest of this app uses).
+      // "Payment received" always pools BOTH bank statement transactions AND payslip-stated pay
+      // together, same accumulation as two bank transactions landing in the same month — no source
+      // selection, no exclusivity. It's on the caseworker to delete/amend rows in the Bank
+      // statement or Payslips review if a transaction and a payslip figure turn out to double-count
+      // the same real payment (same "flag, don't auto-correct" philosophy the rest of this app uses).
       const paidByMonth = new Map();
-      if (paymentReceivedSource !== 'payslip') {
-        collectAllBankTransactions().forEach(t => {
-          if (!t.date || t.direction === 'debit') return;
-          const [ty, tm] = t.date.slice(0, 7).split('-').map(Number);
-          const earnedForMonth = new Date(ty, tm - 1 - 1, 1); // one calendar month before the payment date
-          const monthKey = `${earnedForMonth.getFullYear()}-${String(earnedForMonth.getMonth() + 1).padStart(2, '0')}`;
-          paidByMonth.set(monthKey, (paidByMonth.get(monthKey) || 0) + t.amount);
-        });
-      }
-      if (paymentReceivedSource !== 'bank') {
-        // No arrears shift here, unlike the bank branch above — a payslip entry's own period
-        // already IS the month it covers (a September payslip states September's pay), not a later
-        // payment date needing to be shifted back to the month it compensates for.
-        getPayslipPaidByMonth().forEach((amount, monthKey) => {
-          paidByMonth.set(monthKey, (paidByMonth.get(monthKey) || 0) + amount);
-        });
-      }
+      collectAllBankTransactions().forEach(t => {
+        if (!t.date || t.direction === 'debit') return;
+        const [ty, tm] = t.date.slice(0, 7).split('-').map(Number);
+        const earnedForMonth = new Date(ty, tm - 1 - 1, 1); // one calendar month before the payment date
+        const monthKey = `${earnedForMonth.getFullYear()}-${String(earnedForMonth.getMonth() + 1).padStart(2, '0')}`;
+        paidByMonth.set(monthKey, (paidByMonth.get(monthKey) || 0) + t.amount);
+      });
+      // No arrears shift here, unlike the bank loop above — a payslip entry's own period already IS
+      // the month it covers (a September payslip states September's pay), not a later payment date
+      // needing to be shifted back to the month it compensates for.
+      getPayslipPaidByMonth().forEach((amount, monthKey) => {
+        paidByMonth.set(monthKey, (paidByMonth.get(monthKey) || 0) + amount);
+      });
       const allocated = allocatePaymentsWaterfall(monthKeys, basicFullAmountByMonth, allowancesFullAmountByMonth, nonFixedAllowanceByMonth, totals, paidByMonth);
 
       // Grand total across every month, added as a bottom Total row — each month's own row is a
@@ -5520,10 +5471,11 @@
     }
 
     // Same field-reading as collectAllReviewRows below, but preserves `source` and `bbox` from the
-    // DOM instead of dropping them — collectAllReviewRows is built for /api/generate's spreadsheet
-    // output, which needs neither; saving a history record back needs both; losing `source` would
-    // silently detach every row from its page the next time this record is opened (renderFinalResult
-    // matches a page's rows by `source`), and losing `bbox` would quietly disable hover-highlight.
+    // DOM instead of dropping them — collectAllReviewRows is only ever used for the missing-day
+    // coverage check (detectAndInsertMissingDays), which needs neither; saving a history record
+    // back needs both; losing `source` would silently detach every row from its page the next time
+    // this record is opened (renderFinalResult matches a page's rows by `source`), and losing
+    // `bbox` would quietly disable hover-highlight.
     function collectAllReviewRowsWithSource() {
       const rows = [];
       // Walked page-by-page (not a flat document-wide query) so each row can be tagged with its
@@ -5581,79 +5533,6 @@
         });
       }
       return rows;
-    }
-
-    // Reads the CURRENT (possibly hand-edited) rows for one page card and sends them alongside the
-    // original pre-edit OCR output (currentPageReviews[idx].entries, from /api/process) to
-    // /api/flag-page — building a raw-vs-corrected ground-truth pair for this specific misread,
-    // rather than just recording that "something" was wrong.
-    // ===== Ground-truth auto-flagging =====
-    /** Reads one page card's current rows into the raw-entry shape `/api/flag-page` expects. */
-    function buildCorrectedEntries(card) {
-      const correctedEntries = [];
-      for (const li of card.querySelectorAll('.review-row')) {
-        const date = li.querySelector('.f-date').value;
-        if (!date) continue;
-        const restDay = li.dataset.restDay === '1';
-        correctedEntries.push(
-          restDay
-            ? { date, type: 'rest_day' }
-            : {
-              date,
-              type: 'worked',
-              clockIn: timeInputToHHMM(li.querySelector('.f-start').value),
-              clockOut: timeInputToHHMM(li.querySelector('.f-end').value),
-              guessed: li.dataset.guessed === '1',
-            }
-        );
-      }
-      return correctedEntries;
-    }
-
-    // Order-independent signature of a page's worked/rest-day entries, for detecting whether the
-    // reviewer changed anything from the raw scan (edited a time, added a row, or removed one) —
-    // hours_worked entries aren't part of the editable rows so aren't comparable here.
-    /** Builds an order-independent signature of a page's entries, to detect whether the reviewer changed anything. */
-    function entrySetSignature(entries) {
-      return entries
-        .map(e => e.type === 'rest_day' ? `${e.date}|rest_day` : e.type === 'worked' ? `${e.date}|worked|${e.clockIn}|${e.clockOut}` : null)
-        .filter(Boolean)
-        .sort()
-        .join('\n');
-    }
-
-    // Silently saves a raw-vs-corrected ground-truth pair for every page whose rows no longer match
-    // what the scan originally produced — replaces the old manual "Flag as wrong" button so a
-    // reviewer's edits get captured automatically instead of relying on them to notice and click it.
-    // Best-effort and non-blocking: a storage hiccup here shouldn't look like a Generate failure.
-    /** Silently saves a raw-vs-corrected ground-truth pair for every page the reviewer actually edited. */
-    async function autoFlagChangedPages() {
-      // Scoped to pageReviewList — .page-review-row is also used by the IPA/bank statement page-by-page
-      // cards now, which would misalign this against currentPageReviews (positional, timesheet-only).
-      const cards = [...pageReviewList.querySelectorAll('.page-review-row')];
-      await Promise.all(cards.map(async (card, idx) => {
-        const page = currentPageReviews[idx];
-        if (!page) return;
-        const correctedEntries = buildCorrectedEntries(card);
-        if (entrySetSignature(correctedEntries) === entrySetSignature(page.entries)) return;
-        try {
-          await fetch('/api/flag-page', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              source: page.source,
-              image: page.image,
-              rawEntries: page.entries,
-              correctedEntries,
-              note: null,
-              dataModel: page.dataModel,
-              pageContext: page.pageContext,
-            }),
-          });
-        } catch (err) {
-          console.error(`failed to auto-save correction for ${page.source}:`, err);
-        }
-      }));
     }
 
     /** Short "3 Mar" label for a YYYY-MM-DD date string, for the dropped-dates note below. */
@@ -6984,25 +6863,17 @@
       const transactions = collectAllBankTransactions();
       const payslipPaidByMonth = getPayslipPaidByMonth();
       const payslipTotalPaid = [...payslipPaidByMonth.values()].reduce((sum, v) => sum + v, 0);
-      // Same "only offer the toggle once there's a genuine alternative" approach as otRateSource's
-      // own toggle (renderIpaSummaryText) — no point showing a bank-vs-payslip choice when only one
-      // of the two has ever had anything to show.
-      const showSourceToggle = payslipTotalPaid > 0;
-      const sourceToggleHtml = showSourceToggle ? `
-      <div class="pay-total-sub">
-        <label><input type="radio" name="payment-received-source" value="bank"${paymentReceivedSource === 'bank' ? ' checked' : ''}> Use bank statement (${formatMoney(transactions.filter(t => t.direction !== 'debit').reduce((sum, t) => sum + t.amount, 0))})</label>
-        <label><input type="radio" name="payment-received-source" value="payslip"${paymentReceivedSource === 'payslip' ? ' checked' : ''}> Use payslip net pay (${formatMoney(payslipTotalPaid)})</label>
-        <label><input type="radio" name="payment-received-source" value="both"${paymentReceivedSource === 'both' ? ' checked' : ''}> Use both (sum of both — delete/amend rows to resolve any double-counted payment)</label>
-      </div>` : '';
-      if (transactions.length > 0 || showSourceToggle) {
+      // Purely informational — payslip pay always counts toward "Payment received" regardless (see
+      // recomputeMonthlyPayTotals' paidByMonth), this just tells the caseworker WHY the figure below
+      // might be higher than what the bank transactions table alone shows, since there's no toggle
+      // to switch between sources any more (both always pool together, like two bank transactions
+      // landing in the same month would).
+      const payslipNoteHtml = payslipTotalPaid > 0
+        ? `<div class="review-hint">Includes ${formatMoney(payslipTotalPaid)} from payslip total/OT pay (see the Payslips section) — delete/amend rows there if this double-counts a bank transaction.</div>`
+        : '';
+      if (transactions.length > 0 || payslipTotalPaid > 0) {
         bankResultsEl.style.display = 'block';
-        bankResultsEl.innerHTML = `<h3>Bank statement — matched payments</h3>${sourceToggleHtml}${transactions.length > 0 ? formatBankTransactionsTable(transactions) : '<div class="review-hint">No matched bank transactions.</div>'}`;
-        bankResultsEl.querySelectorAll('input[name="payment-received-source"]').forEach(input => {
-          input.addEventListener('change', () => {
-            paymentReceivedSource = input.value;
-            refreshBankSummary();
-          });
-        });
+        bankResultsEl.innerHTML = `<h3>Bank statement — matched payments</h3>${payslipNoteHtml}${transactions.length > 0 ? formatBankTransactionsTable(transactions) : '<div class="review-hint">No matched bank transactions.</div>'}`;
       } else {
         bankResultsEl.style.display = 'none';
         bankResultsEl.innerHTML = '';
@@ -7010,13 +6881,13 @@
       // This only ever runs once a bank statement scan has actually produced page data (or the
       // reviewer edited/deleted an existing row) — never speculatively — so an empty list here is a
       // confirmed "$0 matched", not "never checked". That distinction is what lets
-      // updateOwedVsPaidBox tell "nothing paid" apart from "we don't know". Respects
-      // paymentReceivedSource the same way recomputeMonthlyPayTotals' own paidByMonth does, so the
-      // headline Owed-vs-Paid figure never disagrees with the per-month breakdown tables below it.
-      // Credits only, same rule as paidByMonth above — a debit isn't the employer clawing back
-      // wages, so it doesn't reduce how much has been "paid".
+      // updateOwedVsPaidBox tell "nothing paid" apart from "we don't know". Always sums bank +
+      // payslip pay the same way recomputeMonthlyPayTotals' own paidByMonth does, so the headline
+      // Owed-vs-Paid figure never disagrees with the per-month breakdown tables below it. Credits
+      // only, same rule as paidByMonth above — a debit isn't the employer clawing back wages, so it
+      // doesn't reduce how much has been "paid".
       const bankTotal = transactions.filter(t => t.direction !== 'debit').reduce((sum, t) => sum + t.amount, 0);
-      totalPaidCache = (paymentReceivedSource !== 'payslip' ? bankTotal : 0) + (paymentReceivedSource !== 'bank' ? payslipTotalPaid : 0);
+      totalPaidCache = bankTotal + payslipTotalPaid;
       paidIsAssumedZero = false; // a real scan ran — whatever it found (even $0) is confirmed, not assumed
       recomputeMonthlyPayTotals(); // payment breakdown's per-month "payment received"/"computed claim" columns read bank/payslip data too
       updateSummarySectionVisibility();
@@ -8565,7 +8436,8 @@
       </td>
       <td><input type="number" step="0.1" min="0" class="payslip-hours-input" value="${Number.isFinite(t.overtimeHours) ? t.overtimeHours : 0}" style="width:70px"></td>
       <td><input type="number" step="0.01" min="0" class="payslip-rate-input" value="${Number.isFinite(t.hourlyRate) ? t.hourlyRate : ''}" placeholder="—" style="width:70px"></td>
-      <td><input type="number" step="0.01" min="0" class="payslip-netpay-input" value="${Number.isFinite(t.netPay) ? t.netPay : ''}" placeholder="—" style="width:80px"></td>
+      <td><input type="number" step="0.01" min="0" class="payslip-otpay-input" value="${Number.isFinite(t.otPay) ? t.otPay : ''}" placeholder="—" style="width:80px"></td>
+      <td><input type="number" step="0.01" min="0" class="payslip-totalpay-input" value="${Number.isFinite(t.totalPay) ? t.totalPay : ''}" placeholder="—" style="width:80px"></td>
       <td>${t.confirmedByAttempts && t.confirmedByAttempts.seen < t.confirmedByAttempts.total ? `<div class="pay-total-sub">⚠ only ${t.confirmedByAttempts.seen}/${t.confirmedByAttempts.total} scan passes caught this — worth double-checking against the source page</div>` : ''}</td>
       <td><button type="button" class="row-delete-btn payslip-delete-btn" title="Remove" aria-label="Remove"><svg viewBox="0 0 16 16" style="width:13px;height:13px;flex-shrink:0;" fill="currentColor" aria-hidden="true"><path d="M6 1a1 1 0 0 0-1 1v1H2.5a.5.5 0 0 0 0 1h.55l.65 9.1A1.5 1.5 0 0 0 5.2 15h5.6a1.5 1.5 0 0 0 1.5-1.4l.65-9.1h.55a.5.5 0 0 0 0-1H11V2a1 1 0 0 0-1-1H6zm0 2V2h4v1H6zM4.55 4h6.9l-.64 9h-5.62l-.64-9zM6.5 6a.5.5 0 0 1 .5.5v5a.5.5 0 0 1-1 0v-5a.5.5 0 0 1 .5-.5zm3 0a.5.5 0 0 1 .5.5v5a.5.5 0 0 1-1 0v-5a.5.5 0 0 1 .5-.5z"/></svg></button></td>
     </tr>`;
@@ -8575,7 +8447,7 @@
     function formatPayslipEntriesTableEditable(entries) {
       const rows = entries.map(t => formatPayslipEntryRow(t, false)).join('');
       return `<table class="pay-total-table">
-    <thead><tr><th>Period</th><th>Date(s)</th><th>OT hours</th><th>Hourly rate</th><th>Net pay</th><th></th></tr></thead>
+    <thead><tr><th>Period</th><th>Date(s)</th><th>OT hours</th><th>Hourly rate</th><th>OT pay</th><th>Total pay</th><th></th></tr></thead>
     <tbody>${rows}</tbody>
   </table>`;
     }
@@ -8594,7 +8466,8 @@
         yearMonth: tr.querySelector('.payslip-month-input').value || null,
         overtimeHours: Number(tr.querySelector('.payslip-hours-input').value) || 0,
         hourlyRate: tr.querySelector('.payslip-rate-input').value !== '' ? Number(tr.querySelector('.payslip-rate-input').value) : null,
-        netPay: tr.querySelector('.payslip-netpay-input').value !== '' ? Number(tr.querySelector('.payslip-netpay-input').value) : null,
+        otPay: tr.querySelector('.payslip-otpay-input').value !== '' ? Number(tr.querySelector('.payslip-otpay-input').value) : null,
+        totalPay: tr.querySelector('.payslip-totalpay-input').value !== '' ? Number(tr.querySelector('.payslip-totalpay-input').value) : null,
         source: tr.dataset.source,
         confirmedByAttempts: tr.dataset.confirmedSeen !== '' ? { seen: Number(tr.dataset.confirmedSeen), total: Number(tr.dataset.confirmedTotal) } : null,
       }));
@@ -8680,20 +8553,26 @@
       return byMonth;
     }
 
-    // Same day-weighted proration as getPayslipOtHoursByMonth above (a net-pay figure straddling a
-    // month boundary is split proportionally, not duplicated into both months) — used as an
-    // alternative "payment received" source to the bank statement (see paymentReceivedSource /
-    // recomputeMonthlyPayTotals). Entries with no netPay on file contribute nothing. Summed (not
-    // overwritten) across entries touching the same month, same as bank transactions already are —
-    // more than one payslip genuinely covering overlapping dates is possible (e.g. a corrected
-    // re-issue alongside the original), and the caseworker reviewing the Payslip table can delete
-    // whichever shouldn't count.
-    /** Aggregates every payslip entry's net pay into a monthKey -> dollars Map, prorating across month boundaries where needed. */
+    // Same day-weighted proration as getPayslipOtHoursByMonth above (a pay figure straddling a
+    // month boundary is split proportionally, not duplicated into both months) — accumulates into
+    // "payment received" exactly like a bank statement transaction does, always, no source
+    // selection (see recomputeMonthlyPayTotals). Prefers totalPay when an entry has one — it
+    // already encompasses OT pay/basic/allowances, so also adding otPay for that same entry would
+    // double-count the overtime portion; otPay is only used as a fallback for an entry that states
+    // ONLY an overtime pay figure with no overall total. Summed (not overwritten) across entries
+    // touching the same month, same as bank transactions already are — more than one payslip
+    // genuinely covering overlapping dates is possible (e.g. a corrected re-issue alongside the
+    // original), and the caseworker reviewing the Payslip table can delete whichever shouldn't count.
+    /** Aggregates every payslip entry's total/OT pay into a monthKey -> dollars Map, prorating across month boundaries where needed. */
     function getPayslipPaidByMonth() {
       const byMonth = new Map();
       for (const entry of collectAllPayslipEntries()) {
+        const amount = Number.isFinite(entry.totalPay) && entry.totalPay > 0
+          ? entry.totalPay
+          : (Number.isFinite(entry.otPay) && entry.otPay > 0 ? entry.otPay : null);
+        if (amount === null) continue;
         const range = payslipPeriodRange(entry);
-        if (!range || !Number.isFinite(entry.netPay) || entry.netPay <= 0) continue;
+        if (!range) continue;
         const start = new Date(range.start);
         const end = new Date(range.end);
         if (isNaN(start) || isNaN(end) || end < start) continue;
@@ -8703,7 +8582,7 @@
           dayMonthKeys.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`);
         }
         if (dayMonthKeys.length === 0) continue;
-        const paidPerDay = entry.netPay / dayMonthKeys.length;
+        const paidPerDay = amount / dayMonthKeys.length;
         for (const monthKey of dayMonthKeys) {
           byMonth.set(monthKey, (byMonth.get(monthKey) || 0) + paidPerDay);
         }
@@ -8763,13 +8642,15 @@
     // IPA-declared/statutory rate (getEffectiveOtRate(), the existing default) and this month's own
     // payslip-stated rate, if one was scanned. The SOURCE choice is global, but the dollar figure it
     // resolves to still varies month to month when 'payslip' is picked — each month uses its own
-    // payslip entry's rate, not a single fixed number. Falls back to the IPA rate if 'payslip' is
-    // picked but no payslip rate actually covers this particular month.
+    // payslip entry's rate, not a single fixed number.
     /** Resolves the active hourly OT rate for one calendar month, respecting the caseworker's global IPA-vs-payslip pick. */
     function getEffectiveOtRateForMonth(monthKey) {
       const baseRate = getEffectiveOtRate();
-      if (baseRate === null) return null;
       if (otRateSource !== 'payslip') return baseRate;
+      // Checked BEFORE falling back to baseRate (not after, and not short-circuited by a null
+      // baseRate) — a payslip-only claim with no IPA basic salary at all has no computable
+      // baseRate, but the caseworker explicitly picked "payslip" as the source, so the payslip's
+      // own rate must still be usable on its own rather than forcing the whole month to null.
       const payslipRate = getPayslipRateByMonth().get(monthKey);
       return payslipRate != null ? payslipRate : baseRate;
     }
@@ -8870,10 +8751,9 @@
         renderIpaSummaryText();
         renderComputedRates(); // must follow immediately — see renderIpaSummaryText's own call-site comment
       }
-      // Same reasoning as the IPA toggle above — the "Payment received" source toggle (see
-      // refreshBankSummary) only shows once a payslip net-pay figure exists, and its own radio
-      // labels show the current payslip total, so it needs refreshing on every payslip edit too
-      // (refreshBankSummary already calls recomputeMonthlyPayTotals internally).
+      // refreshBankSummary's own "includes $X from payslip" note (and the bank/payslip pooled
+      // total it computes) depends on the current payslip data, so it needs refreshing on every
+      // payslip edit too (refreshBankSummary already calls recomputeMonthlyPayTotals internally).
       if (typeof refreshBankSummary === 'function') refreshBankSummary();
       else recomputeMonthlyPayTotals();
       updateClaimPeriodPayslipWarning();
@@ -8891,7 +8771,7 @@
         monthGroup.style.display = select.value === 'month' ? '' : 'none';
         refreshPayslipDerivedTotals();
       });
-      tr.querySelectorAll('.payslip-date-input, .payslip-week-start-input, .payslip-week-end-input, .payslip-month-input, .payslip-hours-input, .payslip-rate-input, .payslip-netpay-input').forEach(input => {
+      tr.querySelectorAll('.payslip-date-input, .payslip-week-start-input, .payslip-week-end-input, .payslip-month-input, .payslip-hours-input, .payslip-rate-input, .payslip-otpay-input, .payslip-totalpay-input').forEach(input => {
         input.addEventListener('input', refreshPayslipDerivedTotals);
         input.addEventListener('change', refreshPayslipDerivedTotals);
       });
@@ -8952,7 +8832,7 @@
       addBtn.addEventListener('click', () => {
         const container = card.querySelector('.payslip-table-container');
         if (!container.querySelector('tbody')) container.innerHTML = formatPayslipEntriesTableEditable([]);
-        const row = { granularity: 'month', date: null, weekStart: null, weekEnd: null, yearMonth: '', overtimeHours: 0, hourlyRate: null, netPay: null, bbox: null, source: addBtn.dataset.source, confirmedByAttempts: null };
+        const row = { granularity: 'month', date: null, weekStart: null, weekEnd: null, yearMonth: '', overtimeHours: 0, hourlyRate: null, otPay: null, totalPay: null, bbox: null, source: addBtn.dataset.source, confirmedByAttempts: null };
         container.querySelector('tbody').insertAdjacentHTML('beforeend', formatPayslipEntryRow(row, true));
         wirePayslipRow(container.querySelector('tbody').lastElementChild);
         refreshPayslipDerivedTotals();

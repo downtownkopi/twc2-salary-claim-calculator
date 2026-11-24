@@ -5,8 +5,6 @@ import jwt from "jsonwebtoken";
 import * as path from "path";
 import { randomUUID } from "crypto";
 import { resizeForDisplay } from "./lib/ocr";
-import { fillTimesheetFromRows, MONTH_ABBR, type FillWarning, type ReviewRow } from "./lib/xlsx";
-import { uploadFlaggedPage, type FlaggedPageEntry } from "./lib/feedback";
 import { translateTierCondition, parseTierConditionsBatch } from "./lib/tierCondition";
 import { buildWorkerPersonalDetailsDocx } from "./lib/workerDetailsDocx";
 import { buildWorkerPersonalDetailsPdf } from "./lib/workerDetailsPdf";
@@ -39,7 +37,6 @@ import {
     HISTORY_IMAGES_DIR,
 } from "./lib/history";
 
-const TEMPLATE_PATH = path.join(__dirname, "calculation.xltx");
 const PORT = process.env.PORT || 3002;
 
 // Fanning out many parallel scan calls per page (bands x temperatures) means far more surface
@@ -805,74 +802,6 @@ app.put("/api/history/:id", express.json({ limit: "5mb" }), (req, res) => {
     res.json({ success: true });
 });
 
-// Takes the human-reviewed (possibly hand-corrected) rows from the browser's edit step and writes
-// them straight to the spreadsheet — no OCR here, this is pure "given these final numbers, fill
-// the template" work, so it's fast and synchronous compared to /api/process.
-app.post("/api/generate", express.json({ limit: "5mb" }), async (req, res) => {
-    // No year gate here — fillTimesheetFromRows below picks each row's sheet straight off its own
-    // r.date (already a full YYYY-MM-DD), and silently skips (with a warning) any date outside the
-    // template's supported range. The claim-wide year itself was already resolved and validated
-    // against SUPPORTED_YEARS back at /api/process (runProcessJob's prescan) before these rows ever
-    // reached the browser for review.
-    const rows = req.body?.rows;
-    if (!Array.isArray(rows)) {
-        return res.status(400).json({ error: "rows must be an array" });
-    }
-
-    let buffer: Buffer;
-    let warnings: FillWarning[];
-    let writtenDates: Date[];
-    try {
-        ({ buffer, warnings, writtenDates } = await fillTimesheetFromRows(TEMPLATE_PATH, rows as ReviewRow[]));
-    } catch (e: any) {
-        return res.status(500).json({ error: `failed to fill template: ${e.message}` });
-    }
-
-    // Same "every day of every touched month, flag anything uncovered" coverage check as the scan
-    // step's preview, but authoritative now — based on what fillTimesheetFromRows actually wrote
-    // (post 24h-sanity-check) plus confirmed rest days, rather than the pre-write preview.
-    const coveredByMonth = new Map<string, Set<number>>();
-    for (const d of writtenDates) {
-        const k = `${d.getFullYear()}-${d.getMonth()}`;
-        (coveredByMonth.get(k) ?? coveredByMonth.set(k, new Set()).get(k)!).add(d.getDate());
-    }
-    for (const r of rows as ReviewRow[]) {
-        if (!r.restDay) continue;
-        const [y, m, d] = r.date.split("-").map(Number);
-        const k = `${y}-${m - 1}`;
-        (coveredByMonth.get(k) ?? coveredByMonth.set(k, new Set()).get(k)!).add(d);
-    }
-    const explainedDates = new Set(warnings.map(w => w.date).filter((d): d is string => d !== undefined));
-
-    const monthSummary: { label: string; filled: number; total: number }[] = [];
-    for (const [key, daysCovered] of [...coveredByMonth].sort()) {
-        const [y, monthIndex0] = key.split("-").map(Number);
-        const daysInMonth = new Date(y, monthIndex0 + 1, 0).getDate();
-        for (let day = 1; day <= daysInMonth; day++) {
-            if (daysCovered.has(day)) continue;
-            const dateStr = `${y}-${String(monthIndex0 + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
-            if (explainedDates.has(dateStr)) continue;
-            const date = new Date(y, monthIndex0, day);
-            warnings.push({
-                source: "coverage check",
-                reason: `${date.toDateString()} has no row submitted — please check this date directly.`,
-                category: "missing_data",
-                date: dateStr,
-            });
-        }
-        monthSummary.push({ label: `${MONTH_ABBR[monthIndex0]} ${y}`, filled: daysCovered.size, total: daysInMonth });
-    }
-
-    res.json({
-        success: true,
-        filename: breakdownFilename(req.body?.workerFin, "xlsx"),
-        file: buffer.toString("base64"),
-        warnings,
-        entriesWritten: writtenDates.length,
-        monthSummary,
-    });
-});
-
 // Same naming convention as the caseworker's own hand-copied breakdowns (e.g. "419K_Breakdown.pdf")
 // — last 4 characters of the FIN, which is exactly what a masked/partial FIN already is (see
 // lib/ipa.ts's PARTIAL_FIN_FORMAT), so this works the same whether the IPA gave a full or masked
@@ -927,34 +856,6 @@ app.post("/api/export-pdf", express.json({ limit: "1mb" }), async (req, res) => 
         });
     } catch (e: any) {
         res.status(500).json({ error: `failed to build document: ${e.message}` });
-    }
-});
-
-// Ground-truth corpus builder, not part of the scan/generate critical path — a user marks a page
-// as misread, we store the source image next to what the pipeline produced (rawEntries, the
-// pre-edit reconciled output already sent to the browser in /api/process's pageReviews) and what
-// the user actually corrected it to (correctedEntries, read back from their edited review rows).
-// Used later for prompt fixes/regression tests, not live inference, so a storage hiccup here
-// shouldn't look like a failure of the actual scan/generate the user cares about.
-app.post("/api/flag-page", express.json({ limit: "5mb" }), async (req, res) => {
-    const { source, image, rawEntries, correctedEntries, note, dataModel, pageContext } = req.body ?? {};
-    if (typeof source !== "string" || typeof image !== "string" || !Array.isArray(rawEntries) || !Array.isArray(correctedEntries)) {
-        return res.status(400).json({ error: "source, image, rawEntries, correctedEntries are required" });
-    }
-    try {
-        const { docId } = await uploadFlaggedPage({
-            source,
-            image,
-            rawEntries: rawEntries as FlaggedPageEntry[],
-            correctedEntries: correctedEntries as FlaggedPageEntry[],
-            note: typeof note === "string" && note.trim() ? note.trim() : null,
-            dataModel: typeof dataModel === "string" ? dataModel : "unclear",
-            pageContext: typeof pageContext === "string" ? pageContext : "",
-        });
-        res.json({ success: true, docId });
-    } catch (e: any) {
-        console.error("failed to store flagged page:", e);
-        res.status(500).json({ error: `failed to store flagged page: ${e.message}` });
     }
 });
 

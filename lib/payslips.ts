@@ -15,11 +15,16 @@ export type PayslipEntry = {
     // elsewhere in this app). Display/reference only: never substituted into the actual claim math,
     // since a wrong (too-low) rate here could well be the very thing the claim is about.
     hourlyRate: number | null;
-    // The net/take-home pay stated for that same period, if printed — used as an alternative
-    // "payment received" source to the bank statement (see getPayslipPaidByMonth in
-    // public/index.html). Same "what the slip itself says" philosophy as hourlyRate: the model
-    // reports the printed figure as-is, never a computed basic+OT sum of its own.
-    netPay: number | null;
+    // The overtime PAY amount itself, if the slip prints it directly (e.g. "OT: $120") rather than
+    // (or alongside) hours+rate. Same "what the slip itself says" philosophy as hourlyRate — never
+    // computed by multiplying overtimeHours × hourlyRate; that's a derived figure the review UI can
+    // work out on its own if it needs to, this field is only ever the slip's own printed number.
+    otPay: number | null;
+    // The total pay stated for that same period, if printed — feeds "Payment received" (see
+    // getPayslipPaidByMonth in public/index.html) exactly like a bank statement transaction does,
+    // accumulating into the same pool. Same "what the slip itself says" philosophy as hourlyRate:
+    // the model reports the printed figure as-is, never a computed basic+OT sum of its own.
+    totalPay: number | null;
     // Where on the page image this figure was read from, as fractions (0-1) of the image's
     // width/height — lets the review UI draw a highlight box over the source image on hover.
     // null if the model didn't return a usable box; this is best-effort, not pixel-exact.
@@ -29,30 +34,34 @@ export type PayslipEntry = {
     confirmedByAttempts: { seen: number; total: number } | null;
 };
 
-// A payslip states overtime hours already worked out by the employer for some period — unlike a
+// A payslip states pay figures already worked out by the employer for some period — unlike a
 // timesheet, it's not a day-by-day punch log. The period it's stated at varies slip to slip: some
 // give one figure per calendar month, some break it down per week, some even per day. This
 // extraction reports whichever granularity is actually printed rather than forcing one shape, and
 // deliberately does NOT ask the model to compute date ranges (e.g. "last day of February") — that
-// math happens deterministically in periodRange() below instead.
-const PROMPT = `This image is a payslip belonging to a migrant/Work-Permit-holder worker. A caseworker needs the overtime (OT) hours stated on it.
+// math happens deterministically in periodRange() below instead. Payslips also vary in WHICH
+// figures they print at all — some show OT hours + an hourly rate, some print the OT pay amount
+// directly instead, some only show an overall total pay with no OT breakdown — every field below
+// is independently nullable so any combination the slip actually shows comes through as-is.
+const PROMPT = `This image is a payslip belonging to a migrant/Work-Permit-holder worker. A caseworker needs the pay figures stated on it — overtime hours/rate/pay, and/or total pay for the period.
 
-Find every overtime-hours figure stated on this document. Payslips vary in how they break this down — some state one OT-hours figure for a whole calendar month, some break it down per week, some per day. Report whichever granularity this specific slip actually uses.
+Find every period (day/week/month line item) this document states a pay figure for. Payslips vary in how they break this down — some state one figure for a whole calendar month, some break it down per week, some per day. Report whichever granularity this specific slip actually uses.
 
-For each OT-hours figure found, report:
+For each period found, report:
 - granularity: one of "day", "week", or "month" — whichever this line item is actually stated at
 - date: YYYY-MM-DD, ONLY if granularity is "day" (infer the year from the document's own date header if it only shows day/month), otherwise null
 - weekStart: YYYY-MM-DD, ONLY if granularity is "week" — the first day of that week as printed, otherwise null
 - weekEnd: YYYY-MM-DD, ONLY if granularity is "week" — the last day of that week as printed, otherwise null
 - yearMonth: YYYY-MM, ONLY if granularity is "month", otherwise null
-- overtimeHours: the number of overtime hours stated for that period (a plain number, not a dollar amount)
+- overtimeHours: the number of overtime hours stated for that period, if printed (a plain number, not a dollar amount). null if no OT-hours figure is printed for this period.
 - hourlyRate: the per-hour overtime RATE, if one is printed alongside the hours (e.g. "68 hrs x $5.63" -> hourlyRate 5.63, or a column/field literally labeled "OT rate" or "hourly rate"). A plain number, no dollar sign. null if no such rate is printed anywhere near the overtime hours figure — do not compute it yourself by dividing a total by the hours.
-- netPay: the NET pay (take-home pay after deductions) stated for this same period, if printed anywhere on the slip — a field literally labeled "net pay", "take-home pay", "amount paid", or similar. A plain number, no dollar sign. null if no such figure is printed. Report exactly what's printed — do not add up basic pay, overtime pay, and allowances yourself to compute this.
-- bbox: the location of the overtime-hours figure on the page, as an object {x, y, w, h} where each value is a FRACTION of the full image's width/height (0 = left/top edge, 1 = right/bottom edge) — e.g. a figure in the exact center would be roughly {x: 0.45, y: 0.45, w: 0.1, h: 0.03}. Box it tight around just that figure (and its row/line if it's part of a table row), not the whole table or page. Omit this field (or use null) if you can't estimate a location.
+- otPay: the overtime PAY amount itself, if printed directly (e.g. a field/column literally labeled "OT pay", "overtime amount", or similar) — a plain number, no dollar sign. null if no such figure is printed. Report exactly what's printed — do NOT compute this yourself by multiplying overtimeHours × hourlyRate.
+- totalPay: the TOTAL pay stated for this same period, if printed anywhere on the slip — a field literally labeled "total pay", "net pay", "take-home pay", "amount paid", or similar. A plain number, no dollar sign. null if no such figure is printed. Report exactly what's printed — do not add up basic pay, overtime pay, and allowances yourself to compute this.
+- bbox: the location of whichever pay figure is the main one for this line item (overtimeHours, otPay, or totalPay — whichever is most prominent/first), as an object {x, y, w, h} where each value is a FRACTION of the full image's width/height (0 = left/top edge, 1 = right/bottom edge) — e.g. a figure in the exact center would be roughly {x: 0.45, y: 0.45, w: 0.1, h: 0.03}. Box it tight around just that figure (and its row/line if it's part of a table row), not the whole table or page. Omit this field (or use null) if you can't estimate a location.
 
 Do not compute or infer any date math yourself (e.g. don't work out which date a month starts or ends on) — just report the dates/month exactly as printed.
 
-Output ONLY a valid JSON array, no markdown fences, no other text. If this page has no overtime-hours figure stated on it at all, output exactly [].`;
+Output ONLY a valid JSON array, no markdown fences, no other text. If this page has no pay figures (overtime hours, overtime pay, or total pay) stated on it at all, output exactly [].`;
 
 /** Coerces a value to a trimmed string, or `null` if it isn't a non-empty string. */
 function strOrNull(v: unknown): string | null {
@@ -112,7 +121,8 @@ export async function extractPayslipEntries(base64Image: string, temperature = 0
             yearMonth: strOrNull(t.yearMonth),
             overtimeHours: numOrNull(t.overtimeHours) ?? 0,
             hourlyRate: numOrNull(t.hourlyRate),
-            netPay: numOrNull(t.netPay),
+            otPay: numOrNull(t.otPay),
+            totalPay: numOrNull(t.totalPay),
             bbox: bboxOrNull(t.bbox),
             confirmedByAttempts: null,
         }))
@@ -148,20 +158,21 @@ function entryKey(t: PayslipEntry): string {
  */
 export function mergePayslipEntries(attempts: PayslipEntry[][]): PayslipEntry[] {
     const total = attempts.length;
-    const groups = new Map<string, { hoursCounts: Map<number, number>; rateCounts: Map<number | null, number>; netPayCounts: Map<number | null, number>; sample: PayslipEntry; seenIn: Set<number> }>();
+    const groups = new Map<string, { hoursCounts: Map<number, number>; rateCounts: Map<number | null, number>; otPayCounts: Map<number | null, number>; totalPayCounts: Map<number | null, number>; sample: PayslipEntry; seenIn: Set<number> }>();
 
     attempts.forEach((attempt, attemptIdx) => {
         for (const t of attempt) {
             const key = entryKey(t);
             let group = groups.get(key);
             if (!group) {
-                group = { hoursCounts: new Map(), rateCounts: new Map(), netPayCounts: new Map(), sample: t, seenIn: new Set() };
+                group = { hoursCounts: new Map(), rateCounts: new Map(), otPayCounts: new Map(), totalPayCounts: new Map(), sample: t, seenIn: new Set() };
                 groups.set(key, group);
             }
             group.seenIn.add(attemptIdx);
             group.hoursCounts.set(t.overtimeHours, (group.hoursCounts.get(t.overtimeHours) ?? 0) + 1);
             group.rateCounts.set(t.hourlyRate, (group.rateCounts.get(t.hourlyRate) ?? 0) + 1);
-            group.netPayCounts.set(t.netPay, (group.netPayCounts.get(t.netPay) ?? 0) + 1);
+            group.otPayCounts.set(t.otPay, (group.otPayCounts.get(t.otPay) ?? 0) + 1);
+            group.totalPayCounts.set(t.totalPay, (group.totalPayCounts.get(t.totalPay) ?? 0) + 1);
         }
     });
 
@@ -182,7 +193,8 @@ export function mergePayslipEntries(attempts: PayslipEntry[][]): PayslipEntry[] 
         ...group.sample,
         overtimeHours: majority(group.hoursCounts, group.sample.overtimeHours),
         hourlyRate: majority(group.rateCounts, group.sample.hourlyRate),
-        netPay: majority(group.netPayCounts, group.sample.netPay),
+        otPay: majority(group.otPayCounts, group.sample.otPay),
+        totalPay: majority(group.totalPayCounts, group.sample.totalPay),
         confirmedByAttempts: { seen: group.seenIn.size, total },
     }));
 }
