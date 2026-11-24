@@ -1853,6 +1853,15 @@
       correction) when you click Generate — this is what helps improve future scans.</div>
     <h3 id="ipaPageReviewHeading" style="display:none">IPA letter</h3>
     <div id="ipaPageReview" style="display:none"></div>
+    <div class="add-more-files" id="ipaAddMoreWrap" style="display:none">
+      <h4>Add / replace IPA letter</h4>
+      <div class="file-list">Didn't have the IPA letter on hand when this claim was scanned, or
+        need to swap in a corrected one? Attach it here — the fields above update from it, nothing
+        else on this claim is re-scanned.</div>
+      <input type="file" id="ipaAddMoreInput" accept="application/pdf,image/*">
+      <button type="button" class="generate-btn" id="ipaAddMoreBtn">Scan file</button>
+      <div class="status" id="ipaAddMoreStatus"></div>
+    </div>
     <div id="interpretationDisagreementPanel" style="display:none"></div>
     <h3 id="pageReviewListHeading" style="display:none">Timesheet files</h3>
     <div id="pageReviewList"></div>
@@ -2901,6 +2910,9 @@
       ipaPageReviewEl.style.display = 'none';
       ipaPageReviewEl.innerHTML = '';
       document.getElementById('ipaPageReviewHeading').style.display = 'none';
+      document.getElementById('ipaAddMoreWrap').style.display = 'none';
+      document.getElementById('ipaAddMoreInput').value = '';
+      document.getElementById('ipaAddMoreStatus').textContent = '';
       document.getElementById('pageReviewListHeading').style.display = 'none';
       document.getElementById('pdfsAddMoreWrap').style.display = 'none';
       document.getElementById('pdfsAddMoreInput').value = '';
@@ -2975,15 +2987,14 @@
       if (!mainErrored) {
         // Every "Add more X files" control becomes available once the submit finishes — not just
         // for sections that actually had files this time. A caseworker who didn't have a bank
-        // statement/payslip/etc. on hand yet when they first scanned still needs a way to add one
-        // later without re-running the whole claim, same as the IPA letter's own "Scan IPA letter"
-        // button never gates on whether one was attached originally. Each render*LivePages function
-        // only shows its own wrap when it actually has pages (pages.length === 0 returns before
-        // ever reaching that point) — so a section with zero files this round would otherwise never
-        // get the option at all.
+        // statement/payslip/IPA letter/etc. on hand yet when they first scanned still needs a way
+        // to add one later without re-running the whole claim. Each render*LivePages function only
+        // shows its own wrap when it actually has pages (pages.length === 0 returns before ever
+        // reaching that point) — so a section with zero files this round would otherwise never get
+        // the option at all.
         pageReviewsEl.style.display = 'block';
         if (!viewingHistoryRecord) {
-          ['pdfsAddMoreWrap', 'bankStatementAddMoreWrap', 'medicalBillsAddMoreWrap', 'medicalCertificatesAddMoreWrap', 'payslipsAddMoreWrap'].forEach(id => {
+          ['ipaAddMoreWrap', 'pdfsAddMoreWrap', 'bankStatementAddMoreWrap', 'medicalBillsAddMoreWrap', 'medicalCertificatesAddMoreWrap', 'payslipsAddMoreWrap'].forEach(id => {
             document.getElementById(id).style.display = 'block';
           });
         }
@@ -6316,23 +6327,23 @@
       // Rotate/Rescan sits below the image, inside .page-review-image — same layout as every other
       // page card (renderPageReview, renderBankPageCard, renderMedicalPageCard,
       // renderMedicalCertPageCard), not in the details column.
-      // The scan/rescan button itself always renders now (not gated on ipaImage) — IPA is
-      // optional, so a claim can reach this card with no IPA ever having been uploaded at all;
-      // without this, there was no way to attach one afterward short of re-running the whole
-      // claim scan. Rotate/Revert stay gated on ipaImage — they only make sense against an
-      // already-scanned page (a brand-new upload's rotation is corrected via the pre-scan staging
-      // grid above instead, same as the very first scan would be).
+      // Rotate/Rescan/Revert only render once there's an actual scanned IPA page to act on — same
+      // as every other section's per-page rescan controls (tied to a specific already-scanned
+      // page). Attaching an IPA for the first time, or wholesale replacing one, is a separate
+      // concern handled by the standalone "Add / replace IPA letter" block below this section
+      // (ipaAddMoreWrap) — same "a static block below the section, not inside the dynamic card"
+      // pattern the other 5 sections use for their own "Add more X files" control.
       return `
       <div class="page-review-row">
-        <div class="page-review-image">
-          ${ipaImage ? `<img src="${imageSrc(ipaImage)}" alt="IPA letter">` : `<div class="review-hint">No IPA letter uploaded yet.</div>`}
+        ${ipaImage ? `<div class="page-review-image">
+          <img src="${imageSrc(ipaImage)}" alt="IPA letter">
           ${viewingHistoryRecord ? '' : `<div class="page-rescan-controls">
-            ${ipaImage ? '<button type="button" class="page-rotate-btn" title="Rotate this page before rescanning">⟳ Rotate</button>' : ''}
-            <button type="button" class="page-rescan-btn">${ipaImage ? 'Rescan IPA' : 'Scan IPA letter'}</button>
-            ${ipaImage ? '<button type="button" class="page-revert-btn" title="Revert this page\'s fields to their last-scanned values">↺ Revert</button>' : ''}
+            <button type="button" class="page-rotate-btn" title="Rotate this page before rescanning">⟳ Rotate</button>
+            <button type="button" class="page-rescan-btn">Rescan IPA</button>
+            <button type="button" class="page-revert-btn" title="Revert this page's fields to their last-scanned values">↺ Revert</button>
           </div>
           <div class="page-rescan-status"></div>`}
-        </div>
+        </div>` : ''}
         <div class="page-review-details">
           <div class="page-review-source"><span>IPA letter</span></div>
           ${renderIpaFieldsEditable(ipa ?? blankIpaFields())}
@@ -6357,9 +6368,7 @@
       // server-rotated as of the last (re)scan; this just tracks what's pending since then.
       let previewDelta = 0;
 
-      // Absent when no IPA has ever been scanned yet (see renderIpaCard) — nothing to rotate
-      // against until a first scan exists, so there's nothing to wire here in that case.
-      if (rotateBtn) rotateBtn.addEventListener('click', () => {
+      rotateBtn.addEventListener('click', () => {
         // The IPA upload can be multi-page — this rotates whichever page index is actually in use
         // (the first one not dropped in staging), same resolution logic server.ts's runProcessJob
         // applies, so this button keeps rotating the right page even if page 0 was deleted earlier.
@@ -6376,7 +6385,7 @@
         const ipaFile = ipaInput.files[0];
         if (!ipaFile) {
           statusEl.className = 'page-rescan-status error';
-          statusEl.textContent = 'No IPA letter attached — choose one in the Documents section above, then click this button again.';
+          statusEl.textContent = 'IPA letter no longer attached (selection changed since the scan ran) — re-attach it before rescanning.';
           return;
         }
         const hint = promptRescanHint();
@@ -6460,6 +6469,66 @@
       updateSummarySectionVisibility();
       recomputeAllGuardrails();
     }
+
+    // ===== Add / replace IPA letter (standalone block below the IPA section) =====
+    // Separate from the per-page Rotate/Rescan controls inside the card itself (wireIpaRescanControls
+    // above) — those only exist once an IPA has actually been scanned, and re-attach whatever's in
+    // the TOP #ipa input to rotate-then-rescan the SAME document. This block is for the other case:
+    // no IPA was ever uploaded (optional now), or the caseworker wants to swap in a different/
+    // corrected letter entirely — its own file picker, own button, same "static block below the
+    // section" pattern the other 5 sections' "Add more X files" controls use.
+    document.getElementById('ipaAddMoreBtn').addEventListener('click', async () => {
+      const input = document.getElementById('ipaAddMoreInput');
+      const statusEl = document.getElementById('ipaAddMoreStatus');
+      const btn = document.getElementById('ipaAddMoreBtn');
+      const ipaFile = input.files[0];
+      if (!ipaFile) {
+        statusEl.className = 'status error';
+        statusEl.textContent = 'Choose a file first.';
+        return;
+      }
+      btn.disabled = true;
+      statusEl.className = 'status loading';
+      statusEl.innerHTML = '<span class="spinner"></span>Scanning…';
+
+      // No timesheet file is sent at all — /api/process no longer requires one (see server.ts; a
+      // claim can run on a payslip's OT hours alone), so there's nothing left to attach-and-exclude
+      // the way the main submit does. Only the IPA itself gets scanned.
+      const formData = new FormData();
+      formData.append('ipa', ipaFile);
+      formData.append('standardBreakHours', getStandardBreakHours());
+      // With no timesheet page in this request there's nothing for /api/process to infer a claim
+      // year from — same 3-tier fallback chain as wireIpaRescanControls uses.
+      const fallbackYear = resolveFallbackYear();
+      if (fallbackYear !== null) formData.append('fallbackYear', fallbackYear);
+      if (document.getElementById('contractStartDate').value) formData.append('claimStartDate', document.getElementById('contractStartDate').value);
+      if (document.getElementById('contractEndDate').value) formData.append('claimEndDate', document.getElementById('contractEndDate').value);
+
+      try {
+        const res = await fetch('/api/process', { method: 'POST', body: formData });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || `Server returned ${res.status}`);
+        const polled = await pollSinglePageJob('/api/process', data.jobId);
+        const result = polled.result;
+        if (!result) throw new Error('Scan finished but returned no result.');
+        applyRescannedIpa(result);
+        if (result.ipa) {
+          statusEl.className = 'status success';
+          statusEl.textContent = 'Scanned — fields updated above.';
+          input.value = '';
+        } else {
+          statusEl.className = 'status error';
+          statusEl.textContent = result.ipaWarning
+            ? `Scanned, but no fields could be extracted: ${result.ipaWarning}`
+            : 'Scanned, but no fields could be extracted — double-check the file and try again.';
+        }
+      } catch (err) {
+        statusEl.className = 'status error';
+        statusEl.textContent = 'Error: ' + err.message;
+      } finally {
+        btn.disabled = false;
+      }
+    });
 
     /** Builds one editable numeric IPA field's HTML. */
     function ipaField(field, label, value) {
@@ -9261,6 +9330,7 @@
       document.getElementById('saveHistoryChangesStatus').textContent = '';
       ipaPageReviewEl.style.display = 'none';
       document.getElementById('ipaPageReviewHeading').style.display = 'none';
+      document.getElementById('ipaAddMoreWrap').style.display = 'none';
       ipaReviewEl.style.display = 'none';
       pageReviewList.innerHTML = '';
       document.getElementById('pageReviewListHeading').style.display = 'none';
