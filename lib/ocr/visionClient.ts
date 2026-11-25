@@ -14,9 +14,12 @@ import { logVisionEvent } from "../visionDebugLog";
 // columns) — but with v2.5 now gone outright, that comparison is moot. Spot-checked v2.6-flash
 // against v2.6-pro on 3 pages of a real payslip upload (~/Downloads/page-0.pdf, pages 1/5/8): both
 // models returned identical month/OT-hours/OT-pay, and agreed with each other on a totalPay figure
-// that differs from v2.5's own historical read (v2.5 appears to have grabbed "Total Payment", the
-// pre-deduction gross figure, where both v2.6 models correctly read "Nett Payment" instead). v2.6-pro
-// cost ~18x more per page ($0.012-0.014 vs $0.00076) for no accuracy gain on that sample, so
+// that differs from v2.5's own historical read on one page (v2.5 grabbed "Total Payment", the
+// pre-deduction gross figure; both v2.6 models picked "Nett Payment" instead — the prompt in
+// lib/payslips.ts was ambiguous on which one totalPay should be at the time; it's since been made
+// explicit that totalPay means the pre-deduction gross figure, so v2.5's read there was the one
+// actually wanted). v2.6-pro cost ~18x more per page ($0.012-0.014 vs $0.00076) for no accuracy
+// gain on that sample, so
 // v2.6-flash is the new default — re-litigate if it turns out to repeat v2.6-flash's old
 // empty-array failure mode on a harder/full-document sample.
 export const PRIMARY_VISION_MODEL = "xiaomi/mimo-v2.6-flash";
