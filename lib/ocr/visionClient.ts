@@ -6,28 +6,32 @@ import { logVisionEvent } from "../visionDebugLog";
 // param on sendVisionRequest/scanPageImage/extractPageContext/verifyDatesOnPage). IPA extraction
 // (lib/ipa.ts) and bank statement extraction (lib/bankstatement.ts) never override, so they always
 // use this; server.ts's timesheet pipeline also uses this directly now (see timesheetModel there).
-// Briefly tried xiaomi/mimo-v2.6-flash (identical OpenRouter pricing and context window, newer
-// release) — reverted back to xiaomi/mimo-v2.5. A small 3-call sample looked like a wash, but real
-// full-document usage on sample-data/338M/338M_Timecards.pdf (the hardest sample on hand — a
-// passbook-style sheet with genuinely ambiguous Qty/Amount columns) showed v2.6-flash returning
-// empty/wrong rows across most of the document, consistent with an empty-array failure mode
-// (shapeFamily correct, rows: [] on a page with 28 real dates) already caught in isolated testing
-// before the switch. v2.5 remains the validated default until v2.6-flash (or another candidate) is
-// tested more rigorously at full-document scale, not just a handful of isolated calls, before
-// switching again.
-//
-// FALLBACK_VISION_MODEL repointed to qwen/qwen3-vl-235b-a22b-instruct — validated specifically
-// against PRIMARY_VISION_MODEL's empty-array bail-out failure mode (lib/jobs/timesheetJob.ts's
-// agentic one_worker_many_dates/one_date_many_workers/many_workers_many_dates branches escalate to
-// this model only when every agreeing attempt returned zero rows). Manual test on
+// xiaomi/mimo-v2.5 (the prior default) was pulled from OpenRouter entirely on 2026-11-25 ("no
+// provider serves this model anymore") — every vision call failed, zero entries across every
+// document type, with zero cost logged (the call errors before any tokens are billed). v2.5 had
+// previously been preferred over xiaomi/mimo-v2.6-flash after v2.6-flash returned empty/wrong rows
+// on sample-data/338M/338M_Timecards.pdf (a hard passbook-style sheet with ambiguous Qty/Amount
+// columns) — but with v2.5 now gone outright, that comparison is moot. Spot-checked v2.6-flash
+// against v2.6-pro on 3 pages of a real payslip upload (~/Downloads/page-0.pdf, pages 1/5/8): both
+// models returned identical month/OT-hours/OT-pay, and agreed with each other on a totalPay figure
+// that differs from v2.5's own historical read (v2.5 appears to have grabbed "Total Payment", the
+// pre-deduction gross figure, where both v2.6 models correctly read "Nett Payment" instead). v2.6-pro
+// cost ~18x more per page ($0.012-0.014 vs $0.00076) for no accuracy gain on that sample, so
+// v2.6-flash is the new default — re-litigate if it turns out to repeat v2.6-flash's old
+// empty-array failure mode on a harder/full-document sample.
+export const PRIMARY_VISION_MODEL = "xiaomi/mimo-v2.6-flash";
+// Escalation target when every agreeing PRIMARY_VISION_MODEL attempt returns zero rows (see
+// lib/jobs/timesheetJob.ts's agentic one_worker_many_dates/one_date_many_workers/
+// many_workers_many_dates branches). Previously qwen/qwen3-vl-235b-a22b-instruct, validated against
+// PRIMARY_VISION_MODEL's (then xiaomi/mimo-v2.5's) empty-array bail-out on
 // sample-data/137X/137X_Timesheets.pdf p1 (61 dense handwritten clock-time rows across 4
-// side-by-side monthly sub-tables — the exact page PRIMARY_VISION_MODEL bailed on with rows:[]
-// every time): PRIMARY_VISION_MODEL $0.0063/0 rows vs this model $0.0163/62 rows, matching a manual
-// read of the page. qwen/qwen2.5-vl-72b-instruct was tried first and rejected — no OpenRouter
-// provider serves tool-use for it ("No endpoints found that support tool use"), which this pipeline
-// requires throughout (lib/ocr/agentLoop.ts's tool-calling loop).
-export const PRIMARY_VISION_MODEL = "xiaomi/mimo-v2.5";
-export const FALLBACK_VISION_MODEL = "qwen/qwen3-vl-235b-a22b-instruct";
+// side-by-side monthly sub-tables): v2.5 $0.0063/0 rows vs qwen3-vl-235b $0.0163/62 rows, matching a
+// manual read of the page. Repointed to xiaomi/mimo-v2.6-pro on 2026-11-25 alongside the primary
+// model swap above — same mimo family as the new primary (so an escalation is a genuinely different
+// model class), already spot-checked accurate on the page-0.pdf sample above. Not yet re-validated
+// against the specific 137X_Timesheets.pdf empty-array case qwen3-vl-235b was chosen for — re-test
+// there if v2.6-flash's own empty-array rate turns out to be non-trivial in practice.
+export const FALLBACK_VISION_MODEL = "xiaomi/mimo-v2.6-pro";
 
 // Used only by translateTierCondition (lib/tierCondition.ts) — a tiny, non-vision, low-stakes
 // text task (turning one sentence like "time beyond 5pm" into an expression), so it deliberately
