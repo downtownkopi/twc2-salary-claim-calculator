@@ -32,6 +32,15 @@ async function boostFaintContrast(png: Buffer): Promise<Buffer> {
     return sharp(png).linear(CONTRAST_BOOST_FACTOR, offset).png().toBuffer();
 }
 
+// How many pages pdfToImages renders at once. Page rendering (pdfjs + node-canvas) is CPU-bound,
+// so this doesn't buy linear speedup, but a real multi-page PDF spends plenty of time in non-CPU
+// gaps per page (canvas allocation, PNG encode, the disk write) — overlapping those across a
+// handful of pages instead of waiting on each one serially cuts wall-clock time meaningfully
+// without the unbounded memory/CPU burst a single Promise.all(everyPage) would risk on a huge
+// upload. Separate from jobs/shared.ts's MAX_PAGE_CONCURRENCY (that caps concurrent vision-API
+// calls on already-rendered pages; this caps concurrent rendering of a single PDF's own pages).
+const PDF_RENDER_CONCURRENCY = 4;
+
 // Convert a PDF (path or in-memory buffer) into per-page PNG files on disk, one per page. Pages
 // used to be collected into one in-memory base64 array — for a large multi-page upload (e.g.
 // ~159 pages), that held every rendered page's bytes in RAM at once for the whole job. Writing
@@ -46,27 +55,43 @@ async function boostFaintContrast(png: Buffer): Promise<Buffer> {
  * @param maxPages - If given, rejects (before rendering any page) a PDF whose own page count
  * already exceeds this, instead of spending time/disk rendering pages that would just be discarded
  * once the job-wide page cap is hit anyway.
+ * @param scale - Render resolution multiplier; defaults to 3.0 (the legibility floor needed for
+ * actual OCR). Callers that only need these pages for a human-facing preview (downscaled further
+ * for display anyway, e.g. /api/preview) should pass a cheaper value — rendering at 3.0 just to
+ * immediately throw away most of those pixels wastes the bulk of the time this function spends.
  * @returns A {@link PagedImages} over the rendered pages, in page order.
  */
-export async function pdfToImages(input: string | Buffer, destDir: string, maxPages?: number): Promise<PagedImages> {
+export async function pdfToImages(input: string | Buffer, destDir: string, maxPages?: number, scale = 3.0): Promise<PagedImages> {
     await ensurePagedImagesDir(destDir);
     // Bumped from 2.0 after a systematic (unanimous-across-attempts) misread of dense, small
     // handwritten digits — the failure wasn't inconsistency between attempts (which the
     // multi-attempt reconciliation in lib/reconcile.ts is designed to catch), it was the same
     // legibility limit hit every time. Higher scale trades more tokens/latency per page for
     // clearer source pixels.
-    const document = await pdf(input, { scale: 3.0 });
+    const document = await pdf(input, { scale });
     if (maxPages !== undefined && document.length > maxPages) {
         await document.destroy();
         throw new Error(`this file has ${document.length} pages, over the ${maxPages}-page limit per scan — please split it into smaller uploads`);
     }
-    let count = 0;
-    for await (const pageBuffer of document) {
-        const boosted = await boostFaintContrast(pageBuffer);
-        await writeFile(PagedImages.pagePath(destDir, count), boosted);
-        count++;
+    const total = document.length;
+    // A simple fixed-size worker pool over page indices, rather than
+    // for-await-of/Symbol.asyncIterator's strictly-one-page-at-a-time default — lets up to
+    // PDF_RENDER_CONCURRENCY pages render concurrently. document.getPage is 1-indexed; this
+    // function's own page indices (and PagedImages') stay 0-indexed throughout.
+    let nextPageIndex = 0;
+    async function renderNextAvailablePage(): Promise<void> {
+        for (;;) {
+            const i = nextPageIndex++;
+            if (i >= total) return;
+            const pageBuffer = await document.getPage(i + 1);
+            const boosted = await boostFaintContrast(pageBuffer);
+            await writeFile(PagedImages.pagePath(destDir, i), boosted);
+        }
     }
-    return new PagedImages(destDir, count);
+    await Promise.all(
+        Array.from({ length: Math.min(PDF_RENDER_CONCURRENCY, total) }, renderNextAvailablePage)
+    );
+    return new PagedImages(destDir, total);
 }
 
 // A single photographed/scanned timesheet (jpg/png/etc, common in real-world uploads — phone

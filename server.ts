@@ -139,6 +139,13 @@ app.use(express.static(path.join(__dirname, "public")));
 // pages) so the browser can show a staging grid right after attaching, before the real (expensive,
 // multi-pass) scan runs. Lets a human confirm/rotate a sideways page up front — auto-detecting
 // this from the model was tried and found unreliable (see lib/ocr.ts's rotateImage comment).
+//
+// Rendered at a much cheaper scale than the real scan (see PREVIEW_RENDER_SCALE below) — every
+// page here gets downscaled again to 800px wide for display (resizeForDisplay) and thrown away
+// once the response is sent, so rendering at the real scan's OCR-legibility scale (3.0) here would
+// spend most of its time producing pixels nobody ever sees, then render the exact same pages a
+// second time at 3.0 for real once the caseworker confirms rotations and /api/process runs.
+const PREVIEW_RENDER_SCALE = 1.2;
 app.post(
     "/api/preview",
     upload.fields([
@@ -169,7 +176,7 @@ app.post(
             for (let fi = 0; fi < files.length; fi++) {
                 const file = files[fi];
                 try {
-                    const images = await loadPagesForFile(file, path.join(previewDir, `pdfs-${fi}`), MAX_PAGES_PER_JOB);
+                    const images = await loadPagesForFile(file, path.join(previewDir, `pdfs-${fi}`), MAX_PAGES_PER_JOB, PREVIEW_RENDER_SCALE);
                     for (let pi = 0; pi < images.length; pi++) {
                         pdfsPreview.push({ fileIndex: fi, pageIndex: pi, fileName: file.originalname, image: await resizeForDisplay(await images.get(pi), 800) });
                     }
@@ -187,7 +194,7 @@ app.post(
             let ipaError: string | null = null;
             if (ipaFile) {
                 try {
-                    const images = await loadPagesForFile(ipaFile, path.join(previewDir, "ipa"), MAX_PAGES_PER_JOB);
+                    const images = await loadPagesForFile(ipaFile, path.join(previewDir, "ipa"), MAX_PAGES_PER_JOB, PREVIEW_RENDER_SCALE);
                     for (let pi = 0; pi < images.length; pi++) {
                         ipaPreview.push({ pageIndex: pi, image: await resizeForDisplay(await images.get(pi), 800) });
                     }
@@ -203,7 +210,7 @@ app.post(
             for (let fi = 0; fi < bankStatementFiles.length; fi++) {
                 const file = bankStatementFiles[fi];
                 try {
-                    const images = await loadPagesForFile(file, path.join(previewDir, `bankStatement-${fi}`), MAX_PAGES_PER_JOB);
+                    const images = await loadPagesForFile(file, path.join(previewDir, `bankStatement-${fi}`), MAX_PAGES_PER_JOB, PREVIEW_RENDER_SCALE);
                     for (let pi = 0; pi < images.length; pi++) {
                         bankStatementPreview.push({ fileIndex: fi, pageIndex: pi, fileName: file.originalname, image: await resizeForDisplay(await images.get(pi), 800) });
                     }
@@ -219,7 +226,7 @@ app.post(
             for (let fi = 0; fi < medicalBillsFiles.length; fi++) {
                 const file = medicalBillsFiles[fi];
                 try {
-                    const images = await loadPagesForFile(file, path.join(previewDir, `medicalBills-${fi}`), MAX_PAGES_PER_JOB);
+                    const images = await loadPagesForFile(file, path.join(previewDir, `medicalBills-${fi}`), MAX_PAGES_PER_JOB, PREVIEW_RENDER_SCALE);
                     for (let pi = 0; pi < images.length; pi++) {
                         medicalBillsPreview.push({ fileIndex: fi, pageIndex: pi, fileName: file.originalname, image: await resizeForDisplay(await images.get(pi), 800) });
                     }
@@ -236,7 +243,7 @@ app.post(
             for (let fi = 0; fi < medicalCertificatesFiles.length; fi++) {
                 const file = medicalCertificatesFiles[fi];
                 try {
-                    const images = await loadPagesForFile(file, path.join(previewDir, `medicalCertificates-${fi}`), MAX_PAGES_PER_JOB);
+                    const images = await loadPagesForFile(file, path.join(previewDir, `medicalCertificates-${fi}`), MAX_PAGES_PER_JOB, PREVIEW_RENDER_SCALE);
                     for (let pi = 0; pi < images.length; pi++) {
                         medicalCertificatesPreview.push({ fileIndex: fi, pageIndex: pi, fileName: file.originalname, image: await resizeForDisplay(await images.get(pi), 800) });
                     }
@@ -252,7 +259,7 @@ app.post(
             for (let fi = 0; fi < payslipFiles.length; fi++) {
                 const file = payslipFiles[fi];
                 try {
-                    const images = await loadPagesForFile(file, path.join(previewDir, `payslips-${fi}`), MAX_PAGES_PER_JOB);
+                    const images = await loadPagesForFile(file, path.join(previewDir, `payslips-${fi}`), MAX_PAGES_PER_JOB, PREVIEW_RENDER_SCALE);
                     for (let pi = 0; pi < images.length; pi++) {
                         payslipsPreview.push({ fileIndex: fi, pageIndex: pi, fileName: file.originalname, image: await resizeForDisplay(await images.get(pi), 800) });
                     }

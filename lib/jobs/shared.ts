@@ -134,11 +134,13 @@ export async function enforceTotalUploadSize(req: Request, res: Response, next: 
  * @param file - The uploaded file (from multer's disk storage).
  * @param destDir - Directory to write this file's rendered pages into.
  * @param maxPages - Passed through to {@link pdfToImages} to reject an over-limit PDF early.
+ * @param scale - Passed through to {@link pdfToImages}; see its own doc for why a preview-only
+ * caller should override this. No-op for an image upload (imageToPages has its own fixed sizing).
  * @returns A {@link PagedImages} over the file's rendered pages.
  */
-export async function loadPagesForFile(file: Express.Multer.File, destDir: string, maxPages?: number): Promise<PagedImages> {
+export async function loadPagesForFile(file: Express.Multer.File, destDir: string, maxPages?: number, scale?: number): Promise<PagedImages> {
     const isImage = file.mimetype.startsWith("image/");
-    const pages = isImage ? await imageToPages(file.path, destDir) : await pdfToImages(file.path, destDir, maxPages);
+    const pages = isImage ? await imageToPages(file.path, destDir) : await pdfToImages(file.path, destDir, maxPages, scale);
     // The uploaded source file is never read again after this — every downstream step works off
     // the rendered per-page files instead — so it's safe (and worth doing promptly, not waiting
     // for a TTL) to reclaim its disk space right away.
