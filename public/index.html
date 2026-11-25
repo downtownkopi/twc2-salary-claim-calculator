@@ -3720,6 +3720,19 @@
       const v = Number(el.value);
       return Number.isFinite(v) ? v : null;
     }
+    // Declared OT hourly rate straight off the IPA (lib/ipa.ts declaredOvertimeHourlyRate) — null
+    // if the scan didn't find one separately printed. Distinct from getEffectiveOtRate: that's the
+    // statutory rate computed by us from salary; this is whatever OT rate the employer's own IPA
+    // states, if any. Read from the live editable input (same as getBasicMonthlySalary/
+    // getDeclaredDailyBasicRate above), not currentIpa, so a caseworker's edit here is picked up
+    // immediately everywhere this is read.
+    /** Reads the IPA's declared OT hourly rate, or `null` if not printed on the document. */
+    function getDeclaredOvertimeHourlyRate() {
+      const el = document.querySelector('#ipaPageReview input[data-field="declaredOvertimeHourlyRate"]');
+      if (!el || el.value === '') return null;
+      const v = Number(el.value);
+      return Number.isFinite(v) ? v : null;
+    }
     // Derived from the IPA's own declared workingDaysPerWeek (editable in the IPA review card,
     // same as basicMonthlySalary/dailyBasicRate) rather than a separate manual pre-submit choice —
     // the IPA already states this, so asking the caseworker to also pick it by hand just invited
@@ -6511,17 +6524,18 @@
     ${ipaField('basicMonthlySalary', 'Basic monthly salary ($)', f.basicMonthlySalary)}
     ${ipaField('fixedMonthlyAllowances', 'Fixed monthly allowances ($)', allowanceTotal)}
     ${ipaField('dailyBasicRate', 'Declared daily basic rate ($)', f.dailyBasicRate)}
+    ${ipaField('declaredOvertimeHourlyRate', 'Declared OT rate ($/hr)', f.declaredOvertimeHourlyRate)}
     ${ipaField('workingDaysPerWeek', 'Working days/week', f.workingDaysPerWeek)}
   </div>`;
     }
 
-    // Only 7 of IpaFields' fields are actually editable here (see renderIpaFieldsEditable above) —
-    // the rest (employerUen/occupation/sector/hourlyBasicRate/declaredOvertimeHourlyRate/
-    // workingHoursPerDay/wpValidityStart/End/notes/fixedMonthlyDeductions) have no input anywhere in
-    // this UI, so they're carried through from currentIpa (the last-scanned/last-loaded object)
-    // unchanged rather than silently dropped. Mirrors collectAllReviewRowsWithSource's "read the
-    // live DOM, not a cached array" approach for the one thing this UI DOES let a caseworker edit.
-    /** Reads the 7 editable IPA inputs into a full IpaFields-shaped object, ready to save to history. */
+    // Only 8 of IpaFields' fields are actually editable here (see renderIpaFieldsEditable above) —
+    // the rest (employerUen/occupation/sector/hourlyBasicRate/workingHoursPerDay/wpValidityStart/
+    // End/notes/fixedMonthlyDeductions) have no input anywhere in this UI, so they're carried
+    // through from currentIpa (the last-scanned/last-loaded object) unchanged rather than silently
+    // dropped. Mirrors collectAllReviewRowsWithSource's "read the live DOM, not a cached array"
+    // approach for the one thing this UI DOES let a caseworker edit.
+    /** Reads the 8 editable IPA inputs into a full IpaFields-shaped object, ready to save to history. */
     function collectCurrentIpaFields() {
       const panel = document.getElementById('ipaPageReview');
       if (!panel) return currentIpa;
@@ -6536,6 +6550,7 @@
         basicMonthlySalary: num('basicMonthlySalary'),
         fixedMonthlyAllowances: allowanceTotal === null ? [] : [{ type: 'edited total', amount: allowanceTotal }],
         dailyBasicRate: num('dailyBasicRate'),
+        declaredOvertimeHourlyRate: num('declaredOvertimeHourlyRate'),
         workingDaysPerWeek: num('workingDaysPerWeek'),
       };
     }
@@ -6564,10 +6579,8 @@
       const computedRate = getEffectiveOtRate();
       // The IPA's own printed OT rate (lib/ipa.ts's declaredOvertimeHourlyRate) — distinct from
       // computedRate above (always 1.5x the statutory hourly basic rate derived from salary,
-      // regardless of what's printed). Not an editable input (see the "only 7 editable fields"
-      // comment on collectCurrentIpaFields below) — carried straight through from currentIpa like
-      // hourlyBasicRate already is.
-      const declaredOtRate = currentIpa && Number.isFinite(currentIpa.declaredOvertimeHourlyRate) ? currentIpa.declaredOvertimeHourlyRate : null;
+      // regardless of what's printed).
+      const declaredOtRate = getDeclaredOvertimeHourlyRate();
       const sourceOptions = [
         { value: 'computed', label: 'computed rate', rate: computedRate },
         declaredOtRate !== null ? { value: 'ipaDeclared', label: 'IPA-declared rate', rate: declaredOtRate } : null,
@@ -8677,7 +8690,7 @@
         // claim with no computable statutory baseRate (no IPA basic salary at all) should still be
         // able to use the IPA's own printed OT rate on its own, since that's a real figure straight
         // off the same document, not something that depends on basicMonthlySalary existing too.
-        const declaredRate = currentIpa && Number.isFinite(currentIpa.declaredOvertimeHourlyRate) ? currentIpa.declaredOvertimeHourlyRate : null;
+        const declaredRate = getDeclaredOvertimeHourlyRate();
         return declaredRate !== null ? declaredRate : baseRate;
       }
       if (otRateSource !== 'payslip') return baseRate;
@@ -8710,7 +8723,7 @@
       // rate if one was scanned (lib/ipa.ts's declaredOvertimeHourlyRate), since that's the literal
       // figure the note's "IPA declares X/hr" wording refers to; falls back to the computed
       // statutory rate only when the IPA didn't print one of its own.
-      const ipaRate = currentIpa && Number.isFinite(currentIpa.declaredOvertimeHourlyRate) ? currentIpa.declaredOvertimeHourlyRate : getEffectiveOtRate();
+      const ipaRate = getDeclaredOvertimeHourlyRate() ?? getEffectiveOtRate();
       const withRange = entries.map(t => ({ t, range: payslipPeriodRange(t) }));
       withRange.sort((a, b) => (a.range?.start || '').localeCompare(b.range?.start || ''));
       let missingRateCount = 0;
