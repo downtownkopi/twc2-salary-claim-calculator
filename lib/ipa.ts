@@ -19,6 +19,15 @@ export type IpaFields = {
     fixedMonthlyDeductions: IpaAmount[];
     dailyBasicRate: number | null;
     hourlyBasicRate: number | null;
+    // The overtime hourly RATE, if the IPA separately states one (distinct from hourlyBasicRate,
+    // which is the ORDINARY-hours rate) — what the employer declared they'd pay for OT, not
+    // necessarily the statutory floor a claim is computed against (see getEffectiveOtRate in
+    // public/index.html, always derived from basicMonthlySalary via the Fourth Schedule formula,
+    // never this field). Same "what's actually printed, never derived" philosophy as every other
+    // field here: never computed by multiplying hourlyBasicRate by 1.5 ourselves. Display/reference
+    // only by default — the caseworker can choose to claim against it instead via the IPA summary
+    // card's rate-source toggle, same choice already offered for a payslip-stated rate.
+    declaredOvertimeHourlyRate: number | null;
     workingHoursPerDay: number | null;
     workingDaysPerWeek: number | null;
     wpValidityStart: string | null; // YYYY-MM-DD
@@ -41,6 +50,7 @@ Read the ENTIRE document and extract exactly these fields. If a field is not sta
 - fixedMonthlyDeductions: array of {type, amount} — one entry per fixed monthly deduction declared. Same rule as above: an unlabeled type is "unspecified", not a reason to omit the entry. [] only if no deduction amount at all is stated.
 - dailyBasicRate: daily basic rate in SGD as a number, or null if not separately stated
 - hourlyBasicRate: hourly basic rate in SGD as a number, or null if not separately stated
+- declaredOvertimeHourlyRate: the OVERTIME hourly rate, if separately stated anywhere on the document (e.g. a field/column literally labeled "OT rate", "overtime rate", or similar) — distinct from hourlyBasicRate (the ordinary-hours rate). A plain number, no dollar sign. null if no such figure is printed. Do not compute this yourself (e.g. do not multiply hourlyBasicRate by 1.5) — only report a figure actually printed on the document.
 - workingHoursPerDay: normal working hours per day, as a number, or null if not stated
 - workingDaysPerWeek: normal working days per week, as a number, or null if not stated
 - wpValidityStart: Work Permit validity start date, YYYY-MM-DD, or null if not stated
@@ -173,6 +183,7 @@ export async function extractIpaFields(base64Image: string, hint?: string): Prom
         fixedMonthlyDeductions: normalizeAmounts(parsed.fixedMonthlyDeductions),
         dailyBasicRate: num(parsed.dailyBasicRate),
         hourlyBasicRate: num(parsed.hourlyBasicRate),
+        declaredOvertimeHourlyRate: num(parsed.declaredOvertimeHourlyRate),
         workingHoursPerDay: num(parsed.workingHoursPerDay),
         workingDaysPerWeek: num(parsed.workingDaysPerWeek),
         wpValidityStart: str(parsed.wpValidityStart),

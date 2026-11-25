@@ -2177,17 +2177,18 @@
     // radio). Absent means "auto": assume a full month only for a month with no real timesheet
     // rows of its own (see recomputeMonthlyPayTotals' generalized per-month fallback).
     let daySourceByMonth = {};
-    // Caseworker choice of OT RATE source, 'ipa' | 'payslip' — a completely separate axis from
-    // otSourceByMonth above (that one picks which HOURS figure to use, per month; this one picks
-    // which RATE the whole claim multiplies by). A single global choice, not per-month — set once
-    // in the IPA summary card, next to "OT rate (computed)" (see renderIpaSummaryText) — since a rate
-    // mismatch is a one-off fact about which figure is correct for this worker, not something that
-    // plausibly varies month to month the way hours worked does. Defaults to 'computed'
-    // (getEffectiveOtRate() — always 1.5× the statutory hourly basic rate derived from salary), the
-    // legally-correct rate and the existing default behavior. Flips to 'payslip' when the
-    // caseworker decides the worker's own payslip rate — which could be higher OR lower than the
-    // computed one — is the one to actually claim against; never auto-picked toward whichever is more
-    // or less favorable.
+    // Caseworker choice of OT RATE source, 'computed' | 'ipaDeclared' | 'payslip' — a completely
+    // separate axis from otSourceByMonth above (that one picks which HOURS figure to use, per
+    // month; this one picks which RATE the whole claim multiplies by). A single global choice, not
+    // per-month — set once in the IPA summary card, next to "OT rate (computed)" (see
+    // renderIpaSummaryText) — since a rate mismatch is a one-off fact about which figure is correct
+    // for this worker, not something that plausibly varies month to month the way hours worked
+    // does. Defaults to 'computed' (getEffectiveOtRate() — always 1.5× the statutory hourly basic
+    // rate derived from salary), the legally-correct rate and the existing default behavior. Flips
+    // to 'ipaDeclared' when the IPA letter itself separately states an OT rate (lib/ipa.ts's
+    // declaredOvertimeHourlyRate) and the caseworker picks that instead, or to 'payslip' when the
+    // worker's own payslip rate is picked — either could be higher OR lower than the computed one;
+    // never auto-picked toward whichever is more or less favorable.
     let otRateSource = 'computed';
     // Snapshot of the `totals` Map recomputeMonthlyPayTotals just built (after the payslip OT-source
     // override is applied) — recomputeMonthlyOtCap reads this directly instead of re-deriving OT
@@ -3742,14 +3743,18 @@
       const salary = getBasicMonthlySalary();
       return salary === null ? null : (salary * 12) / (52 * 44);
     }
-    // The rate used for every excess/overtime hour — OT proper (s.38), and the excess-hours portion
-    // of rest-day-worked pay (s.37). Always DERIVED from basic salary (Fourth Schedule/s.38(6)), never
-    // taken from an IPA-printed figure — an employer's declared rate on the IPA is what they say they
-    // pay, not necessarily the statutory floor a claim is computed against, so this app doesn't extract
-    // or offer it as an alternative at all. Kept as full float precision (no rounding here) — only the
-    // final OT AMOUNT (rate × hours) gets rounded to 2dp, at display time via formatMoney. Public-
-    // holiday (s.88) pay is untouched by this — it has no excess-hours component, just daily gross +
-    // daily basic, so it keeps calling getDailyGrossRate()/getDailyBasicRate().
+    // The DEFAULT rate used for every excess/overtime hour — OT proper (s.38), and the
+    // excess-hours portion of rest-day-worked pay (s.37). Always DERIVED from basic salary (Fourth
+    // Schedule/s.38(6)) — this is the statutory floor a claim is computed against, which may well
+    // differ from an employer's own declared/printed OT rate (what they say they pay, not
+    // necessarily the legal minimum). This function always returns the computed figure regardless
+    // of otRateSource — getEffectiveOtRateForMonth is the one that actually resolves the
+    // caseworker's IPA-declared/payslip/computed pick; this is only its 'computed' branch (and the
+    // fallback the other two branches use when their own figure isn't available). Kept as full
+    // float precision (no rounding here) — only the final OT AMOUNT (rate × hours) gets rounded to
+    // 2dp, at display time via formatMoney. Public-holiday (s.88) pay is untouched by this — it has
+    // no excess-hours component, just daily gross + daily basic, so it keeps calling
+    // getDailyGrossRate()/getDailyBasicRate().
     /** Returns 1.5× the statutory hourly basic rate (Fourth Schedule/s.38(6)), full float precision. */
     function getEffectiveOtRate() {
       const hourly = getHourlyBasicRate();
@@ -6263,6 +6268,7 @@
         workerName: null, workerFin: null, employerName: null, employerUen: null,
         occupation: null, sector: null,
         basicMonthlySalary: null, dailyBasicRate: null, hourlyBasicRate: null,
+        declaredOvertimeHourlyRate: null,
         workingHoursPerDay: null, workingDaysPerWeek: null,
         fixedMonthlyAllowances: [], fixedMonthlyDeductions: [],
         wpValidityStart: null, wpValidityEnd: null, notes: null,
@@ -6510,11 +6516,11 @@
     }
 
     // Only 7 of IpaFields' fields are actually editable here (see renderIpaFieldsEditable above) —
-    // the rest (employerUen/occupation/sector/hourlyBasicRate/workingHoursPerDay/wpValidityStart/
-    // End/notes/fixedMonthlyDeductions) have no input anywhere in this UI, so they're carried
-    // through from currentIpa (the last-scanned/last-loaded object) unchanged rather than silently
-    // dropped. Mirrors collectAllReviewRowsWithSource's "read the live DOM, not a cached array"
-    // approach for the one thing this UI DOES let a caseworker edit.
+    // the rest (employerUen/occupation/sector/hourlyBasicRate/declaredOvertimeHourlyRate/
+    // workingHoursPerDay/wpValidityStart/End/notes/fixedMonthlyDeductions) have no input anywhere in
+    // this UI, so they're carried through from currentIpa (the last-scanned/last-loaded object)
+    // unchanged rather than silently dropped. Mirrors collectAllReviewRowsWithSource's "read the
+    // live DOM, not a cached array" approach for the one thing this UI DOES let a caseworker edit.
     /** Reads the 7 editable IPA inputs into a full IpaFields-shaped object, ready to save to history. */
     function collectCurrentIpaFields() {
       const panel = document.getElementById('ipaPageReview');
@@ -6556,10 +6562,22 @@
       const distinctPayslipRates = [...new Set(payslipRates)];
       const payslipRateLabel = distinctPayslipRates.length === 1 ? `${formatMoney(distinctPayslipRates[0])}/hr` : distinctPayslipRates.length > 1 ? 'varies by month' : null;
       const computedRate = getEffectiveOtRate();
-      const rateSourceToggle = payslipRateLabel !== null ? `
+      // The IPA's own printed OT rate (lib/ipa.ts's declaredOvertimeHourlyRate) — distinct from
+      // computedRate above (always 1.5x the statutory hourly basic rate derived from salary,
+      // regardless of what's printed). Not an editable input (see the "only 7 editable fields"
+      // comment on collectCurrentIpaFields below) — carried straight through from currentIpa like
+      // hourlyBasicRate already is.
+      const declaredOtRate = currentIpa && Number.isFinite(currentIpa.declaredOvertimeHourlyRate) ? currentIpa.declaredOvertimeHourlyRate : null;
+      const sourceOptions = [
+        { value: 'computed', label: 'computed rate', rate: computedRate },
+        declaredOtRate !== null ? { value: 'ipaDeclared', label: 'IPA-declared rate', rate: declaredOtRate } : null,
+        payslipRateLabel !== null ? { value: 'payslip', label: 'payslip rate', rateLabel: payslipRateLabel } : null,
+      ].filter(Boolean);
+      // Only worth offering a choice once there's an alternative to the computed default — a lone
+      // "computed rate" radio with nothing to pick between it and would just be noise.
+      const rateSourceToggle = sourceOptions.length > 1 ? `
       <div class="pay-total-sub">
-        <label><input type="radio" name="ot-rate-source" value="computed"${otRateSource !== 'payslip' ? ' checked' : ''}> Use computed rate (${computedRate === null ? '—' : `${formatMoney(computedRate)}/hr`}) for the claim</label>
-        <label><input type="radio" name="ot-rate-source" value="payslip"${otRateSource === 'payslip' ? ' checked' : ''}> Use payslip rate (${payslipRateLabel}) for the claim</label>
+        ${sourceOptions.map(o => `<label><input type="radio" name="ot-rate-source" value="${o.value}"${otRateSource === o.value || (otRateSource !== 'payslip' && otRateSource !== 'ipaDeclared' && o.value === 'computed') ? ' checked' : ''}> Use ${o.label} (${o.rateLabel || (o.rate === null ? '—' : `${formatMoney(o.rate)}/hr`)}) for the claim</label>`).join('')}
       </div>` : '';
       ipaReviewEl.innerHTML = `
     <h3>IPA — declared employment terms</h3>
@@ -6568,6 +6586,7 @@
       <div class="ipa-field-group"><span class="field-label">Fixed monthly allowances</span><strong>${formatMoney(allowances)}</strong></div>
       <div class="ipa-field-group"><span class="field-label">OT rate (computed)</span><strong>${computedRate === null ? '—' : `${formatMoney(computedRate)}/hr`}</strong>${rateSourceToggle}</div>
       <div class="ipa-field-group"><span class="field-label">Declared daily basic rate</span><strong>${dailyBasic === null ? '—' : `${formatMoney(dailyBasic)}/day`}</strong></div>
+      <div class="ipa-field-group"><span class="field-label">Declared OT rate (IPA)</span><strong>${declaredOtRate === null ? '—' : `${formatMoney(declaredOtRate)}/hr`}</strong></div>
     </div>
     <div class="review-hint" id="ipaComputedRates"></div>`;
       const toggleEl = ipaReviewEl.querySelector('input[name="ot-rate-source"]');
@@ -8643,14 +8662,24 @@
     }
 
     // The rate every excess/overtime-hour computation for a given month should actually use — the
-    // caseworker's global pick (otRateSource, set in the IPA summary card) between the
-    // IPA-declared/statutory rate (getEffectiveOtRate(), the existing default) and this month's own
-    // payslip-stated rate, if one was scanned. The SOURCE choice is global, but the dollar figure it
-    // resolves to still varies month to month when 'payslip' is picked — each month uses its own
-    // payslip entry's rate, not a single fixed number.
-    /** Resolves the active hourly OT rate for one calendar month, respecting the caseworker's global IPA-vs-payslip pick. */
+    // caseworker's global pick (otRateSource, set in the IPA summary card) between the computed
+    // statutory rate (getEffectiveOtRate(), the existing default), the IPA's own separately-printed
+    // OT rate if one exists (lib/ipa.ts's declaredOvertimeHourlyRate — a single fixed figure, same
+    // as the computed rate, since the IPA states one figure for the whole claim, not per month), and
+    // this month's own payslip-stated rate, if one was scanned. The SOURCE choice is global, but the
+    // dollar figure it resolves to still varies month to month when 'payslip' is picked — each month
+    // uses its own payslip entry's rate, not a single fixed number.
+    /** Resolves the active hourly OT rate for one calendar month, respecting the caseworker's global rate-source pick. */
     function getEffectiveOtRateForMonth(monthKey) {
       const baseRate = getEffectiveOtRate();
+      if (otRateSource === 'ipaDeclared') {
+        // Checked BEFORE falling back to baseRate, same reasoning as the payslip branch below — a
+        // claim with no computable statutory baseRate (no IPA basic salary at all) should still be
+        // able to use the IPA's own printed OT rate on its own, since that's a real figure straight
+        // off the same document, not something that depends on basicMonthlySalary existing too.
+        const declaredRate = currentIpa && Number.isFinite(currentIpa.declaredOvertimeHourlyRate) ? currentIpa.declaredOvertimeHourlyRate : null;
+        return declaredRate !== null ? declaredRate : baseRate;
+      }
       if (otRateSource !== 'payslip') return baseRate;
       // Checked BEFORE falling back to baseRate (not after, and not short-circuited by a null
       // baseRate) — a payslip-only claim with no IPA basic salary at all has no computable
@@ -8677,7 +8706,11 @@
         return;
       }
       el.style.display = 'block';
-      const ipaRate = getEffectiveOtRate();
+      // The "IPA side" rate shown in the mismatch note below — the IPA's own separately-printed OT
+      // rate if one was scanned (lib/ipa.ts's declaredOvertimeHourlyRate), since that's the literal
+      // figure the note's "IPA declares X/hr" wording refers to; falls back to the computed
+      // statutory rate only when the IPA didn't print one of its own.
+      const ipaRate = currentIpa && Number.isFinite(currentIpa.declaredOvertimeHourlyRate) ? currentIpa.declaredOvertimeHourlyRate : getEffectiveOtRate();
       const withRange = entries.map(t => ({ t, range: payslipPeriodRange(t) }));
       withRange.sort((a, b) => (a.range?.start || '').localeCompare(b.range?.start || ''));
       let missingRateCount = 0;
