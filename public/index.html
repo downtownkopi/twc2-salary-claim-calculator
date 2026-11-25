@@ -7239,11 +7239,16 @@
       document.getElementById('bankStatementAddMoreInput').value = '';
       document.getElementById('bankStatementAddMoreStatus').textContent = '';
       if (files.length === 0) {
-        // Nothing to check payments against — rather than leave the Owed vs Paid box hidden
-        // indefinitely, assume $0 paid so far (the worst case) and say so explicitly in the box
-        // itself, so it reads as an assumption rather than a confirmed bank-statement read.
-        totalPaidCache = 0;
-        paidIsAssumedZero = true;
+        // No bank statement to check payments against — but a payslip may still be attached (its
+        // own job, independent of this one), and its pay figures always pool into "payment
+        // received" (see refreshBankSummary's identical pooling). Without this, an upload with only
+        // a payslip and no bank statement would show "Payments received $0.00" even though the
+        // payslip itself states real pay figures. Only truly assume $0 (the worst case) when
+        // neither source has anything.
+        const payslipTotalPaid = [...getPayslipPaidByMonth().values()].reduce((sum, v) => sum + v, 0);
+        totalPaidCache = payslipTotalPaid;
+        paidIsAssumedZero = payslipTotalPaid === 0;
+        recomputeMonthlyPayTotals(); // payment breakdown's per-month "payment received" column reads payslip data too
         updateSummarySectionVisibility();
         updateOwedVsPaidBox();
         return;
