@@ -32,14 +32,20 @@ async function boostFaintContrast(png: Buffer): Promise<Buffer> {
     return sharp(png).linear(CONTRAST_BOOST_FACTOR, offset).png().toBuffer();
 }
 
-// How many pages pdfToImages renders at once. Page rendering (pdfjs + node-canvas) is CPU-bound,
-// so this doesn't buy linear speedup, but a real multi-page PDF spends plenty of time in non-CPU
-// gaps per page (canvas allocation, PNG encode, the disk write) — overlapping those across a
-// handful of pages instead of waiting on each one serially cuts wall-clock time meaningfully
-// without the unbounded memory/CPU burst a single Promise.all(everyPage) would risk on a huge
-// upload. Separate from jobs/shared.ts's MAX_PAGE_CONCURRENCY (that caps concurrent vision-API
-// calls on already-rendered pages; this caps concurrent rendering of a single PDF's own pages).
-const PDF_RENDER_CONCURRENCY = 4;
+// How many pages pdfToImages renders at once. Originally bumped to 4 to keep /api/preview's single
+// blocking request fast enough to avoid a hosting-proxy timeout (a slow render risked a Cloudflare
+// 524) — each concurrent page is its own full uncompressed raster buffer (width × height × 4 bytes,
+// plus a same-size boostFaintContrast copy), so running several at once directly multiplies peak
+// memory, which turned out to matter more in practice: a large/photographed-page upload (a
+// real-world timesheet is just as likely to be phone photos as a clean digital export) spiked
+// production memory hard enough to crash-loop the process and starve a co-hosted service on the
+// same VPS. Both /api/preview and the real scan are background jobs polled to completion now (see
+// lib/jobs/previewJob.ts), so a slow render no longer risks a dead connection either way — back to
+// 1 (true sequential) to remove that memory multiplier entirely; revisit only if render wall-clock
+// time itself becomes the actual complaint, not perceived overall scan slowness. Separate from
+// jobs/shared.ts's MAX_PAGE_CONCURRENCY (that caps concurrent vision-API calls on already-rendered
+// pages; this caps concurrent rendering of a single PDF's own pages).
+const PDF_RENDER_CONCURRENCY = 1;
 
 // Convert a PDF (path or in-memory buffer) into per-page PNG files on disk, one per page. Pages
 // used to be collected into one in-memory base64 array — for a large multi-page upload (e.g.
