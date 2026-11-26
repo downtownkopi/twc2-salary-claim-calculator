@@ -4,28 +4,24 @@ import cookieParser from "cookie-parser";
 import jwt from "jsonwebtoken";
 import * as path from "path";
 import { randomUUID } from "crypto";
-import { resizeForDisplay } from "./lib/ocr";
 import { translateTierCondition, parseTierConditionsBatch } from "./lib/tierCondition";
 import { buildWorkerPersonalDetailsDocx } from "./lib/workerDetailsDocx";
 import { buildWorkerPersonalDetailsPdf } from "./lib/workerDetailsPdf";
 import type { WorkerDetailsExportPayload } from "./lib/workerDetailsShared";
 import {
     upload,
-    loadPagesForFile,
     SUPPORTED_YEARS,
     enforceTotalUploadSize,
     MAX_TOTAL_UPLOAD_BYTES,
-    MAX_PAGES_PER_JOB,
     acquireJobSlot,
     releaseJobSlot,
-    jobPagesDir,
-    cleanupJobDir,
 } from "./lib/jobs/shared";
 import { processJobs, runProcessJob, scheduleJobCleanup, type RotationMap } from "./lib/jobs/timesheetJob";
 import { bankJobs, runBankStatementJob, scheduleBankJobCleanup } from "./lib/jobs/bankStatementJob";
 import { medicalJobs, runMedicalBillsJob, scheduleMedicalJobCleanup } from "./lib/jobs/medicalBillsJob";
 import { medicalCertJobs, runMedicalCertificateJob, scheduleMedicalCertJobCleanup } from "./lib/jobs/medicalCertificateJob";
 import { payslipJobs, runPayslipJob, schedulePayslipJobCleanup } from "./lib/jobs/payslipJob";
+import { previewJobs, runPreviewJob, schedulePreviewJobCleanup, blankPreviewJob } from "./lib/jobs/previewJob";
 import {
     listScansForUser,
     getScanForOwner,
@@ -141,12 +137,11 @@ app.use(express.static(path.join(__dirname, "public")));
 // multi-pass) scan runs. Lets a human confirm/rotate a sideways page up front — auto-detecting
 // this from the model was tried and found unreliable (see lib/ocr.ts's rotateImage comment).
 //
-// Rendered at a much cheaper scale than the real scan (see PREVIEW_RENDER_SCALE below) — every
-// page here gets downscaled again to 800px wide for display (resizeForDisplay) and thrown away
-// once the response is sent, so rendering at the real scan's OCR-legibility scale (3.0) here would
-// spend most of its time producing pixels nobody ever sees, then render the exact same pages a
-// second time at 3.0 for real once the caseworker confirms rotations and /api/process runs.
-const PREVIEW_RENDER_SCALE = 1.2;
+// A background job (like every real scan type), not a single blocking request/response — see
+// lib/jobs/previewJob.ts's own comment for why (a large/slow source PDF risked the hosting proxy's
+// own timeout killing the connection before a single big response could ever be sent — seen in
+// production as a Cloudflare 524 on a 52MB/20-page upload). Returns a job id instantly; the
+// frontend polls GET /api/preview/:jobId the same way it already polls every other scan type.
 app.post(
     "/api/preview",
     upload.fields([
@@ -158,129 +153,45 @@ app.post(
         { name: "payslips", maxCount: 10 },
     ]),
     enforceTotalUploadSize,
-    async (req, res) => {
+    (req, res) => {
         const uploadedFields = req.files as { [field: string]: Express.Multer.File[] } | undefined;
-        const files = uploadedFields?.pdfs ?? [];
-        const ipaFile = uploadedFields?.ipa?.[0];
-        const bankStatementFiles = uploadedFields?.bankStatement ?? [];
-        const medicalBillsFiles = uploadedFields?.medicalBills ?? [];
-        const medicalCertificatesFiles = uploadedFields?.medicalCertificates ?? [];
-        const payslipFiles = uploadedFields?.payslips ?? [];
+        const filesByField = {
+            pdfs: uploadedFields?.pdfs ?? [],
+            ipa: uploadedFields?.ipa?.[0],
+            bankStatement: uploadedFields?.bankStatement ?? [],
+            medicalBills: uploadedFields?.medicalBills ?? [],
+            medicalCertificates: uploadedFields?.medicalCertificates ?? [],
+            payslips: uploadedFields?.payslips ?? [],
+        };
 
-        // Preview is a one-shot request/response (not a background job), so its rendered pages get
-        // their own short-lived temp dir instead of a job id — cleaned up in the `finally` below as
-        // soon as the response is built, rather than waiting on any job's TTL.
-        const previewDir = jobPagesDir(randomUUID());
-        try {
-            const pdfsPreview: { fileIndex: number; pageIndex: number; fileName: string; image: string }[] = [];
-            const pdfsErrors: { fileName: string; error: string }[] = [];
-            for (let fi = 0; fi < files.length; fi++) {
-                const file = files[fi];
-                try {
-                    const images = await loadPagesForFile(file, path.join(previewDir, `pdfs-${fi}`), MAX_PAGES_PER_JOB, PREVIEW_RENDER_SCALE);
-                    for (let pi = 0; pi < images.length; pi++) {
-                        pdfsPreview.push({ fileIndex: fi, pageIndex: pi, fileName: file.originalname, image: await resizeForDisplay(await images.get(pi), 800) });
-                    }
-                } catch (e: any) {
-                    pdfsErrors.push({ fileName: file.originalname, error: e.message });
-                }
-            }
-
-            // Same staging idea as pdfsPreview above — the IPA upload can itself be multi-page (a
-            // cover sheet, the actual approval page, maybe an annex), and extractIpaFields (lib/ipa.ts)
-            // only ever reads ONE of them, so every page is shown here with its own delete button, the
-            // same "attach, then drop the pages you don't need" flow pdfs already has — rather than
-            // silently assuming page 0 is always the right one.
-            const ipaPreview: { pageIndex: number; image: string }[] = [];
-            let ipaError: string | null = null;
-            if (ipaFile) {
-                try {
-                    const images = await loadPagesForFile(ipaFile, path.join(previewDir, "ipa"), MAX_PAGES_PER_JOB, PREVIEW_RENDER_SCALE);
-                    for (let pi = 0; pi < images.length; pi++) {
-                        ipaPreview.push({ pageIndex: pi, image: await resizeForDisplay(await images.get(pi), 800) });
-                    }
-                } catch (e: any) {
-                    ipaError = e.message;
-                }
-            }
-
-            // Same staging idea as pdfs above — a bank statement is just as likely to be a phone
-            // photo as a clean digital export, so it gets the same rotate/exclude-before-scan step.
-            const bankStatementPreview: { fileIndex: number; pageIndex: number; fileName: string; image: string }[] = [];
-            const bankStatementErrors: { fileName: string; error: string }[] = [];
-            for (let fi = 0; fi < bankStatementFiles.length; fi++) {
-                const file = bankStatementFiles[fi];
-                try {
-                    const images = await loadPagesForFile(file, path.join(previewDir, `bankStatement-${fi}`), MAX_PAGES_PER_JOB, PREVIEW_RENDER_SCALE);
-                    for (let pi = 0; pi < images.length; pi++) {
-                        bankStatementPreview.push({ fileIndex: fi, pageIndex: pi, fileName: file.originalname, image: await resizeForDisplay(await images.get(pi), 800) });
-                    }
-                } catch (e: any) {
-                    bankStatementErrors.push({ fileName: file.originalname, error: e.message });
-                }
-            }
-
-            // Same staging idea as bankStatement above — an MC/hospital bill is just as likely to be a
-            // phone photo as a clean printout.
-            const medicalBillsPreview: { fileIndex: number; pageIndex: number; fileName: string; image: string }[] = [];
-            const medicalBillsErrors: { fileName: string; error: string }[] = [];
-            for (let fi = 0; fi < medicalBillsFiles.length; fi++) {
-                const file = medicalBillsFiles[fi];
-                try {
-                    const images = await loadPagesForFile(file, path.join(previewDir, `medicalBills-${fi}`), MAX_PAGES_PER_JOB, PREVIEW_RENDER_SCALE);
-                    for (let pi = 0; pi < images.length; pi++) {
-                        medicalBillsPreview.push({ fileIndex: fi, pageIndex: pi, fileName: file.originalname, image: await resizeForDisplay(await images.get(pi), 800) });
-                    }
-                } catch (e: any) {
-                    medicalBillsErrors.push({ fileName: file.originalname, error: e.message });
-                }
-            }
-
-            // Same staging idea as medicalBills above — a medical certificate (MC) is a distinct
-            // document from a bill/invoice (no billed amount involved), but still just as likely to
-            // be a phone photo as a clean printout, so it gets the same rotate/exclude-before-scan step.
-            const medicalCertificatesPreview: { fileIndex: number; pageIndex: number; fileName: string; image: string }[] = [];
-            const medicalCertificatesErrors: { fileName: string; error: string }[] = [];
-            for (let fi = 0; fi < medicalCertificatesFiles.length; fi++) {
-                const file = medicalCertificatesFiles[fi];
-                try {
-                    const images = await loadPagesForFile(file, path.join(previewDir, `medicalCertificates-${fi}`), MAX_PAGES_PER_JOB, PREVIEW_RENDER_SCALE);
-                    for (let pi = 0; pi < images.length; pi++) {
-                        medicalCertificatesPreview.push({ fileIndex: fi, pageIndex: pi, fileName: file.originalname, image: await resizeForDisplay(await images.get(pi), 800) });
-                    }
-                } catch (e: any) {
-                    medicalCertificatesErrors.push({ fileName: file.originalname, error: e.message });
-                }
-            }
-
-            // Same staging idea as medicalCertificates above — a payslip is just as likely to be a
-            // phone photo as a clean printout.
-            const payslipsPreview: { fileIndex: number; pageIndex: number; fileName: string; image: string }[] = [];
-            const payslipsErrors: { fileName: string; error: string }[] = [];
-            for (let fi = 0; fi < payslipFiles.length; fi++) {
-                const file = payslipFiles[fi];
-                try {
-                    const images = await loadPagesForFile(file, path.join(previewDir, `payslips-${fi}`), MAX_PAGES_PER_JOB, PREVIEW_RENDER_SCALE);
-                    for (let pi = 0; pi < images.length; pi++) {
-                        payslipsPreview.push({ fileIndex: fi, pageIndex: pi, fileName: file.originalname, image: await resizeForDisplay(await images.get(pi), 800) });
-                    }
-                } catch (e: any) {
-                    payslipsErrors.push({ fileName: file.originalname, error: e.message });
-                }
-            }
-
-            res.json({
-                pdfsPreview, pdfsErrors, ipaPreview, ipaError,
-                bankStatementPreview, bankStatementErrors,
-                medicalBillsPreview, medicalBillsErrors,
-                medicalCertificatesPreview, medicalCertificatesErrors,
-                payslipsPreview, payslipsErrors,
+        const jobId = randomUUID();
+        previewJobs.set(jobId, blankPreviewJob());
+        acquireJobSlot()
+            .then(() => runPreviewJob(jobId, filesByField))
+            .catch(e => {
+                const job = previewJobs.get(jobId);
+                if (job) { job.status = "error"; job.error = e.message; }
+            })
+            .finally(() => {
+                releaseJobSlot();
+                schedulePreviewJobCleanup(jobId);
             });
-        } finally {
-            await cleanupJobDir(previewDir);
-        }
+
+        res.json({ jobId });
     }
 );
+
+app.get("/api/preview/:jobId", (req, res) => {
+    const job = previewJobs.get(req.params.jobId);
+    if (!job) {
+        return res.status(404).json({
+            error:
+                "This preview's progress can't be found anymore. This almost always means the server process restarted while it was still rendering — its in-progress state only lives in memory, not a database, so a restart (a new deploy, or the server recycling itself) wipes it. " +
+                "Please re-attach the file(s) to try again.",
+        });
+    }
+    res.json(job);
+});
 
 app.post(
     "/api/process",

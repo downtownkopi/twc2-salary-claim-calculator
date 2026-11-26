@@ -2354,6 +2354,45 @@
       fileList.textContent = names.length ? `${names.length} file(s): ${names.join(', ')}` : '';
     }
 
+    // /api/preview is a background job (like every real scan type) rather than a single blocking
+    // request — a large/slow source PDF can take well over a minute just to rasterize, and a single
+    // long-lived request risked the hosting proxy's own timeout killing the connection before a
+    // response was ever sent (seen in production as a Cloudflare 524 on a 52MB/20-page upload). This
+    // uploads the attached files, gets back a job id, and polls it to completion — returning the
+    // exact same shape (pdfsPreview/pdfsErrors/ipaPreview/ipaError/.../payslipsPreview/
+    // payslipsErrors) the old single-request response used to return directly, so every one of this
+    // section's many call sites stays a simple `const data = await uploadAndPollPreview(formData)`.
+    /**
+     * Uploads a preview FormData payload and polls until rendering finishes.
+     * @param {FormData} formData - The files to preview, keyed by the same field names /api/preview accepts.
+     * @returns {Promise<object>} The finished preview job (pdfsPreview/ipaPreview/etc.).
+     */
+    async function uploadAndPollPreview(formData) {
+      const startRes = await fetch('/api/preview', { method: 'POST', body: formData });
+      const startData = await startRes.json();
+      if (!startRes.ok) throw new Error(startData.error || `Server returned ${startRes.status}`);
+      const jobId = startData.jobId;
+
+      let consecutiveFailures = 0;
+      for (; ;) {
+        let res, data;
+        try {
+          res = await fetch(`/api/preview/${jobId}`, { cache: 'no-store' });
+          data = await res.json();
+        } catch (err) {
+          consecutiveFailures++;
+          if (consecutiveFailures > MAX_CONSECUTIVE_POLL_FAILURES) throw err;
+          await new Promise(r => setTimeout(r, POLL_INTERVAL_MS));
+          continue;
+        }
+        consecutiveFailures = 0;
+        if (!res.ok) throw new Error(data.error || `Server returned ${res.status}`);
+        if (data.status === 'error') throw new Error(data.error || 'Preview failed');
+        if (data.status === 'done') return data;
+        await new Promise(r => setTimeout(r, POLL_INTERVAL_MS));
+      }
+    }
+
     // No OCR here — just renders a thumbnail of every attached timesheet page (/api/preview does the
     // same pdf-to-image/downscale work /api/process itself does, minus any model call) so a sideways
     // or unwanted page can be caught before paying for the real (expensive, multi-pass) scan. Grouped
@@ -2376,9 +2415,7 @@
       for (const file of pdfsInput.files) formData.append('pdfs', file);
 
       try {
-        const res = await fetch('/api/preview', { method: 'POST', body: formData });
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.error || `Server returned ${res.status}`);
+        const data = await uploadAndPollPreview(formData);
 
         const byFile = new Map(); // fileIndex -> { fileName, tiles: string[] }
         for (const p of data.pdfsPreview || []) {
@@ -2436,9 +2473,7 @@
       formData.append('ipa', ipaInput.files[0]);
 
       try {
-        const res = await fetch('/api/preview', { method: 'POST', body: formData });
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.error || `Server returned ${res.status}`);
+        const data = await uploadAndPollPreview(formData);
 
         ipaPreviewPages = (data.ipaPreview || []).map(p => p.pageIndex);
         const tiles = (data.ipaPreview || []).map(p => renderStageTile('ipa', String(p.pageIndex), `p${p.pageIndex + 1}`, p.image));
@@ -6081,9 +6116,7 @@
         // showing the pre-scan rotate/exclude staging grid the main submit gets (scope cut).
         const previewFormData = new FormData();
         for (const file of input.files) previewFormData.append('pdfs', file);
-        const previewRes = await fetch('/api/preview', { method: 'POST', body: previewFormData });
-        const previewData = await previewRes.json();
-        if (!previewRes.ok) throw new Error(previewData.error || `Server returned ${previewRes.status}`);
+        const previewData = await uploadAndPollPreview(previewFormData);
         pdfsPreviewPagesByBatch[batchId] = (previewData.pdfsPreview || []).map(p => ({ fileIndex: p.fileIndex, pageIndex: p.pageIndex }));
 
         const formData = new FormData();
@@ -6773,9 +6806,7 @@
       for (const file of files) formData.append('bankStatement', file);
 
       try {
-        const res = await fetch('/api/preview', { method: 'POST', body: formData });
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.error || `Server returned ${res.status}`);
+        const data = await uploadAndPollPreview(formData);
 
         const byFile = new Map();
         for (const p of data.bankStatementPreview || []) {
@@ -7252,9 +7283,7 @@
         // (fileIndex, pageIndex) the way /api/preview's own pdf-rendering pass is.
         const previewFormData = new FormData();
         for (const file of input.files) previewFormData.append('bankStatement', file);
-        const previewRes = await fetch('/api/preview', { method: 'POST', body: previewFormData });
-        const previewData = await previewRes.json();
-        if (!previewRes.ok) throw new Error(previewData.error || `Server returned ${previewRes.status}`);
+        const previewData = await uploadAndPollPreview(previewFormData);
         bankStatementPreviewPagesByBatch[batchId] = (previewData.bankStatementPreview || []).map(p => ({ fileIndex: p.fileIndex, pageIndex: p.pageIndex }));
 
         const formData = new FormData();
@@ -7407,9 +7436,7 @@
       for (const file of files) formData.append('medicalBills', file);
 
       try {
-        const res = await fetch('/api/preview', { method: 'POST', body: formData });
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.error || `Server returned ${res.status}`);
+        const data = await uploadAndPollPreview(formData);
 
         const byFile = new Map();
         for (const p of data.medicalBillsPreview || []) {
@@ -7746,9 +7773,7 @@
       try {
         const previewFormData = new FormData();
         for (const file of input.files) previewFormData.append('medicalBills', file);
-        const previewRes = await fetch('/api/preview', { method: 'POST', body: previewFormData });
-        const previewData = await previewRes.json();
-        if (!previewRes.ok) throw new Error(previewData.error || `Server returned ${previewRes.status}`);
+        const previewData = await uploadAndPollPreview(previewFormData);
         medicalBillsPreviewPagesByBatch[batchId] = (previewData.medicalBillsPreview || []).map(p => ({ fileIndex: p.fileIndex, pageIndex: p.pageIndex }));
 
         const formData = new FormData();
@@ -7932,9 +7957,7 @@
       for (const file of files) formData.append('medicalCertificates', file);
 
       try {
-        const res = await fetch('/api/preview', { method: 'POST', body: formData });
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.error || `Server returned ${res.status}`);
+        const data = await uploadAndPollPreview(formData);
 
         const byFile = new Map();
         for (const p of data.medicalCertificatesPreview || []) {
@@ -8279,9 +8302,7 @@
       try {
         const previewFormData = new FormData();
         for (const file of input.files) previewFormData.append('medicalCertificates', file);
-        const previewRes = await fetch('/api/preview', { method: 'POST', body: previewFormData });
-        const previewData = await previewRes.json();
-        if (!previewRes.ok) throw new Error(previewData.error || `Server returned ${previewRes.status}`);
+        const previewData = await uploadAndPollPreview(previewFormData);
         medicalCertificatesPreviewPagesByBatch[batchId] = (previewData.medicalCertificatesPreview || []).map(p => ({ fileIndex: p.fileIndex, pageIndex: p.pageIndex }));
 
         const formData = new FormData();
@@ -8431,9 +8452,7 @@
       for (const file of files) formData.append('payslips', file);
 
       try {
-        const res = await fetch('/api/preview', { method: 'POST', body: formData });
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.error || `Server returned ${res.status}`);
+        const data = await uploadAndPollPreview(formData);
 
         const byFile = new Map();
         for (const p of data.payslipsPreview || []) {
@@ -9151,9 +9170,7 @@
       try {
         const previewFormData = new FormData();
         for (const file of input.files) previewFormData.append('payslips', file);
-        const previewRes = await fetch('/api/preview', { method: 'POST', body: previewFormData });
-        const previewData = await previewRes.json();
-        if (!previewRes.ok) throw new Error(previewData.error || `Server returned ${previewRes.status}`);
+        const previewData = await uploadAndPollPreview(previewFormData);
         payslipsPreviewPagesByBatch[batchId] = (previewData.payslipsPreview || []).map(p => ({ fileIndex: p.fileIndex, pageIndex: p.pageIndex }));
 
         const formData = new FormData();
