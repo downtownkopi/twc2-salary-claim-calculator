@@ -24,6 +24,7 @@ import {
     loadPagesForFile,
     SUPPORTED_YEARS,
     SCAN_TEMPERATURES,
+    runSequentially,
     BANDS_PER_PAGE,
     JOB_TTL_MS,
     MAX_PAGES_PER_JOB,
@@ -863,7 +864,11 @@ export async function runProcessJob(
                     // just 2 fully-agreeing attempts — a 3rd identical reading wouldn't change the
                     // outcome, only the bill. The 3rd ("tiebreaker") attempt is only worth paying for
                     // when the first two genuinely disagree, exactly where a majority vote needs it.
-                    const [first, second] = await Promise.allSettled([runAttempt(0), runAttempt(1)]);
+                    // Sequential (not Promise.allSettled), same reasoning as every other job type's
+                    // SCAN_TEMPERATURES fan-out — each attempt here is a whole multi-turn agentic
+                    // conversation, not just one request, so running 2 at once was a real peak-memory
+                    // multiplier on top of MAX_PAGE_CONCURRENCY pages already running concurrently.
+                    const [first, second] = await runSequentially([() => runAttempt(0), () => runAttempt(1)]);
                     if (first.status === "rejected") console.error(`${source} agent attempt 0 rejected —`, first.reason);
                     if (second.status === "rejected") console.error(`${source} agent attempt 1 rejected —`, second.reason);
 
@@ -1117,8 +1122,8 @@ export async function runProcessJob(
                     const targetFin = ipa?.workerFin ?? null;
 
                     const rosterPrompt = buildRosterPrompt();
-                    const rosterResults = await Promise.allSettled(
-                        SCAN_TEMPERATURES.map(({ temperature, seed }) => scanPageImage(pageImage, rosterPrompt, temperature, seed, timesheetModel, signal))
+                    const rosterResults = await runSequentially(
+                        SCAN_TEMPERATURES.map(({ temperature, seed }) => () => scanPageImage(pageImage, rosterPrompt, temperature, seed, timesheetModel, signal))
                     );
 
                     const rosterAttempts: RosterPageAttempt[] = [];
@@ -1234,14 +1239,15 @@ export async function runProcessJob(
 
                 const bands = await cropIntoBands(pageImage, BANDS_PER_PAGE);
 
-                // flatten band x temperature into one parallel batch for max concurrency — all
-                // bands' attempts fire together rather than band-by-band, so wall-clock time stays
-                // close to a single batch's latency despite more total calls.
+                // flatten band x temperature into one sequential batch — same reasoning as every
+                // other job type's SCAN_TEMPERATURES fan-out (lib/jobs/shared.ts's runSequentially):
+                // each attempt is its own full-resolution image payload, so running them one at a
+                // time trades wall-clock time for not multiplying peak memory per page.
                 const scanJobs = bands.flatMap((bandImage, b) =>
                     SCAN_TEMPERATURES.map(({ temperature, seed }) => ({ bandImage, b, temperature, seed }))
                 );
-                const results = await Promise.allSettled(
-                    scanJobs.map(({ bandImage, temperature, seed }) => scanPageImage(bandImage, prompt, temperature, seed, timesheetModel, signal))
+                const results = await runSequentially(
+                    scanJobs.map(({ bandImage, temperature, seed }) => () => scanPageImage(bandImage, prompt, temperature, seed, timesheetModel, signal))
                 );
 
                 const attemptsByBand: ParsedEntry[][][] = bands.map(() => []);

@@ -5,6 +5,7 @@ import { persistScan } from "../history";
 import {
     loadPagesForFile,
     SCAN_TEMPERATURES,
+    runSequentially,
     JOB_TTL_MS,
     MAX_PAGES_PER_JOB,
     MAX_PAGE_CONCURRENCY,
@@ -111,8 +112,8 @@ export async function runBankStatementJob(
         // can genuinely miss a page's transaction entirely (the bug this was added to fix: one
         // deterministic attempt skipped 2 of 3 real payments on a page, understating what the
         // worker was actually paid). mergeTransactionAttempts unions whatever each attempt caught.
-        const results = await Promise.allSettled(
-            SCAN_TEMPERATURES.map(({ temperature, seed }) => extractMatchingTransactions(pageImage, temperature, seed, interpretationHint))
+        const results = await runSequentially(
+            SCAN_TEMPERATURES.map(({ temperature, seed }) => () => extractMatchingTransactions(pageImage, temperature, seed, interpretationHint))
         );
         const attempts: BankTransaction[][] = [];
         let failedCount = 0;

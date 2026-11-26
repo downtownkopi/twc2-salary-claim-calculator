@@ -5,6 +5,7 @@ import { persistScan } from "../history";
 import {
     loadPagesForFile,
     SCAN_TEMPERATURES,
+    runSequentially,
     JOB_TTL_MS,
     MAX_PAGES_PER_JOB,
     MAX_PAGE_CONCURRENCY,
@@ -101,8 +102,8 @@ export async function runPayslipJob(
 
         const source = `${file.originalname} p${pi + 1}`;
         const page: PayslipPageResult = { source, image: await resizeForDisplay(pageImage, 1400), entries: [] };
-        const results = await Promise.allSettled(
-            SCAN_TEMPERATURES.map(({ temperature, seed }) => extractPayslipEntries(pageImage, temperature, seed, interpretationHint))
+        const results = await runSequentially(
+            SCAN_TEMPERATURES.map(({ temperature, seed }) => () => extractPayslipEntries(pageImage, temperature, seed, interpretationHint))
         );
         const attempts: PayslipEntry[][] = [];
         let failedCount = 0;

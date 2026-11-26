@@ -26,6 +26,36 @@ export const SCAN_TEMPERATURES: { temperature: number; seed: number }[] = [
     { temperature: 0.5, seed: 44 },
 ];
 
+// Every caller of SCAN_TEMPERATURES used to fire all 3 attempts concurrently (Promise.allSettled
+// over a .map()) — fine for latency, but each attempt is its own independent full-resolution
+// base64 page image + (for the agentic timesheet path) a whole multi-turn tool-calling
+// conversation, so 3-at-once is a real 3x peak-memory multiplier on top of MAX_PAGE_CONCURRENCY
+// pages already running at once. Running them one at a time instead trades some wall-clock latency
+// per page for that 3x page-level peak never happening at all — reconciliation still gets the same
+// 3 independent readings either way, just spread out instead of simultaneous. Mirrors
+// Promise.allSettled's exact return shape so a caller can swap `Promise.allSettled(xs.map(fn))` for
+// `await runSequentially(xs.map(x => () => fn(x)))` with no other change needed.
+/**
+ * Runs a list of async tasks one at a time (never concurrently), returning the same
+ * `PromiseSettledResult[]` shape `Promise.allSettled` would — a drop-in, lower-peak-memory
+ * replacement for firing every task at once.
+ *
+ * @param tasks - Each task as a zero-arg thunk (not already-started promises — a thunk ensures the
+ * next task's work, and its memory, doesn't begin until the previous one has fully finished).
+ * @returns Every task's settled result, in the same order as `tasks`.
+ */
+export async function runSequentially<T>(tasks: (() => Promise<T>)[]): Promise<PromiseSettledResult<T>[]> {
+    const results: PromiseSettledResult<T>[] = [];
+    for (const task of tasks) {
+        try {
+            results.push({ status: "fulfilled", value: await task() });
+        } catch (reason) {
+            results.push({ status: "rejected", reason });
+        }
+    }
+    return results;
+}
+
 // Band-cropping (splitting a page into smaller vertical strips before OCR, each scanned
 // independently) was an attempt at reducing dense-table repetition/row-merging failures. Tried 2
 // bands, then 3 — neither reliably fixed the specific failure it was meant to address, so it's
