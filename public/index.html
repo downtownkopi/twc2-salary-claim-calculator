@@ -1388,6 +1388,7 @@
       <button type="button" class="generate-btn" id="backToAdminDashboardBtn" style="display:none">&larr; Back to admin
         dashboard</button>
       <button type="button" class="generate-btn" id="saveHistoryChangesBtn" style="display:none">Save changes</button>
+      <button type="button" class="generate-btn" id="copyHistoryLinkBtn" style="display:none">Copy link</button>
       <span class="status" id="saveHistoryChangesStatus"></span>
     </div>
 
@@ -2241,6 +2242,11 @@
     // but having both explicit avoids relying on DOM visibility as the source of truth.
     let currentHistoryScanId = null;
     let currentHistoryScanType = null;
+    // True only while openHistoryDetailFromUrl is actively opening a scan reached via the URL
+    // itself (initial page load with ?scan=&type=, or a popstate back/forward) — tells
+    // enterHistoryDetailView to skip its own history.pushState, since the browser's navigation
+    // already put the URL there; pushing again would duplicate the entry and break back/forward.
+    let openingFromUrlSync = false;
     // True only when a history detail view was opened from the ADMIN dashboard (openAdminScanDetail)
     // rather than the caseworker's own history list — hides "Save changes" regardless of who owns
     // the scan (viewing another caseworker's case data is in scope for the admin dashboard, editing
@@ -9249,6 +9255,15 @@
     };
 
     /** Hides the scan form and any currently-shown live/history review, shows the history list, and loads it. */
+    // Drops any ?scan=&type= from the address bar — called whenever a navigation leaves the detail
+    // view (back to a list, the admin dashboard, or the blank form), so the URL only ever points at
+    // a shareable link while a specific scan's detail is actually on screen.
+    /** Clears the ?scan=&type= query params from the URL, if present, without a page reload. */
+    function clearHistoryLinkUrl() {
+      if (!location.search) return;
+      history.pushState({}, '', location.pathname);
+    }
+
     function showHistoryListView() {
       document.getElementById('scanFormWrap').style.display = 'none';
       document.getElementById('adminDashboardView').style.display = 'none';
@@ -9256,10 +9271,12 @@
       historyListViewEl.style.display = 'block';
       document.getElementById('backToFormBtn').style.display = '';
       document.getElementById('backToAdminDashboardBtn').style.display = 'none';
+      document.getElementById('copyHistoryLinkBtn').style.display = 'none';
       currentHistoryScanId = null;
       currentHistoryScanType = null;
       viewingAsAdminReadOnly = false;
       document.getElementById('saveHistoryChangesBtn').style.display = 'none';
+      clearHistoryLinkUrl();
       historyOffset = 0;
       loadHistoryList();
     }
@@ -9272,11 +9289,13 @@
       document.getElementById('scanFormWrap').style.display = '';
       document.getElementById('backToFormBtn').style.display = 'none';
       document.getElementById('backToAdminDashboardBtn').style.display = 'none';
+      document.getElementById('copyHistoryLinkBtn').style.display = 'none';
       currentHistoryScanId = null;
       currentHistoryScanType = null;
       viewingAsAdminReadOnly = false;
       document.getElementById('saveHistoryChangesBtn').style.display = 'none';
       viewingHistoryRecord = false;
+      clearHistoryLinkUrl();
     }
 
     document.getElementById('viewHistoryBtn').addEventListener('click', showHistoryListView);
@@ -9412,6 +9431,21 @@
       document.getElementById('scanFormWrap').style.display = 'none';
       currentHistoryScanId = record.id;
       currentHistoryScanType = record.scanType;
+      // Puts the scan id/type in the URL so the address bar is a shareable link back to this exact
+      // record (see copyHistoryLinkBtn below, and the location.search check on page load) — any
+      // other logged-in caseworker opening it hits the same GET /api/history/:id this click just
+      // did, which is open to every authenticated user (not just admins or the original scanner).
+      // pushState, not assigning location.search directly, so this doesn't trigger a page reload.
+      // Skipped when this render was reached via openHistoryDetailFromUrl (page load or a popstate
+      // back/forward) — the URL already points here (the browser's own navigation, or the link the
+      // page loaded with); pushing again would shove a duplicate entry on top of it, leaving
+      // back/forward stuck re-visiting the same record instead of actually moving anywhere.
+      if (!openingFromUrlSync) {
+        const linkUrl = new URL(location.href);
+        linkUrl.search = `?scan=${encodeURIComponent(record.id)}&type=${encodeURIComponent(record.scanType)}`;
+        history.pushState({ scan: record.id, type: record.scanType }, '', linkUrl);
+      }
+      document.getElementById('copyHistoryLinkBtn').style.display = '';
       // Set here (not just by loadTimesheetHistoryRecord) so every one of the 5 loaders correctly
       // suppresses "Add more X files" / rescan controls that need an original File object long
       // gone from temp storage by now — a caseworker opening a bank/medical/payslip record
@@ -9587,10 +9621,12 @@
       document.getElementById('adminDashboardView').style.display = 'block';
       document.getElementById('backToFormBtn').style.display = '';
       document.getElementById('backToAdminDashboardBtn').style.display = 'none';
+      document.getElementById('copyHistoryLinkBtn').style.display = 'none';
       currentHistoryScanId = null;
       currentHistoryScanType = null;
       viewingAsAdminReadOnly = false;
       document.getElementById('saveHistoryChangesBtn').style.display = 'none';
+      clearHistoryLinkUrl();
       adminScansOffset = 0;
       if (isCurrentUserAdmin) loadAdminCostSummary();
       loadAdminScansList();
@@ -9714,6 +9750,51 @@
       viewingAsAdminReadOnly = true;
       openHistoryDetail(scanId, scanType);
     }
+
+    document.getElementById('copyHistoryLinkBtn').addEventListener('click', async () => {
+      const btn = document.getElementById('copyHistoryLinkBtn');
+      try {
+        await navigator.clipboard.writeText(location.href);
+        const original = btn.textContent;
+        btn.textContent = 'Copied!';
+        setTimeout(() => { btn.textContent = original; }, 1500);
+      } catch (err) {
+        alert('Could not copy link: ' + err.message);
+      }
+    });
+
+    // Opens whatever scan the URL's ?scan=&type= points at — same loader either a "View" click or
+    // this deep link ends up calling (openHistoryDetail), just reached on page load instead of a
+    // click. Read-only (same as opening from the admin dashboard) since a shared link's recipient
+    // may well not be the scan's own owner — PUT /api/history/:id is owner-scoped regardless, this
+    // just avoids showing a Save button that would merely 404 for most recipients.
+    /** Opens the scan named in the current URL's ?scan=&type= query params, if present. */
+    async function openHistoryDetailFromUrl() {
+      const params = new URLSearchParams(location.search);
+      const scanId = params.get('scan');
+      const scanType = params.get('type');
+      if (!scanId || !scanType) return;
+      viewingAsAdminReadOnly = true;
+      openingFromUrlSync = true;
+      try {
+        await openHistoryDetail(scanId, scanType);
+      } finally {
+        openingFromUrlSync = false;
+      }
+    }
+    openHistoryDetailFromUrl();
+
+    // Keeps the back/forward buttons usable once a shared link has been opened — a popstate back to
+    // a plain URL (no ?scan=&type=) lands on the blank form rather than leaving the just-closed
+    // detail view's stale content on screen with no indication anything changed.
+    window.addEventListener('popstate', () => {
+      const params = new URLSearchParams(location.search);
+      if (params.get('scan') && params.get('type')) {
+        openHistoryDetailFromUrl();
+      } else {
+        showScanFormView();
+      }
+    });
   </script>
 </body>
 
