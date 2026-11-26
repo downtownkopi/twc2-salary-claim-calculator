@@ -1077,6 +1077,12 @@
       color: var(--muted);
     }
 
+    .agent-event-time {
+      color: var(--muted);
+      font-variant-numeric: tabular-nums;
+      margin-right: 2px;
+    }
+
     #stopScanBtn {
       margin-left: 8px;
     }
@@ -2354,6 +2360,15 @@
       fileList.textContent = names.length ? `${names.length} file(s): ${names.join(', ')}` : '';
     }
 
+    // Temporary kill switch — flip to false to skip every preview render entirely (no /api/preview
+    // call at all, client or server side) while isolating whether preview rendering is contributing
+    // to a production memory spike/crash-loop. With this off, attaching a file shows no thumbnail
+    // grid (no rotate/exclude-before-scan step) but the real scan still runs normally — rotations
+    // and excludedPages just default to empty, same as a request from a client that never called
+    // /api/preview at all (server.ts's /api/process already treats both as optional). Flip back to
+    // true once the actual memory driver is confirmed/fixed.
+    const PREVIEW_ENABLED = false;
+
     // /api/preview is a background job (like every real scan type) rather than a single blocking
     // request — a large/slow source PDF can take well over a minute just to rasterize, and a single
     // long-lived request risked the hosting proxy's own timeout killing the connection before a
@@ -2363,11 +2378,21 @@
     // payslipsErrors) the old single-request response used to return directly, so every one of this
     // section's many call sites stays a simple `const data = await uploadAndPollPreview(formData)`.
     /**
-     * Uploads a preview FormData payload and polls until rendering finishes.
+     * Uploads a preview FormData payload and polls until rendering finishes — or, with
+     * PREVIEW_ENABLED off, returns an all-empty result immediately without any network call at all.
      * @param {FormData} formData - The files to preview, keyed by the same field names /api/preview accepts.
      * @returns {Promise<object>} The finished preview job (pdfsPreview/ipaPreview/etc.).
      */
     async function uploadAndPollPreview(formData) {
+      if (!PREVIEW_ENABLED) {
+        return {
+          pdfsPreview: [], pdfsErrors: [], ipaPreview: [], ipaError: null,
+          bankStatementPreview: [], bankStatementErrors: [],
+          medicalBillsPreview: [], medicalBillsErrors: [],
+          medicalCertificatesPreview: [], medicalCertificatesErrors: [],
+          payslipsPreview: [], payslipsErrors: [],
+        };
+      }
       const startRes = await fetch('/api/preview', { method: 'POST', body: formData });
       const startData = await startRes.json();
       if (!startRes.ok) throw new Error(startData.error || `Server returned ${startRes.status}`);
@@ -3185,6 +3210,14 @@
     // at the bottom, auto-scrolled — a long multi-page job can produce many of these, so this is a
     // capped-height scrolling log rather than growing the page indefinitely.
     let lastRenderedEventCount = 0;
+    // HH:MM:SS, local time — matters most for a long-running scan (can be 15-20+ minutes) where
+    // seeing WHEN a line landed, not just its relative order, is what actually lets a caseworker
+    // tell "stuck for 10 minutes" apart from "that page was just slow".
+    /** Formats a Date (or epoch ms) as a local HH:MM:SS time string for the agent-event feed. */
+    function formatEventTime(tsOrDate) {
+      const d = tsOrDate instanceof Date ? tsOrDate : new Date(tsOrDate);
+      return d.toLocaleTimeString(undefined, { hour12: false });
+    }
     /** Renders newly-arrived agent events (since the last call) into the live feed. */
     function renderAgentEvents(events) {
       if (events.length === 0) return;
@@ -3195,7 +3228,7 @@
       if (newEvents.length === 0) return;
       const icon = { tool_call: '🔍', info: 'ℹ️', terminal: '✅', error: '⚠️' };
       feedEl.innerHTML += newEvents
-        .map(e => `<div class="agent-event">${icon[e.kind] || ''} <strong>${escapeHtml(e.source)}</strong>: ${escapeHtml(e.label)}${e.detail ? ` — <span class="agent-event-detail">${escapeHtml(e.detail)}</span>` : ''}</div>`)
+        .map(e => `<div class="agent-event"><span class="agent-event-time">${formatEventTime(e.ts)}</span> ${icon[e.kind] || ''} <strong>${escapeHtml(e.source)}</strong>: ${escapeHtml(e.label)}${e.detail ? ` — <span class="agent-event-detail">${escapeHtml(e.detail)}</span>` : ''}</div>`)
         .join('');
       feedEl.scrollTop = feedEl.scrollHeight;
     }
@@ -3212,7 +3245,7 @@
       const feedEl = document.getElementById('agentEventFeed');
       feedEl.style.display = 'block';
       const icon = { tool_call: '🔍', info: 'ℹ️', terminal: '✅', error: '⚠️' };
-      feedEl.innerHTML += `<div class="agent-event">${icon[kind] || 'ℹ️'} ${escapeHtml(label)}</div>`;
+      feedEl.innerHTML += `<div class="agent-event"><span class="agent-event-time">${formatEventTime(new Date())}</span> ${icon[kind] || 'ℹ️'} ${escapeHtml(label)}</div>`;
       feedEl.scrollTop = feedEl.scrollHeight;
     }
 
