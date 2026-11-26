@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { reconcileAttempts, reconcileRosterAttempts, type ParsedEntry, type RosterPageAttempt, type RosterRow } from "../lib/reconcile";
 
 function times(day: number, month: number, t: number[], overrides: Partial<ParsedEntry> = {}): ParsedEntry {
-    return { day, month, times: t, hoursWorked: null, otHours: null, noBreak: null, guessed: null, rest_day: null, notes: null, bbox: null, ...overrides };
+    return { day, month, year: null, times: t, hoursWorked: null, otHours: null, noBreak: null, guessed: null, rest_day: null, notes: null, bbox: null, ...overrides };
 }
 
 function rosterRow(overrides: Partial<RosterRow> = {}): RosterRow {
@@ -14,11 +14,11 @@ function rosterAttempt(workers: RosterRow[], day: number | null = 14, month: num
 }
 
 function rest(day: number, month: number, notes: string | null = null): ParsedEntry {
-    return { day, month, times: null, hoursWorked: null, otHours: null, noBreak: null, guessed: null, rest_day: true, notes, bbox: null };
+    return { day, month, year: null, times: null, hoursWorked: null, otHours: null, noBreak: null, guessed: null, rest_day: true, notes, bbox: null };
 }
 
 function hours(day: number, month: number, hoursWorked: number, otHours: number | null = null): ParsedEntry {
-    return { day, month, times: null, hoursWorked, otHours, noBreak: null, guessed: null, rest_day: null, notes: null, bbox: null };
+    return { day, month, year: null, times: null, hoursWorked, otHours, noBreak: null, guessed: null, rest_day: null, notes: null, bbox: null };
 }
 
 describe("reconcileAttempts", () => {
@@ -150,6 +150,24 @@ describe("reconcileAttempts", () => {
         const attempt: ParsedEntry[] = [times(1, 6, [1700]), times(1, 6, [800])];
         const { entries } = reconcileAttempts([attempt, attempt, attempt], "test");
         expect(entries[0].times).toEqual([800, 1700]);
+    });
+
+    it("keeps each entry's own printed year when a page's table spans a year boundary (e.g. a duty-roster week running 29/12/25 through 4/1/26)", () => {
+        const dec31 = times(31, 12, [800, 1700], { year: 2025 });
+        const jan1 = times(1, 1, [900, 1800], { year: 2026 });
+        const attempts = [[dec31, jan1], [dec31, jan1], [dec31, jan1]];
+        const { entries } = reconcileAttempts(attempts, "test");
+        expect(entries).toHaveLength(2);
+        const dec = entries.find(e => e.day === 31 && e.month === 12);
+        const jan = entries.find(e => e.day === 1 && e.month === 1);
+        expect(dec?.year).toBe(2025);
+        expect(jan?.year).toBe(2026);
+    });
+
+    it("leaves year null when no attempt reports one (the overwhelming majority of real pages)", () => {
+        const attempts = [[times(1, 6, [800, 1700])], [times(1, 6, [800, 1700])], [times(1, 6, [800, 1700])]];
+        const { entries } = reconcileAttempts(attempts, "test");
+        expect(entries[0].year).toBeNull();
     });
 
 });

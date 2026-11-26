@@ -1,6 +1,6 @@
 import { sendVisionRequestWithTools, PRIMARY_VISION_MODEL, type VisionMessage, type VisionTool, type VisionToolCall } from "./visionClient";
 import { cropRegion } from "./images";
-import { coerceBbox, type ParsedEntry, type RosterPageAttempt } from "../reconcile";
+import { coerceBbox, coerceYear, type ParsedEntry, type RosterPageAttempt } from "../reconcile";
 
 // Replaces extractPageContext's fixed dataModel classification (lib/ocr/pageScan.ts) for page
 // SHAPE discovery. Rather than a single deterministic call funneling every page into one of a
@@ -36,6 +36,10 @@ export type GridWorkerRow = {
     cells: {
         day: number;
         month: number;
+        // The year THIS SPECIFIC cell's date was printed with, if the page prints one at the
+        // column/cell level — see lib/reconcile.ts's ParsedEntry.year for why this exists (a grid's
+        // columns are exactly the case that motivated adding it).
+        year: number | null;
         times: number[] | null;
         hoursWorked: number | null;
         otHours: number | null;
@@ -79,8 +83,10 @@ When you're confident, call exactly one terminal tool:
 - emitRows: with your chosen shapeFamily and the extracted rows. \`rows\` must be a REAL JSON array/object value (not a JSON string) using EXACTLY the field names below for your chosen shapeFamily — do not invent different field names.
 
 If shapeFamily is "one_worker_many_dates", rows is a JSON ARRAY, one object per populated date:
-  { "day": <1-31>, "month": <1-12>, "times": <array of bare HHMM integers e.g. [800,1700], or null>, "hoursWorked": <number or null>, "otHours": <number or null>, "noBreak": <true only if explicitly stated no break was taken, else false>, "rest_day": <true only if explicitly marked off/rest/leave, else false>, "notes": <string or null>, "bbox": <{x, y, w, h} as fractions 0-1 of the FULL page image's width/height, boxing just this date's own row/cell, or null if you can't estimate it> }
+  { "day": <1-31>, "month": <1-12>, "year": <the 2-digit or 4-digit year ONLY if it is PRINTED/TYPED directly on this specific date's own row/cell (e.g. a full "29/12/25" style date), otherwise null — do not guess it from a page title, a filename, or a handwritten year elsewhere, and do not fill it in just because you know what year the page is probably from>, "times": <array of bare HHMM integers e.g. [800,1700], or null>, "hoursWorked": <number or null>, "otHours": <number or null>, "noBreak": <true only if explicitly stated no break was taken, else false>, "rest_day": <true only if explicitly marked off/rest/leave, else false>, "notes": <string or null>, "bbox": <{x, y, w, h} as fractions 0-1 of the FULL page image's width/height, boxing just this date's own row/cell, or null if you can't estimate it> }
   Report EVERY clock-time value visible for a date (a split/overnight day can have 4+ values), left-to-right/top-to-bottom reading order. Use bare 24h integers with no colon (8:00am -> 800, 10:00pm -> 2200).
+
+  year exists ONLY for the rare page whose table spans a year boundary and prints the year per-row (almost always typed/printed, not handwritten) — e.g. a week running 29 Dec through 4 Jan, where the rows crossing into January are genuinely a different year than the rest of the page. The overwhelming majority of pages never print a year per row at all (just a "Month Year" title once, or no year anywhere) — leave year null for every row on those, even though you may already know the page's year from elsewhere. A handwritten year is unreliable to read correctly and must NOT be reported here even if you think you can make it out — only a clearly printed/typed year counts.
 
   bbox must always be relative to the FULL original page image, never to a cropped sub-image you may have looked at via cropRegion — if you zoomed in to read a date, still report its bbox in the original full-page coordinate frame.
 
@@ -99,8 +105,10 @@ If shapeFamily is "one_date_many_workers", rows is a JSON OBJECT for the one sha
   List EVERY worker row on the page, not just the target worker — the caller matches the target worker by name/IC itself.
 
 If shapeFamily is "many_workers_many_dates", rows is a JSON OBJECT:
-  { "workers": [ { "workerName": <string or null>, "workerIc": <string or null>, "cells": [ { "day": <1-31>, "month": <1-12>, "times": <array of bare HHMM integers or null>, "hoursWorked": <number or null>, "otHours": <number or null>, "rest_day": <true or false>, "notes": <string or null>, "bbox": <{x, y, w, h} as fractions 0-1 of the FULL page image's width/height, boxing just this cell, or null if you can't estimate it> } ] } ] }
+  { "workers": [ { "workerName": <string or null>, "workerIc": <string or null>, "cells": [ { "day": <1-31>, "month": <1-12>, "year": <the 2-digit or 4-digit year ONLY if printed in THIS column's own date header (e.g. "29/12/25"), otherwise null — same rule as one_worker_many_dates above>, "times": <array of bare HHMM integers or null>, "hoursWorked": <number or null>, "otHours": <number or null>, "rest_day": <true or false>, "notes": <string or null>, "bbox": <{x, y, w, h} as fractions 0-1 of the FULL page image's width/height, boxing just this cell, or null if you can't estimate it> } ] } ] }
   List EVERY worker row on the page with their own per-date cells, not just the target worker — the caller matches the target worker by name/IC itself.
+
+  A duty-roster grid is exactly the shape most likely to genuinely span a year boundary (e.g. a week's columns running 29/12/25 through 4/1/26) — if the column headers print full dates including the year, report that year on every cell in that column, not just the ones that look different from the rest of the page. If no column prints a year at all (common — just "Mon/Tue/Wed..." or bare day numbers), leave year null everywhere; do not infer one from a page title.
 
 Read what is actually visible. Do not invent, reconstruct, or guess missing values — leave fields null and explain in notes instead. Do not stop at the first plausible read if cropping closer would resolve genuine ambiguity.`;
 
@@ -342,10 +350,17 @@ async function executeTool(
             // The model sometimes reports bbox as a bare [x,y,w,h] array instead of the requested
             // {x,y,w,h} object — coerced here (same as the non-agentic scan path in
             // lib/jobs/timesheetJob.ts) rather than left to silently become `{x: undefined, ...}`
-            // wherever a row's bbox is eventually consumed (the review UI's highlight box).
+            // wherever a row's bbox is eventually consumed (the review UI's highlight box). `year`
+            // gets the same treatment — mostly just normalizing a 2-digit year, or defaulting an
+            // absent field (the overwhelming majority of pages never print one) to null rather than
+            // leaving it `undefined`, which lib/reconcile.ts's year-voting treats as "reported a
+            // value" (anything !== null) instead of "didn't report one".
             if (expectArray) {
                 for (const row of rows as Record<string, unknown>[]) {
-                    if (row && typeof row === "object") row.bbox = coerceBbox(row.bbox);
+                    if (row && typeof row === "object") {
+                        row.bbox = coerceBbox(row.bbox);
+                        row.year = coerceYear(row.year);
+                    }
                 }
             } else if (shapeFamily === "many_workers_many_dates") {
                 const workers = (rows as Record<string, unknown>).workers;
@@ -353,7 +368,12 @@ async function executeTool(
                     for (const w of workers) {
                         const cells = w && typeof w === "object" ? (w as Record<string, unknown>).cells : null;
                         if (Array.isArray(cells)) {
-                            for (const c of cells) if (c && typeof c === "object") (c as Record<string, unknown>).bbox = coerceBbox((c as Record<string, unknown>).bbox);
+                            for (const c of cells) {
+                                if (c && typeof c === "object") {
+                                    (c as Record<string, unknown>).bbox = coerceBbox((c as Record<string, unknown>).bbox);
+                                    (c as Record<string, unknown>).year = coerceYear((c as Record<string, unknown>).year);
+                                }
+                            }
                         }
                     }
                 }

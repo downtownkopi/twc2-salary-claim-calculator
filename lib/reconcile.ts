@@ -29,9 +29,45 @@ export function coerceBbox(v: unknown): { x: number; y: number; w: number; h: nu
     return null;
 }
 
+// Coerces a model-reported per-entry year into a 4-digit number, or null if it isn't usable. Most
+// pages never print a year at all (see ParsedEntry.year's own comment) — this only matters for the
+// minority that genuinely do (e.g. a duty-roster grid with full "29/12/25" column headers, like
+// sample-data/745X/745X_Timesheets.pdf p13). A 2-digit year (the common case — "25", "26") is
+// normalized to the 2000s; a model occasionally reporting it as a numeric string rather than a
+// number is tolerated the same way lib/payslips.ts's num() helper does for its own fields.
+// Deliberately NOT validated against SUPPORTED_YEARS here — that's a job-level business rule
+// (lib/jobs/shared.ts), and this file has no reason to depend on it; the caller (applyParsedEntries
+// in lib/jobs/timesheetJob.ts) is where that check belongs, same place pageYear itself is checked.
+/**
+ * Coerces a model-reported per-entry year value (number or numeric string, 2-digit or 4-digit)
+ * into a 4-digit year, or `null` if it isn't a usable number at all.
+ *
+ * @param v - The raw `year` value from a model's JSON reply for one date entry/cell.
+ * @returns The coerced 4-digit year, or `null`.
+ */
+export function coerceYear(v: unknown): number | null {
+    const n = typeof v === "number" ? v : typeof v === "string" ? Number(v) : NaN;
+    if (!Number.isFinite(n)) return null;
+    const year = Math.trunc(n);
+    if (year >= 0 && year < 100) return 2000 + year;
+    if (year >= 1000 && year < 10000) return year;
+    return null;
+}
+
 export type ParsedEntry = {
     day: number | null;
     month: number | null;
+    // The year THIS SPECIFIC entry's date was printed with, if the source document actually prints
+    // one at the cell/column level (not inferred from a page title or neighboring entry) — null in
+    // the overwhelming majority of cases, where a page states its year once (a "Month Year" header,
+    // a filename) rather than per-row/per-column. Exists specifically for a page whose table spans
+    // a year boundary with the year printed per-column (e.g. a duty-roster grid showing
+    // "29/12/25" through "4/1/26" across one week — sample-data/745X/745X_Timesheets.pdf p13):
+    // without this, every entry on that page would be stamped with the SAME single page-level year
+    // (lib/jobs/timesheetJob.ts's pageYear), silently mis-dating whichever half of the page
+    // disagreed with it. applyParsedEntries prefers this field when present (and a supported year),
+    // falling back to pageYear otherwise — never the reverse.
+    year: number | null;
     // ALL raw clock values seen on this row, left-to-right (chronological) — NOT pre-grouped into
     // shifts. A normal day is [clock_in, clock_out] (length 2); a split day/night shift is
     // [in1, out1, in2, out2] (length 4); asking the model to enumerate every value it sees rather
@@ -256,6 +292,13 @@ export function reconcileAttempts(
         // contributed nothing — and the final warning-reasons check didn't cover this exact
         // combination either, so the whole day vanished with zero trace, not even a warning.
         let noSignalCount = 0;
+        // Independent of every vote above — an attempt can disagree on times/hours/rest for this
+        // day and still have correctly read the same printed year (or vice versa), so this isn't
+        // gated behind the unanimous/majority/implausible branches below at all; it just tracks
+        // every non-null year any attempt reported for this specific day, resolved by simple
+        // majority (ties keep the first value seen) once the loop finishes. null (the common case —
+        // nothing prints a year here) if no attempt reported one.
+        const yearVotes: number[] = [];
 
         for (const attempt of attempts) {
             // A punch-log-style page (a phone app's chronological list of individual clock
@@ -274,6 +317,7 @@ export function reconcileAttempts(
                     : {
                           day,
                           month,
+                          year: matches.find(m => m.year !== null)?.year ?? null,
                           times: matches.some(m => m.times && m.times.length > 0)
                               ? matches.flatMap(m => m.times ?? []).sort((a, b) => a - b)
                               : null,
@@ -286,6 +330,7 @@ export function reconcileAttempts(
                           bbox: matches.find(m => m.bbox)?.bbox ?? null,
                       };
             const rowForDay: ParsedEntry = { ...rawRowForDay, times: normalizeMidnightEnd(rawRowForDay.times) };
+            if (rowForDay.year !== null) yearVotes.push(rowForDay.year);
 
             if (rowForDay.times && rowForDay.times.length > 0) {
                 const bad = rowForDay.times.filter(t => !isPlausibleTime(t));
@@ -327,6 +372,24 @@ export function reconcileAttempts(
             timesVotes.map(t => (orderMatters ? t : [...t].sort((a, b) => a - b)).join(","))
         );
         const distinctHoursSignatures = new Set(hoursVotes.map(v => `${v.hoursWorked}|${v.otHours ?? ""}`));
+
+        // Resolved once per day-key, attached to this date's entry below regardless of which
+        // times/hours/rest branch ends up populating it — a plain majority vote (ties keep
+        // whichever value was seen first), not gated behind the unanimous/implausible machinery
+        // above, since year agreement is an entirely separate question from what the day's work
+        // record itself says.
+        let resolvedYear: number | null = null;
+        if (yearVotes.length > 0) {
+            const counts = new Map<number, number>();
+            for (const y of yearVotes) counts.set(y, (counts.get(y) ?? 0) + 1);
+            let bestCount = 0;
+            for (const [y, c] of counts) {
+                if (c > bestCount) {
+                    bestCount = c;
+                    resolvedYear = y;
+                }
+            }
+        }
 
         // 2-of-3 style majority fallback for `times` specifically, used only when strict unanimity
         // (below) fails. A single dissenting attempt among an otherwise-agreeing group is common
@@ -389,18 +452,19 @@ export function reconcileAttempts(
             // declared standard break applies downstream) rather than a single attempt's claim
             // zeroing out the break for everyone.
             const outputNoBreak = noBreakVotes.length > 0 && noBreakVotes.every(v => v === true);
-            entries.push({ day, month, times: outputTimes, hoursWorked: null, otHours: null, noBreak: outputNoBreak, guessed: false, rest_day: false, notes: null, bbox: timesBboxVotes.find(Boolean) ?? null });
+            entries.push({ day, month, year: resolvedYear, times: outputTimes, hoursWorked: null, otHours: null, noBreak: outputNoBreak, guessed: false, rest_day: false, notes: null, bbox: timesBboxVotes.find(Boolean) ?? null });
         } else if (unanimous && allAgreeOnRest) {
             // Attempts don't have to agree on the exact wording (one might transcribe "MC", another
             // "M/C") to still unanimously agree it's a leave-type rest day — take whichever non-null
             // note the first attempt that had one wrote, rather than requiring textual unanimity.
-            entries.push({ day, month, times: null, hoursWorked: null, otHours: null, noBreak: null, guessed: false, rest_day: true, notes: restNotes.find(Boolean) ?? null, bbox: restBboxVotes.find(Boolean) ?? null });
+            entries.push({ day, month, year: resolvedYear, times: null, hoursWorked: null, otHours: null, noBreak: null, guessed: false, rest_day: true, notes: restNotes.find(Boolean) ?? null, bbox: restBboxVotes.find(Boolean) ?? null });
         } else if (unanimous && allAgreeOnHours) {
-            entries.push({ day, month, times: null, hoursWorked: hoursVotes[0].hoursWorked, otHours: hoursVotes[0].otHours, noBreak: null, guessed: false, rest_day: false, notes: null, bbox: hoursVotes.find(v => v.bbox)?.bbox ?? null });
+            entries.push({ day, month, year: resolvedYear, times: null, hoursWorked: hoursVotes[0].hoursWorked, otHours: hoursVotes[0].otHours, noBreak: null, guessed: false, rest_day: false, notes: null, bbox: hoursVotes.find(v => v.bbox)?.bbox ?? null });
         } else if (fullyParticipated && sufficientRedundancy && majorityTimes) {
             entries.push({
                 day,
                 month,
+                year: resolvedYear,
                 times: majorityTimes.times,
                 hoursWorked: null,
                 otHours: null,
@@ -443,6 +507,7 @@ export function reconcileAttempts(
             entries.push({
                 day,
                 month,
+                year: resolvedYear,
                 times: [800, 1700],
                 hoursWorked: null,
                 otHours: null,
@@ -702,6 +767,9 @@ export type GridRow = {
     cells: {
         day: number;
         month: number;
+        // See ParsedEntry.year's own comment — a grid page's columns are exactly the case that
+        // motivated adding this field (a column header printing a full date including year).
+        year: number | null;
         times: number[] | null;
         hoursWorked: number | null;
         otHours: number | null;
@@ -795,6 +863,7 @@ export function reconcileGridAttempts(
         row.cells.map(c => ({
             day: c.day,
             month: c.month,
+            year: c.year,
             times: c.times,
             hoursWorked: c.hoursWorked,
             otHours: c.otHours,

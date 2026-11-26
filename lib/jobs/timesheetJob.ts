@@ -559,27 +559,33 @@ export async function runProcessJob(
                 });
                 continue;
             }
+            // Prefers this entry's OWN printed year (set only when the source document actually
+            // prints one at the cell/column level — see ParsedEntry.year's own comment) over the
+            // single page-level pageYear, so a page whose table genuinely spans a year boundary
+            // (e.g. a duty-roster week running 29/12/25 through 4/1/26) doesn't get every entry
+            // silently stamped with the same wrong year for whichever half disagrees with it.
+            const entryYear = entry.year !== null && SUPPORTED_YEARS.includes(entry.year) ? entry.year : pageYear;
             if (entry.month < 1 || entry.month > 12 || entry.day < 1 || entry.day > 31) {
                 warnings.push({ source, reason: `implausible date day=${entry.day} month=${entry.month}, skipped`, category: "skipped_invalid" });
                 continue;
             }
-            const daysInThisMonth = new Date(pageYear, entry.month, 0).getDate();
+            const daysInThisMonth = new Date(entryYear, entry.month, 0).getDate();
             if (entry.day > daysInThisMonth) {
                 warnings.push({
                     source,
-                    reason: `day=${entry.day} does not exist in month=${entry.month}/${pageYear} (only has ${daysInThisMonth} days), skipped`,
+                    reason: `day=${entry.day} does not exist in month=${entry.month}/${entryYear} (only has ${daysInThisMonth} days), skipped`,
                     category: "skipped_invalid",
                 });
                 continue;
             }
             if (entry.rest_day === true) {
-                restDays.push({ year: pageYear, month: entry.month, day: entry.day, source, notes: entry.notes, bbox: entry.bbox });
+                restDays.push({ year: entryYear, month: entry.month, day: entry.day, source, notes: entry.notes, bbox: entry.bbox });
                 continue;
             }
-            const entryDate = `${pageYear}-${String(entry.month).padStart(2, "0")}-${String(entry.day).padStart(2, "0")}`;
+            const entryDate = `${entryYear}-${String(entry.month).padStart(2, "0")}-${String(entry.day).padStart(2, "0")}`;
             if ((!entry.times || entry.times.length === 0) && entry.hoursWorked !== null) {
                 hoursEntries.push({
-                    date: new Date(pageYear, entry.month - 1, entry.day),
+                    date: new Date(entryYear, entry.month - 1, entry.day),
                     hoursWorked: entry.hoursWorked,
                     otHours: entry.otHours,
                     source,
@@ -595,7 +601,7 @@ export async function runProcessJob(
             }
             if (!entry.times || entry.times.length === 0) {
                 timeEntries.push({
-                    date: new Date(pageYear, entry.month - 1, entry.day),
+                    date: new Date(entryYear, entry.month - 1, entry.day),
                     clockIn: DEFAULT_SHIFT_CLOCK_IN,
                     clockOut: DEFAULT_SHIFT_CLOCK_OUT,
                     source,
@@ -637,7 +643,7 @@ export async function runProcessJob(
             }
             for (let ti = 0; ti < entry.times.length; ti += 2) {
                 timeEntries.push({
-                    date: new Date(pageYear, entry.month - 1, entry.day),
+                    date: new Date(entryYear, entry.month - 1, entry.day),
                     clockIn: entry.times[ti],
                     clockOut: entry.times[ti + 1],
                     source,
