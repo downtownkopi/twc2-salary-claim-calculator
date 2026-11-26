@@ -1,6 +1,7 @@
 import Database from "better-sqlite3";
 import * as path from "path";
 import { mkdirSync, writeFileSync } from "fs";
+import { rm } from "fs/promises";
 
 // First persistent store in this app — everything else (processJobs, bankJobs, medicalJobs,
 // medicalCertJobs, payslipJobs) is an in-memory Map with TTL eviction (see lib/jobs/shared.ts).
@@ -196,13 +197,16 @@ export function getCostSummary() {
     return { totalAllTime, totalToday, totalThisWeek, totalThisMonth, byDay, byMonth };
 }
 
-/** Same as getScanForOwner, but an admin can fetch ANY scan regardless of owner — used only by the two read (GET) routes, never by the edit (PUT) route (editing someone else's case data is a bigger trust decision this dashboard doesn't make). */
-export function getScanForAdminOrOwner(id: string, userId: number, isAdmin: boolean): ScanRow | null {
-    if (isAdmin) {
-        const row = db.prepare(`SELECT * FROM scans WHERE id = @id`).get({ id }) as ScanRow | undefined;
-        return row ?? null;
-    }
-    return getScanForOwner(id, userId);
+// Any authenticated caseworker can view any scan (the "All scans" dashboard, open to everyone —
+// not just admins), regardless of who scanned it. Used only by the two read (GET) routes, never by
+// the edit (PUT) route — getScanForOwner still gates that one, so viewing someone else's scan never
+// implies being able to edit it (a bigger trust decision this dashboard doesn't make). The caller is
+// responsible for stripping cost_usd from the response for a non-admin viewer (see server.ts) —
+// this function itself doesn't know who's asking.
+/** Full saved record for any scan, no ownership check — the ownership gate on edits (getScanForOwner) is unaffected. */
+export function getScanById(id: string): ScanRow | null {
+    const row = db.prepare(`SELECT * FROM scans WHERE id = @id`).get({ id }) as ScanRow | undefined;
+    return row ?? null;
 }
 
 // The one genuinely-editable array per scan type — timesheet's day-by-day rows, the other 4
@@ -239,6 +243,24 @@ export function updateScanEditableFields(id: string, userId: number, newRows: un
         result.ipa = newIpa;
     }
     db.prepare(`UPDATE scans SET result_json = @resultJson WHERE id = @id`).run({ id, resultJson: JSON.stringify(result) });
+    return true;
+}
+
+// Same ownership scoping as updateScanEditableFields above — a caseworker can only delete their
+// own scans, never another user's (no admin bypass here either, same reasoning as the edit route:
+// deleting someone else's case data is a bigger trust decision than viewing it). The DB row and its
+// on-disk image directory are removed together so a deleted scan doesn't leave orphaned PNGs behind
+// (see persistScan's writeImage, which is what created that directory in the first place).
+/**
+ * Deletes a scan and its saved page images, but only if `userId` owns it.
+ *
+ * @returns `true` if the scan was found (and owned by this user) and deleted, `false` otherwise.
+ */
+export async function deleteScanForOwner(id: string, userId: number): Promise<boolean> {
+    const scan = getScanForOwner(id, userId);
+    if (!scan) return false;
+    db.prepare(`DELETE FROM scans WHERE id = @id`).run({ id });
+    await rm(path.join(HISTORY_IMAGES_DIR, id), { recursive: true, force: true });
     return true;
 }
 

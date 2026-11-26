@@ -1366,8 +1366,7 @@
   <div class="container">
     <div class="history-nav-row">
       <button type="button" class="generate-btn" id="viewHistoryBtn">View scan history</button>
-      <button type="button" class="generate-btn" id="viewAdminDashboardBtn" style="display:none">Admin
-        dashboard</button>
+      <button type="button" class="generate-btn" id="viewAdminDashboardBtn">All scans</button>
       <button type="button" class="generate-btn" id="backToFormBtn" style="display:none">&larr; Back to new
         scan</button>
       <button type="button" class="generate-btn" id="backToAdminDashboardBtn" style="display:none">&larr; Back to admin
@@ -1769,52 +1768,54 @@
   </div>
 
   <div id="adminDashboardView" style="display:none">
-    <h2>Admin dashboard</h2>
-    <div class="sub">Every caseworker's scans and model-cost spend — not editable here, "View" opens the same
-      read-only review a caseworker sees, just without the Save button.</div>
+    <h2>All scans</h2>
+    <div class="sub">Every caseworker's scans — not editable here, "View" opens the same read-only
+      review a caseworker sees, just without the Save button.</div>
 
-    <div class="admin-cost-cards">
-      <div class="admin-cost-card">
-        <div class="admin-cost-card-label">Today</div>
-        <div class="admin-cost-card-value" id="adminCostToday">—</div>
+    <div id="adminCostSection" style="display:none">
+      <div class="admin-cost-cards">
+        <div class="admin-cost-card">
+          <div class="admin-cost-card-label">Today</div>
+          <div class="admin-cost-card-value" id="adminCostToday">—</div>
+        </div>
+        <div class="admin-cost-card">
+          <div class="admin-cost-card-label">Last 7 days</div>
+          <div class="admin-cost-card-value" id="adminCostWeek">—</div>
+        </div>
+        <div class="admin-cost-card">
+          <div class="admin-cost-card-label">This month</div>
+          <div class="admin-cost-card-value" id="adminCostMonth">—</div>
+        </div>
+        <div class="admin-cost-card">
+          <div class="admin-cost-card-label">All-time</div>
+          <div class="admin-cost-card-value" id="adminCostAllTime">—</div>
+        </div>
       </div>
-      <div class="admin-cost-card">
-        <div class="admin-cost-card-label">Last 7 days</div>
-        <div class="admin-cost-card-value" id="adminCostWeek">—</div>
-      </div>
-      <div class="admin-cost-card">
-        <div class="admin-cost-card-label">This month</div>
-        <div class="admin-cost-card-value" id="adminCostMonth">—</div>
-      </div>
-      <div class="admin-cost-card">
-        <div class="admin-cost-card-label">All-time</div>
-        <div class="admin-cost-card-value" id="adminCostAllTime">—</div>
-      </div>
+
+      <h3>Cost by day (last 30 days)</h3>
+      <table class="history-table" id="adminCostByDayTable">
+        <thead>
+          <tr>
+            <th>Date</th>
+            <th>Scans</th>
+            <th>Cost</th>
+          </tr>
+        </thead>
+        <tbody id="adminCostByDayBody"></tbody>
+      </table>
+
+      <h3>Cost by month (last 12 months)</h3>
+      <table class="history-table" id="adminCostByMonthTable">
+        <thead>
+          <tr>
+            <th>Month</th>
+            <th>Scans</th>
+            <th>Cost</th>
+          </tr>
+        </thead>
+        <tbody id="adminCostByMonthBody"></tbody>
+      </table>
     </div>
-
-    <h3>Cost by day (last 30 days)</h3>
-    <table class="history-table" id="adminCostByDayTable">
-      <thead>
-        <tr>
-          <th>Date</th>
-          <th>Scans</th>
-          <th>Cost</th>
-        </tr>
-      </thead>
-      <tbody id="adminCostByDayBody"></tbody>
-    </table>
-
-    <h3>Cost by month (last 12 months)</h3>
-    <table class="history-table" id="adminCostByMonthTable">
-      <thead>
-        <tr>
-          <th>Month</th>
-          <th>Scans</th>
-          <th>Cost</th>
-        </tr>
-      </thead>
-      <tbody id="adminCostByMonthBody"></tbody>
-    </table>
 
     <h3>All scans</h3>
     <div class="field" style="margin-bottom:10px;">
@@ -1837,7 +1838,7 @@
           <th>Type</th>
           <th>Scanned by</th>
           <th>Title</th>
-          <th>Cost</th>
+          <th id="adminScansCostHeader" style="display:none">Cost</th>
           <th></th>
         </tr>
       </thead>
@@ -9299,11 +9300,17 @@
           <td>${typeLabel}</td>
           <td>${row.title ? escapeHtml(row.title) : '<span class="muted">—</span>'}</td>
           <td>${cost}</td>
-          <td><button type="button" class="generate-btn" data-history-view="${row.id}" data-history-type="${row.scan_type}">View</button></td>
+          <td>
+            <button type="button" class="generate-btn" data-history-view="${row.id}" data-history-type="${row.scan_type}">View</button>
+            <button type="button" class="generate-btn" data-history-delete="${row.id}" title="Delete this scan" style="margin-left:6px;">Delete</button>
+          </td>
         </tr>`;
       }).join('');
       historyTableBodyEl.querySelectorAll('[data-history-view]').forEach(btn => {
         btn.addEventListener('click', () => openHistoryDetail(btn.dataset.historyView, btn.dataset.historyType));
+      });
+      historyTableBodyEl.querySelectorAll('[data-history-delete]').forEach(btn => {
+        btn.addEventListener('click', () => deleteHistoryScan(btn.dataset.historyDelete));
       });
 
       const hasPrev = historyOffset > 0;
@@ -9315,6 +9322,22 @@
       `;
       if (hasPrev) document.getElementById('historyPrevBtn').addEventListener('click', () => { historyOffset = Math.max(0, historyOffset - HISTORY_PAGE_SIZE); loadHistoryList(); });
       if (hasNext) document.getElementById('historyNextBtn').addEventListener('click', () => { historyOffset += HISTORY_PAGE_SIZE; loadHistoryList(); });
+    }
+
+    // Owner-scoped server-side too (DELETE /api/history/:id 404s on anything not owned by the
+    // caller) — this confirm is just a courtesy against a misclick, not the actual safety boundary.
+    /** Deletes one of the caseworker's own saved scans (after confirmation) and refreshes the list. */
+    async function deleteHistoryScan(scanId) {
+      if (!confirm('Delete this scan? This cannot be undone.')) return;
+      try {
+        const res = await fetch(`/api/history/${scanId}`, { method: 'DELETE' });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || `Server returned ${res.status}`);
+        loadHistoryList();
+      } catch (err) {
+        historyListStatusEl.className = 'status error';
+        historyListStatusEl.textContent = 'Error deleting scan: ' + err.message;
+      }
     }
 
     /** Fetches one saved scan's full record and hands it to the right scan type's loader. */
@@ -9506,27 +9529,31 @@
       }
     });
 
-    // ===== Admin dashboard =====
-    // Oversight across every caseworker's scans + model-cost spend — see GET /api/admin/scans and
-    // GET /api/admin/cost-summary (both 403 for a non-admin server-side; the nav link below is just
-    // a convenience so a non-admin never sees a dead-end). "View" reuses the exact same detail
-    // loaders the personal history list uses (openHistoryDetail/loadXHistoryRecord), just with
-    // viewingAsAdminReadOnly set first so Save stays hidden.
+    // ===== All scans (dashboard) =====
+    // Oversight across every caseworker's scans — open to any authenticated user, not just admins
+    // (see GET /api/admin/scans server-side). Cost figures (the cost cards/tables, and the Cost
+    // column in the table below) are the one piece still admin-only — gated client-side here purely
+    // for display (GET /api/admin/cost-summary itself still 403s a non-admin server-side regardless,
+    // and GET /api/admin/scans omits cost_usd entirely for a non-admin, so this isn't the real
+    // security boundary, just keeps a non-admin from seeing an always-empty cost column). "View"
+    // reuses the exact same detail loaders the personal history list uses (openHistoryDetail/
+    // loadXHistoryRecord), just with viewingAsAdminReadOnly set first so Save stays hidden.
     const adminScansStatusEl = document.getElementById('adminScansStatus');
     const adminScansTableEl = document.getElementById('adminScansTable');
     const adminScansTableBodyEl = document.getElementById('adminScansTableBody');
     const adminScansPaginationEl = document.getElementById('adminScansPagination');
     let adminScansOffset = 0;
 
-    /** Fetches /api/me once on load and shows the admin-dashboard nav link only if the current user is an admin. */
+    /** Fetches /api/me once on load to know whether to show the cost cards/tables/column (admin-only display). */
     async function checkAdminAccess() {
       try {
         const res = await fetch('/api/me');
         const data = await res.json();
         isCurrentUserAdmin = !!data.isAdmin;
-        document.getElementById('viewAdminDashboardBtn').style.display = isCurrentUserAdmin ? '' : 'none';
+        document.getElementById('adminCostSection').style.display = isCurrentUserAdmin ? '' : 'none';
+        document.getElementById('adminScansCostHeader').style.display = isCurrentUserAdmin ? '' : 'none';
       } catch {
-        // Not logged in / request failed — leave the link hidden, same as a non-admin.
+        // Not logged in / request failed — leave cost sections hidden, same as a non-admin.
       }
     }
     checkAdminAccess();
@@ -9543,7 +9570,7 @@
       viewingAsAdminReadOnly = false;
       document.getElementById('saveHistoryChangesBtn').style.display = 'none';
       adminScansOffset = 0;
-      loadAdminCostSummary();
+      if (isCurrentUserAdmin) loadAdminCostSummary();
       loadAdminScansList();
     }
 
@@ -9604,12 +9631,15 @@
         const date = new Date(row.created_at).toLocaleString();
         const typeLabel = HISTORY_SCAN_TYPE_LABELS[row.scan_type] || row.scan_type;
         const cost = row.cost_usd != null ? formatAdminCost(row.cost_usd) : '';
+        // The Cost column (<th id="adminScansCostHeader">) is hidden entirely for a non-admin (see
+        // checkAdminAccess) — skip this <td> too so the row's columns still line up with the header.
+        const costCell = isCurrentUserAdmin ? `<td>${cost}</td>` : '';
         return `<tr>
           <td>${date}</td>
           <td>${typeLabel}</td>
           <td>${escapeHtml(row.user_fullname || '')}</td>
           <td>${row.title ? escapeHtml(row.title) : '<span class="muted">—</span>'}</td>
-          <td>${cost}</td>
+          ${costCell}
           <td><button type="button" class="generate-btn" data-admin-scan-view="${row.id}" data-admin-scan-type="${row.scan_type}">View</button></td>
         </tr>`;
       }).join('');

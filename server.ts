@@ -29,9 +29,10 @@ import { payslipJobs, runPayslipJob, schedulePayslipJobCleanup } from "./lib/job
 import {
     listScansForUser,
     getScanForOwner,
-    getScanForAdminOrOwner,
+    getScanById,
     rehydrateImageRefs,
     updateScanEditableFields,
+    deleteScanForOwner,
     listAllScans,
     getCostSummary,
     HISTORY_IMAGES_DIR,
@@ -736,32 +737,37 @@ app.get("/api/history", (req, res) => {
     res.json({ rows, total, limit, offset });
 });
 
-// Admin dashboard — oversight across every caseworker's scans, not just the requester's own. Both
-// routes 403 for a non-admin (see requireAdmin above); neither exposes anything a non-admin's own
-// /api/history doesn't already expose per-row, just without the user_id scoping.
+// "All scans" dashboard — oversight across every caseworker's scans, not just the requester's own.
+// Open to any authenticated user (not admin-gated) — a caseworker can review any claim's scans the
+// same way an admin does. Cost figures are the one thing still admin-only: stripped from the
+// listing below for a non-admin, and getCostSummary (its own separate endpoint) stays behind
+// requireAdmin entirely.
 app.get("/api/admin/scans", (req, res) => {
-    if (!requireAdmin(req, res)) return;
+    const authedUser = getAuthedUser(req);
     const limit = Math.min(Math.max(Number(req.query.limit) || 25, 1), 100);
     const offset = Math.max(Number(req.query.offset) || 0, 0);
     const scanType = typeof req.query.type === "string" ? req.query.type : undefined;
     const userId = req.query.userId !== undefined ? Number(req.query.userId) : undefined;
     const { rows, total } = listAllScans({ limit, offset, scanType, userId });
-    res.json({ rows, total, limit, offset });
+    const visibleRows = authedUser.isAdmin ? rows : rows.map(({ cost_usd, ...rest }) => rest);
+    res.json({ rows: visibleRows, total, limit, offset });
 });
 
+// Cost/spend rollups — admin-only, unlike the scan listing above. This is the one piece of the
+// admin dashboard that stays gated (see requireAdmin).
 app.get("/api/admin/cost-summary", (req, res) => {
     if (!requireAdmin(req, res)) return;
     res.json(getCostSummary());
 });
 
-// Full saved record for one scan, ownership-checked — a scan id belonging to a different user
-// 404s identically to a nonexistent one, no existence leak, UNLESS the requester is an admin (see
-// getScanForAdminOrOwner) — the admin dashboard reuses this exact route to view any user's scan.
-// Image fields are rewritten from their stored {ref} markers to this route's own URLs at READ time
-// (not persist time), so the route prefix never gets baked into stored data.
+// Full saved record for one scan — no ownership check (see getScanById: any authenticated user can
+// view any scan, same as the "All scans" listing above). Cost is still admin-only, so costUsd is
+// omitted entirely for a non-admin rather than sent and merely hidden client-side. Image fields are
+// rewritten from their stored {ref} markers to this route's own URLs at READ time (not persist
+// time), so the route prefix never gets baked into stored data.
 app.get("/api/history/:id", (req, res) => {
     const authedUser = getAuthedUser(req);
-    const scan = getScanForAdminOrOwner(req.params.id, authedUser.id, authedUser.isAdmin);
+    const scan = getScanById(req.params.id);
     if (!scan) return res.status(404).json({ error: "scan not found" });
     const result = rehydrateImageRefs(scan.id, JSON.parse(scan.result_json));
     res.json({
@@ -769,7 +775,7 @@ app.get("/api/history/:id", (req, res) => {
         scanType: scan.scan_type,
         title: scan.title,
         createdAt: scan.created_at,
-        costUsd: scan.cost_usd,
+        costUsd: authedUser.isAdmin ? scan.cost_usd : undefined,
         durationMs: scan.duration_ms,
         userId: scan.user_id,
         userFullname: scan.user_fullname,
@@ -777,13 +783,12 @@ app.get("/api/history/:id", (req, res) => {
     });
 });
 
-// Streams one page image from a saved scan — ownership-checked before any filesystem access, same
-// 404-either-way behavior as the route above (and the same admin bypass). :ref is whitelisted
-// before being joined into a path even though it's always server-generated (see persistScan's
-// writeImage helper), never taken directly off a client-controlled value.
+// Streams one page image from a saved scan — no ownership check, same as the route above (any
+// authenticated user can view any scan's images). :ref is whitelisted before being joined into a
+// path even though it's always server-generated (see persistScan's writeImage helper), never taken
+// directly off a client-controlled value.
 app.get("/api/history/:scanId/image/:ref", (req, res) => {
-    const authedUser = getAuthedUser(req);
-    const scan = getScanForAdminOrOwner(req.params.scanId, authedUser.id, authedUser.isAdmin);
+    const scan = getScanById(req.params.scanId);
     if (!scan) return res.status(404).json({ error: "scan not found" });
     if (!/^[a-zA-Z0-9_-]+$/.test(req.params.ref)) return res.status(400).json({ error: "invalid image ref" });
     res.sendFile(path.join(HISTORY_IMAGES_DIR, scan.id, `${req.params.ref}.png`), err => {
@@ -806,6 +811,17 @@ app.put("/api/history/:id", express.json({ limit: "5mb" }), (req, res) => {
     const ipa = req.body?.ipa;
     const updated = updateScanEditableFields(req.params.id, userId, rows, ipa);
     if (!updated) return res.status(404).json({ error: "scan not found" });
+    res.json({ success: true });
+});
+
+// Deletes a scan a caseworker performed themselves — owner-scoped only, same as the edit route
+// above (no admin bypass; being able to VIEW any scan via the "All scans" dashboard doesn't imply
+// being able to delete someone else's). 404s identically whether the id doesn't exist at all or
+// just isn't owned by this user, same no-existence-leak behavior as every other owner-scoped route.
+app.delete("/api/history/:id", async (req, res) => {
+    const userId = getAuthedUser(req).id;
+    const deleted = await deleteScanForOwner(req.params.id, userId);
+    if (!deleted) return res.status(404).json({ error: "scan not found" });
     res.json({ success: true });
 });
 
