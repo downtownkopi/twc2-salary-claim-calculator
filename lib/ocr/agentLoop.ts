@@ -1,6 +1,6 @@
 import { sendVisionRequestWithTools, PRIMARY_VISION_MODEL, type VisionMessage, type VisionTool, type VisionToolCall } from "./visionClient";
 import { cropRegion } from "./images";
-import { coerceBbox, coerceYear, type ParsedEntry, type RosterPageAttempt } from "../reconcile";
+import { coerceBbox, coerceYear, coerceOptionalNumber, type ParsedEntry, type RosterPageAttempt } from "../reconcile";
 
 // Replaces extractPageContext's fixed dataModel classification (lib/ocr/pageScan.ts) for page
 // SHAPE discovery. Rather than a single deterministic call funneling every page into one of a
@@ -43,6 +43,8 @@ export type GridWorkerRow = {
         times: number[] | null;
         hoursWorked: number | null;
         otHours: number | null;
+        // See lib/reconcile.ts's ParsedEntry.breakHours for why this exists.
+        breakHours: number | null;
         rest_day: boolean | null;
         notes: string | null;
         bbox: { x: number; y: number; w: number; h: number } | null;
@@ -83,7 +85,7 @@ When you're confident, call exactly one terminal tool:
 - emitRows: with your chosen shapeFamily and the extracted rows. \`rows\` must be a REAL JSON array/object value (not a JSON string) using EXACTLY the field names below for your chosen shapeFamily — do not invent different field names.
 
 If shapeFamily is "one_worker_many_dates", rows is a JSON ARRAY, one object per populated date:
-  { "day": <1-31>, "month": <1-12>, "year": <the 2-digit or 4-digit year ONLY if it is PRINTED/TYPED directly on this specific date's own row/cell (e.g. a full "29/12/25" style date), otherwise null — do not guess it from a page title, a filename, or a handwritten year elsewhere, and do not fill it in just because you know what year the page is probably from>, "times": <array of bare HHMM integers e.g. [800,1700], or null>, "hoursWorked": <number or null>, "otHours": <number or null>, "noBreak": <true only if explicitly stated no break was taken, else false>, "rest_day": <true only if explicitly marked off/rest/leave, else false>, "notes": <string or null>, "bbox": <{x, y, w, h} as fractions 0-1 of the FULL page image's width/height, boxing just this date's own row/cell, or null if you can't estimate it> }
+  { "day": <1-31>, "month": <1-12>, "year": <the 2-digit or 4-digit year ONLY if it is PRINTED/TYPED directly on this specific date's own row/cell (e.g. a full "29/12/25" style date), otherwise null — do not guess it from a page title, a filename, or a handwritten year elsewhere, and do not fill it in just because you know what year the page is probably from>, "times": <array of bare HHMM integers e.g. [800,1700], or null>, "hoursWorked": <number or null>, "otHours": <number or null>, "breakHours": <number or null — see the THIRD NUMBER section below>, "noBreak": <true only if explicitly stated no break was taken, else false>, "rest_day": <true only if explicitly marked off/rest/leave, else false>, "notes": <string or null>, "bbox": <{x, y, w, h} as fractions 0-1 of the FULL page image's width/height, boxing just this date's own row/cell, or null if you can't estimate it> }
   Report EVERY clock-time value visible for a date (a split/overnight day can have 4+ values), left-to-right/top-to-bottom reading order. Use bare 24h integers with no colon (8:00am -> 800, 10:00pm -> 2200).
 
   year exists ONLY for the rare page whose table spans a year boundary and prints the year per-row (almost always typed/printed, not handwritten) — e.g. a week running 29 Dec through 4 Jan, where the rows crossing into January are genuinely a different year than the rest of the page. The overwhelming majority of pages never print a year per row at all (just a "Month Year" title once, or no year anywhere) — leave year null for every row on those, even though you may already know the page's year from elsewhere. A handwritten year is unreliable to read correctly and must NOT be reported here even if you think you can make it out — only a clearly printed/typed year counts.
@@ -94,7 +96,7 @@ If shapeFamily is "one_worker_many_dates", rows is a JSON ARRAY, one object per 
 
   A SHORTHAND TIME LIKE "4AM"/"9PM" (an hour number plus AM/PM, no colon, no separate minutes) IS NOT ILLEGIBLE — it is a complete, fully-readable clock time with zero minutes. If you can read the text "4AM", you can encode it: it is 400, full stop. "9PM" is 2100. "12PM" is 1200. "12AM" is midnight (0 or 2400 as endpoint, per the 12am/12pm rule above). Do NOT write "illegible" or null in notes for a value you just transcribed as readable text in your own notes field — if your notes say you read "4AM", your times array MUST contain 400 for that position, not null. Reading the letters correctly but refusing to convert them to the equivalent integer is a self-contradiction; never do this.
 
-  A ROW CAN HAVE A THIRD, SMALLER NUMBER beyond the two clock-time values — often a single digit (e.g. "2", "5") sitting between the second clock-time column and the inspector-signature column. This small digit is a SEPARATE field (almost always overtime hours — put it in otHours), NOT part of either clock time, and its presence must never stop you from extracting the two clock-time values, and must never make you drop the FIRST (earlier, leftmost) clock-time value. When a row has "Qty" ~800-ish AND a separate "Amount" column with a clock-like value (e.g. 1700-2400) AND a small digit after it, extract times as [Qty-value, Amount-value] (e.g. [800, 1700]) and otHours as the small digit — do NOT collapse this into a single-value times array containing only the Amount reading, and do NOT null out the whole row because of the extra digit. The Qty-side value is just as real and just as necessary to report as the Amount-side value — never drop one while keeping the other.
+  A ROW CAN HAVE A THIRD, SMALLER NUMBER beyond the two clock-time values — often a single digit (e.g. "2", "5") sitting between the second clock-time column and the inspector-signature column. This small digit is a SEPARATE field, NOT part of either clock time, and its presence must never stop you from extracting the two clock-time values, and must never make you drop the FIRST (earlier, leftmost) clock-time value. DECIDE WHICH FIELD IT BELONGS IN by what the column actually represents, not by assuming: if the column is labeled as (or a caseworker's reading notes, if any were given to you, describe it as) a BREAK/MEAL-TIME total for that day — a cumulative break duration, not a third clock time — put it in breakHours (as decimal hours, e.g. "1:30" or "1h30m" -> 1.5, "6:30" -> 6.5). Otherwise, default to otHours (the far more common case — an overtime-hours figure). When a row has "Qty" ~800-ish AND a separate "Amount" column with a clock-like value (e.g. 1700-2400) AND a small digit/value after it, extract times as [Qty-value, Amount-value] (e.g. [800, 1700]) and the third value as otHours or breakHours per the rule above — do NOT collapse this into a single-value times array containing only the Amount reading, and do NOT null out the whole row because of the extra value. The Qty-side value is just as real and just as necessary to report as the Amount-side value — never drop one while keeping the other.
 
   Do NOT blindly trust a printed column label — a template column literally labeled "Qty"/"Amount"/"Hrs" can still be where a worker (or an agency filling it in on their behalf) actually wrote CLOCK IN/CLOCK OUT times, reusing a form meant for something else. Read the ACTUAL content, not the label. CHECK FOR A CLOCK-TIME PAIR FIRST: if a date's row has two separate bare 3-4 digit numbers (regardless of which columns they sit under) that EACH plausibly encode a time of day (hour component 0-23, e.g. "800"->8:00, "2200"->22:00, "930"->9:30) and together form a plausible work shift (a start then a later end, allowing an overnight wrap), report them as a clock in/out pair in times — e.g. "800" and "2200" on the same row is almost always 8:00am-10:00pm, not "8 hours, $22". Only fall back to hoursWorked when there is genuinely just ONE number for that date with no plausible second time-like value anywhere on the row, or the number is clearly a small decimal hours figure (e.g. "8" or "8.5", not a 3-4-digit value that could itself encode a clock time). Do not leave both times and hoursWorked null and only describe the value in notes — if a date's row has a number that represents the day's work, commit to reading it as either a clock-time pair or a total-hours figure, whichever the content actually shows; notes is for genuine ambiguity or extra context, not a substitute for extraction.
 
@@ -105,7 +107,7 @@ If shapeFamily is "one_date_many_workers", rows is a JSON OBJECT for the one sha
   List EVERY worker row on the page, not just the target worker — the caller matches the target worker by name/IC itself.
 
 If shapeFamily is "many_workers_many_dates", rows is a JSON OBJECT:
-  { "workers": [ { "workerName": <string or null>, "workerIc": <string or null>, "cells": [ { "day": <1-31>, "month": <1-12>, "year": <the 2-digit or 4-digit year ONLY if printed in THIS column's own date header (e.g. "29/12/25"), otherwise null — same rule as one_worker_many_dates above>, "times": <array of bare HHMM integers or null>, "hoursWorked": <number or null>, "otHours": <number or null>, "rest_day": <true or false>, "notes": <string or null>, "bbox": <{x, y, w, h} as fractions 0-1 of the FULL page image's width/height, boxing just this cell, or null if you can't estimate it> } ] } ] }
+  { "workers": [ { "workerName": <string or null>, "workerIc": <string or null>, "cells": [ { "day": <1-31>, "month": <1-12>, "year": <the 2-digit or 4-digit year ONLY if printed in THIS column's own date header (e.g. "29/12/25"), otherwise null — same rule as one_worker_many_dates above>, "times": <array of bare HHMM integers or null>, "hoursWorked": <number or null>, "otHours": <number or null>, "breakHours": <number or null — same THIRD NUMBER rule as one_worker_many_dates above>, "rest_day": <true or false>, "notes": <string or null>, "bbox": <{x, y, w, h} as fractions 0-1 of the FULL page image's width/height, boxing just this cell, or null if you can't estimate it> } ] } ] }
   List EVERY worker row on the page with their own per-date cells, not just the target worker — the caller matches the target worker by name/IC itself.
 
   A duty-roster grid is exactly the shape most likely to genuinely span a year boundary (e.g. a week's columns running 29/12/25 through 4/1/26) — if the column headers print full dates including the year, report that year on every cell in that column, not just the ones that look different from the rest of the page. If no column prints a year at all (common — just "Mon/Tue/Wed..." or bare day numbers), leave year null everywhere; do not infer one from a page title.
@@ -360,6 +362,7 @@ async function executeTool(
                     if (row && typeof row === "object") {
                         row.bbox = coerceBbox(row.bbox);
                         row.year = coerceYear(row.year);
+                        row.breakHours = coerceOptionalNumber(row.breakHours);
                     }
                 }
             } else if (shapeFamily === "many_workers_many_dates") {
@@ -372,6 +375,7 @@ async function executeTool(
                                 if (c && typeof c === "object") {
                                     (c as Record<string, unknown>).bbox = coerceBbox((c as Record<string, unknown>).bbox);
                                     (c as Record<string, unknown>).year = coerceYear((c as Record<string, unknown>).year);
+                                    (c as Record<string, unknown>).breakHours = coerceOptionalNumber((c as Record<string, unknown>).breakHours);
                                 }
                             }
                         }

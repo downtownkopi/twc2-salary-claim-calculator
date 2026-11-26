@@ -9,6 +9,13 @@ export type TimeEntry = {
     // not knowing (false), which lets buildReviewRows fall back to the caseworker's declared
     // standard break as usual.
     noBreak: boolean;
+    // The day's own printed cumulative break duration, in hours, if the source page states one
+    // directly (e.g. a third column alongside start/end time that's a break total, not a third
+    // clock time — some timesheets print exactly this shape). null when nothing of the kind is
+    // printed, which lets buildReviewRows fall back to noBreak/the caseworker's declared standard
+    // break as usual. Distinct from a multi-shift day's gap-as-break (computeSpanAndBreak below) —
+    // that's an OBSERVED gap between two real shifts; this is a figure the document states outright.
+    breakHours: number | null;
     // Where on the page image this entry was read from, as fractions (0-1) of the image's
     // width/height — lets the review UI draw a highlight box over the source image on hover. null
     // if the scan didn't return a usable box (or this entry didn't come from a bbox-aware path,
@@ -110,7 +117,7 @@ function shiftHours(clockIn: number, clockOut: number): number {
     return minutes / 60;
 }
 
-type Shift = { clockIn: number; clockOut: number; source: string; guessed: boolean; implausible?: boolean; noBreak: boolean; bbox: ReviewRow["bbox"] };
+type Shift = { clockIn: number; clockOut: number; source: string; guessed: boolean; implausible?: boolean; noBreak: boolean; breakHours: number | null; bbox: ReviewRow["bbox"] };
 
 // A day with 2+ distinct shifts (e.g. a morning block and an evening block) collapses to one
 // row: full span = first clock-in to last clock-out, and the gap(s) between shifts become the
@@ -154,14 +161,16 @@ const FALLBACK_BREAK_HOURS = 1;
 // would hide the very thing the review step exists to catch.
 //
 // standardBreakHours is the caseworker's declared standard (public/index.html's break radio
-// group), used as the assumed break for a single, unremarkable shift — there's nothing
-// actually read off the page for that case (a single clock-in/clock-out pair says nothing about
-// the break), so adopting the declared standard directly is more accurate than a hardcoded
-// guess, and means it won't spuriously disagree with itself later (public/index.html's
-// checkBreakMismatch compares every row's breakHours against this same declared value). A
-// multi-shift day is different: the gap between shifts IS something actually observed on the
-// page, so that stays as the real measured value — genuinely comparable against the declared
-// standard, and worth a mismatch warning if it disagrees.
+// group), used as the assumed break for a single, unremarkable shift ONLY when nothing about the
+// break was actually read off the page for that day (the common case — a single clock-in/clock-out
+// pair with no separate break figure printed anywhere near it) — adopting the declared standard
+// directly is more accurate than a hardcoded guess there, and means it won't spuriously disagree
+// with itself later (public/index.html's checkBreakMismatch compares every row's breakHours against
+// this same declared value). Two cases override that default with something actually observed,
+// same priority both times — a real figure from the page beats an assumption either way: a day's
+// own printed break-duration column (TimeEntry.breakHours — some timesheets print start/end time
+// plus a separate cumulative break total rather than a second shift), and a multi-shift day's
+// observed gap between shifts (computeSpanAndBreak below).
 /**
  * Groups raw scanned `TimeEntry` rows into one `ReviewRow` per calendar date, collapsing 2+ shifts
  * into a single span with the observed gap as the break, ready for human review before anything is
@@ -182,7 +191,7 @@ export function buildReviewRows(entries: TimeEntry[], restDays: RestDay[], stand
         const cell = byDate.get(key) ?? { date: entry.date, shifts: [], source: entry.source };
         const isDuplicate = cell.shifts.some(s => s.clockIn === entry.clockIn && s.clockOut === entry.clockOut);
         if (!isDuplicate) {
-            cell.shifts.push({ clockIn: entry.clockIn, clockOut: entry.clockOut, source: entry.source, guessed: entry.guessed, noBreak: entry.noBreak, bbox: entry.bbox });
+            cell.shifts.push({ clockIn: entry.clockIn, clockOut: entry.clockOut, source: entry.source, guessed: entry.guessed, noBreak: entry.noBreak, breakHours: entry.breakHours, bbox: entry.bbox });
         }
         byDate.set(key, cell);
     }
@@ -195,17 +204,21 @@ export function buildReviewRows(entries: TimeEntry[], restDays: RestDay[], stand
         if (shifts.length === 1) {
             const hours = shiftHours(shifts[0].clockIn, shifts[0].clockOut);
             const implausible = hours <= 0 || hours >= 24;
-            // An explicit "no break"/"no lunch" reading overrides the assumed standard break — it's
-            // now something actually observed on the page, not an absence of information (see
-            // server.ts's buildPrompt and TimeEntry.noBreak above), so it's exactly as trustworthy as
-            // the multi-shift branch's observed gap below. An implausible shift still wins over it
-            // (that note already asks for a full re-check of the row anyway).
+            // An explicit "no break"/"no lunch" reading, or a printed break-duration figure,
+            // overrides the assumed standard break — both are something actually observed on the
+            // page, not an absence of information (see server.ts's buildPrompt and
+            // TimeEntry.noBreak/breakHours above), so either is exactly as trustworthy as the
+            // multi-shift branch's observed gap below. A printed breakHours figure wins over a bare
+            // "no break" note if somehow both were set (shouldn't happen in practice — a row either
+            // states a break duration or explicitly has none). An implausible shift still wins over
+            // either (that note already asks for a full re-check of the row anyway).
             const noBreak = shifts[0].noBreak && !implausible;
+            const printedBreakHours = shifts[0].breakHours;
             rows.push({
                 date: toLocalDateString(date),
                 clockIn: shifts[0].clockIn,
                 clockOut: shifts[0].clockOut,
-                breakHours: noBreak ? 0 : standardBreakHours,
+                breakHours: !implausible && printedBreakHours !== null ? printedBreakHours : noBreak ? 0 : standardBreakHours,
                 restDay: false,
                 guessed: anyGuessed || implausible,
                 notes: implausible

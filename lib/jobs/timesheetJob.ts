@@ -608,6 +608,7 @@ export async function runProcessJob(
                     source,
                     guessed: true,
                     noBreak: false,
+                    breakHours: null,
                     bbox: entry.bbox,
                 });
                 unclearMarkDefaults.push({
@@ -650,6 +651,10 @@ export async function runProcessJob(
                     source,
                     guessed: entry.guessed === true,
                     noBreak: entry.noBreak === true,
+                    // Only meaningful for a single-shift day (buildReviewRows ignores it for a
+                    // multi-shift day's collapsed row, which uses the observed gap-as-break
+                    // instead) — harmless to carry through unconditionally either way.
+                    breakHours: entry.breakHours,
                     bbox: entry.bbox,
                 });
             }
@@ -686,6 +691,11 @@ export async function runProcessJob(
                 source,
                 guessed: entry.guessed,
                 noBreak: entry.mealBreakHours === 0,
+                // A roster row already carries its own observed meal-break figure (RosterRow's own
+                // field, distinct from the duty-grid "third number" case elsewhere in this file) —
+                // pass it through as the real reading instead of only using it to derive noBreak
+                // above.
+                breakHours: entry.mealBreakHours,
                 bbox: null, // roster pages aren't wired up for hover-highlight yet
             });
             if (entry.guessed) {
@@ -704,6 +714,7 @@ export async function runProcessJob(
                 source,
                 guessed: true,
                 noBreak: false,
+                breakHours: null,
                 bbox: null,
             });
             unclearMarkDefaults.push({
@@ -1194,6 +1205,7 @@ export async function runProcessJob(
                                 source,
                                 guessed: entry.guessed,
                                 noBreak: entry.mealBreakHours === 0,
+                                breakHours: entry.mealBreakHours,
                                 bbox: null, // roster pages aren't wired up for hover-highlight yet
                             });
                             if (entry.guessed) {
@@ -1216,6 +1228,7 @@ export async function runProcessJob(
                                 source,
                                 guessed: true,
                                 noBreak: false,
+                                breakHours: null,
                                 bbox: null,
                             });
                             unclearMarkDefaults.push({
@@ -1503,6 +1516,7 @@ export async function runProcessJob(
                             source,
                             guessed: true,
                             noBreak: false,
+                            breakHours: null,
                             bbox: entry.bbox,
                         });
                         unclearMarkDefaults.push({
@@ -1552,6 +1566,7 @@ export async function runProcessJob(
                             source,
                             guessed: entry.guessed === true,
                             noBreak: entry.noBreak === true,
+                            breakHours: entry.breakHours,
                             bbox: entry.bbox,
                         });
                     }

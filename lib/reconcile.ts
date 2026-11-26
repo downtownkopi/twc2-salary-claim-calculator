@@ -54,6 +54,20 @@ export function coerceYear(v: unknown): number | null {
     return null;
 }
 
+// Generic numeric coercion for a model-reported field that isn't a year (no 2-digit/4-digit
+// normalization needed) — currently just ParsedEntry.breakHours. Tolerates a numeric string the
+// same way coerceYear/lib/payslips.ts's num() helper do for their own fields.
+/**
+ * Coerces a value to a finite number, or `null` if it isn't one (numeric strings tolerated).
+ *
+ * @param v - The raw value from a model's JSON reply.
+ * @returns The coerced number, or `null`.
+ */
+export function coerceOptionalNumber(v: unknown): number | null {
+    const n = typeof v === "number" ? v : typeof v === "string" ? Number(v) : NaN;
+    return Number.isFinite(n) ? n : null;
+}
+
 export type ParsedEntry = {
     day: number | null;
     month: number | null;
@@ -88,6 +102,15 @@ export type ParsedEntry = {
     // buildReviewRows). Only meaningful alongside `times`; null/ignored on a rest day or
     // hours-only row where there's no break to speak of either way.
     noBreak: boolean | null;
+    // The day's own printed cumulative break duration, in hours, if the source page states one
+    // directly — some timesheets print a start time, an end time, and a separate THIRD column that
+    // is a break total rather than a third clock time (distinct from a genuine split-shift day,
+    // which is encoded as 4+ values in `times` instead). null in the overwhelming majority of cases
+    // (nothing of the kind printed), which lets the caseworker's declared standard break apply
+    // downstream as usual (lib/xlsx.ts's buildReviewRows). Only meaningful alongside `times` of
+    // length 2 (a single shift); ignored on a rest day, an hours-only row, or a genuine multi-shift
+    // day (that one's break is the observed gap between shifts, computed downstream, not this field).
+    breakHours: number | null;
     guessed: boolean | null;
     rest_day: boolean | null;
     notes: string | null;
@@ -279,6 +302,12 @@ export function reconcileAttempts(
         // one attempt missing/not noticing the "no lunch" text just falls back to false (the safe
         // default), rather than a single attempt's noBreak claim overriding the others.
         const noBreakVotes: boolean[] = [];
+        // Parallel to timesVotes (same index) — this day's printed break-duration figure, if any
+        // attempt reported one (see ParsedEntry.breakHours' own comment). Only trusted in the
+        // unanimous branch below when every attempt that agreed on times ALSO reported the exact
+        // same figure — one attempt missing/misreading it just falls back to null (the caseworker's
+        // declared standard break applies downstream), same reasoning as noBreakVotes above.
+        const breakHoursVotes: (number | null)[] = [];
         let attemptsThatMentionedDay = 0;
         let implausibleCount = 0;
         const implausibleValues: number[] = [];
@@ -324,6 +353,7 @@ export function reconcileAttempts(
                           hoursWorked: matches.find(m => m.hoursWorked !== null)?.hoursWorked ?? null,
                           otHours: matches.find(m => m.otHours !== null)?.otHours ?? null,
                           noBreak: matches.every(m => m.noBreak === true),
+                          breakHours: matches.find(m => m.breakHours !== null)?.breakHours ?? null,
                           guessed: matches.some(m => m.guessed === true),
                           rest_day: matches.every(m => m.rest_day === true),
                           notes: matches.map(m => m.notes).filter(Boolean).join("; ") || null,
@@ -347,6 +377,7 @@ export function reconcileAttempts(
                 timesVotes.push(rowForDay.times);
                 timesBboxVotes.push(rowForDay.bbox);
                 noBreakVotes.push(rowForDay.noBreak === true);
+                breakHoursVotes.push(rowForDay.breakHours);
             } else if (rowForDay.rest_day === true) {
                 attemptsThatMentionedDay++;
                 restVotes++;
@@ -452,14 +483,20 @@ export function reconcileAttempts(
             // declared standard break applies downstream) rather than a single attempt's claim
             // zeroing out the break for everyone.
             const outputNoBreak = noBreakVotes.length > 0 && noBreakVotes.every(v => v === true);
-            entries.push({ day, month, year: resolvedYear, times: outputTimes, hoursWorked: null, otHours: null, noBreak: outputNoBreak, guessed: false, rest_day: false, notes: null, bbox: timesBboxVotes.find(Boolean) ?? null });
+            // Same unanimity bar as noBreak above, adapted for a number instead of a boolean: every
+            // attempt that agreed on times must have reported the exact SAME breakHours figure, not
+            // just "some non-null value", for it to be trusted — one attempt missing it (null) or
+            // reading a different number than the others falls back to null (standard break applies
+            // downstream) rather than a single attempt's figure winning by default.
+            const outputBreakHours = breakHoursVotes.length > 0 && breakHoursVotes.every(v => v !== null && v === breakHoursVotes[0]) ? breakHoursVotes[0] : null;
+            entries.push({ day, month, year: resolvedYear, times: outputTimes, hoursWorked: null, otHours: null, noBreak: outputNoBreak, breakHours: outputBreakHours, guessed: false, rest_day: false, notes: null, bbox: timesBboxVotes.find(Boolean) ?? null });
         } else if (unanimous && allAgreeOnRest) {
             // Attempts don't have to agree on the exact wording (one might transcribe "MC", another
             // "M/C") to still unanimously agree it's a leave-type rest day — take whichever non-null
             // note the first attempt that had one wrote, rather than requiring textual unanimity.
-            entries.push({ day, month, year: resolvedYear, times: null, hoursWorked: null, otHours: null, noBreak: null, guessed: false, rest_day: true, notes: restNotes.find(Boolean) ?? null, bbox: restBboxVotes.find(Boolean) ?? null });
+            entries.push({ day, month, year: resolvedYear, times: null, hoursWorked: null, otHours: null, noBreak: null, breakHours: null, guessed: false, rest_day: true, notes: restNotes.find(Boolean) ?? null, bbox: restBboxVotes.find(Boolean) ?? null });
         } else if (unanimous && allAgreeOnHours) {
-            entries.push({ day, month, year: resolvedYear, times: null, hoursWorked: hoursVotes[0].hoursWorked, otHours: hoursVotes[0].otHours, noBreak: null, guessed: false, rest_day: false, notes: null, bbox: hoursVotes.find(v => v.bbox)?.bbox ?? null });
+            entries.push({ day, month, year: resolvedYear, times: null, hoursWorked: hoursVotes[0].hoursWorked, otHours: hoursVotes[0].otHours, noBreak: null, breakHours: null, guessed: false, rest_day: false, notes: null, bbox: hoursVotes.find(v => v.bbox)?.bbox ?? null });
         } else if (fullyParticipated && sufficientRedundancy && majorityTimes) {
             entries.push({
                 day,
@@ -469,6 +506,11 @@ export function reconcileAttempts(
                 hoursWorked: null,
                 otHours: null,
                 noBreak: majorityTimes.noBreak,
+                // Not majority-voted the same way times/noBreak are here — this whole branch is
+                // already a flagged, not-unanimous guess asking for a manual verify, so breakHours
+                // just falls back to null (the caseworker's declared standard break applies) rather
+                // than adding another layer of best-effort voting to an already-uncertain day.
+                breakHours: null,
                 bbox: majorityTimes.bbox,
                 guessed: true,
                 rest_day: false,
@@ -512,6 +554,7 @@ export function reconcileAttempts(
                 hoursWorked: null,
                 otHours: null,
                 noBreak: null,
+                breakHours: null,
                 bbox: null,
                 guessed: true,
                 rest_day: false,
@@ -773,6 +816,8 @@ export type GridRow = {
         times: number[] | null;
         hoursWorked: number | null;
         otHours: number | null;
+        // See ParsedEntry.breakHours' own comment.
+        breakHours: number | null;
         rest_day: boolean | null;
         notes: string | null;
         bbox: { x: number; y: number; w: number; h: number } | null;
@@ -868,6 +913,7 @@ export function reconcileGridAttempts(
             hoursWorked: c.hoursWorked,
             otHours: c.otHours,
             noBreak: null,
+            breakHours: c.breakHours,
             guessed: null,
             rest_day: c.rest_day,
             notes: c.notes,

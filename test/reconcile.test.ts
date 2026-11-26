@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { reconcileAttempts, reconcileRosterAttempts, type ParsedEntry, type RosterPageAttempt, type RosterRow } from "../lib/reconcile";
 
 function times(day: number, month: number, t: number[], overrides: Partial<ParsedEntry> = {}): ParsedEntry {
-    return { day, month, year: null, times: t, hoursWorked: null, otHours: null, noBreak: null, guessed: null, rest_day: null, notes: null, bbox: null, ...overrides };
+    return { day, month, year: null, times: t, hoursWorked: null, otHours: null, noBreak: null, breakHours: null, guessed: null, rest_day: null, notes: null, bbox: null, ...overrides };
 }
 
 function rosterRow(overrides: Partial<RosterRow> = {}): RosterRow {
@@ -14,11 +14,11 @@ function rosterAttempt(workers: RosterRow[], day: number | null = 14, month: num
 }
 
 function rest(day: number, month: number, notes: string | null = null): ParsedEntry {
-    return { day, month, year: null, times: null, hoursWorked: null, otHours: null, noBreak: null, guessed: null, rest_day: true, notes, bbox: null };
+    return { day, month, year: null, times: null, hoursWorked: null, otHours: null, noBreak: null, breakHours: null, guessed: null, rest_day: true, notes, bbox: null };
 }
 
 function hours(day: number, month: number, hoursWorked: number, otHours: number | null = null): ParsedEntry {
-    return { day, month, year: null, times: null, hoursWorked, otHours, noBreak: null, guessed: null, rest_day: null, notes: null, bbox: null };
+    return { day, month, year: null, times: null, hoursWorked, otHours, noBreak: null, breakHours: null, guessed: null, rest_day: null, notes: null, bbox: null };
 }
 
 describe("reconcileAttempts", () => {
@@ -168,6 +168,22 @@ describe("reconcileAttempts", () => {
         const attempts = [[times(1, 6, [800, 1700])], [times(1, 6, [800, 1700])], [times(1, 6, [800, 1700])]];
         const { entries } = reconcileAttempts(attempts, "test");
         expect(entries[0].year).toBeNull();
+    });
+
+    it("trusts a printed breakHours figure when every attempt agrees on the same value", () => {
+        const row = times(1, 6, [800, 1700], { breakHours: 1.5 });
+        const { entries } = reconcileAttempts([[row], [row], [row]], "test");
+        expect(entries[0].breakHours).toBe(1.5);
+    });
+
+    it("falls back to null breakHours when attempts disagree on the figure", () => {
+        const attempts = [
+            [times(1, 6, [800, 1700], { breakHours: 1.5 })],
+            [times(1, 6, [800, 1700], { breakHours: 6.5 })],
+            [times(1, 6, [800, 1700], { breakHours: 1.5 })],
+        ];
+        const { entries } = reconcileAttempts(attempts, "test");
+        expect(entries[0].breakHours).toBeNull();
     });
 
 });

@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { buildReviewRows, type RestDay, type TimeEntry } from "../lib/xlsx";
 
 function entry(date: string, clockIn: number, clockOut: number, overrides: Partial<TimeEntry> = {}): TimeEntry {
-    return { date: new Date(date), clockIn, clockOut, source: "test.pdf p1", guessed: false, noBreak: false, bbox: null, ...overrides };
+    return { date: new Date(date), clockIn, clockOut, source: "test.pdf p1", guessed: false, noBreak: false, breakHours: null, bbox: null, ...overrides };
 }
 
 describe("buildReviewRows", () => {
@@ -21,6 +21,11 @@ describe("buildReviewRows", () => {
         const rows = buildReviewRows([entry("2025-06-01", 800, 1700, { noBreak: true })], [], 1);
         expect(rows[0]).toMatchObject({ breakHours: 0, guessed: false });
         expect(rows[0].notes).toMatch(/no break\/lunch/);
+    });
+
+    it("uses the day's own printed break-duration figure over the declared standard", () => {
+        const rows = buildReviewRows([entry("2025-06-01", 800, 1700, { breakHours: 6.5 })], [], 1);
+        expect(rows[0]).toMatchObject({ breakHours: 6.5, guessed: false });
     });
 
     it("flags an implausible single-shift duration and falls back to the standard break", () => {
