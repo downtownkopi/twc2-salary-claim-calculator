@@ -1946,6 +1946,15 @@
           <h2 class="form-section-header">Summary</h2>
           <div class="ipa-review" id="ipaReview" style="display:none"></div>
           <div class="ipa-review" id="monthlyPayTotals" style="display:none; margin-top: 20px;"></div>
+          <div class="field" style="margin-top: 10px;">
+            <label>Add a month with no timesheet or payslip data at all, claimed as a regular full
+              month worked (basic salary + fixed allowances only — no OT/rest-day/public-holiday pay,
+              since nothing was scanned to compute those from)
+              <input type="month" id="addFullMonthInput">
+            </label>
+            <button type="button" class="generate-btn" id="addFullMonthBtn">+ Add full month</button>
+            <div class="status" id="addFullMonthStatus"></div>
+          </div>
           <div class="ipa-review" id="allowancesBreakdown" style="display:none; margin-top: 20px;"></div>
           <div class="ipa-review" id="nonFixedAllowanceBreakdown" style="display:none; margin-top: 20px;"></div>
           <div class="ipa-review" id="overtimeBreakdown" style="display:none; margin-top: 20px;"></div>
@@ -2197,6 +2206,15 @@
     // radio). Absent means "auto": assume a full month only for a month with no real timesheet
     // rows of its own (see recomputeMonthlyPayTotals' generalized per-month fallback).
     let daySourceByMonth = {};
+    // Months the caseworker manually declared "treat as a full month worked, basic salary only" —
+    // for a month with NEITHER a timesheet NOR a payslip covering it at all (the existing
+    // full-month-assumption fallback above is gated on getPayslipCoveredMonths(), so a month with
+    // truly nothing from any source doesn't even appear in the Basic Salary Breakdown table — see
+    // the "+ Add full month" control). Keyed "YYYY-MM"; union'd with getPayslipCoveredMonths()
+    // everywhere that function is used to decide monthKeys/the full-month-assumption loop, so a
+    // manually-added month gets IDENTICAL treatment to a real payslip-covered one (same proration,
+    // same per-month override radio to revert it later if real data turns up).
+    let manuallyAddedFullMonths = new Set();
     // Caseworker choice of OT RATE source, 'computed' | 'ipaDeclared' | 'payslip' — a completely
     // separate axis from otSourceByMonth above (that one picks which HOURS figure to use, per
     // month; this one picks which RATE the whole claim multiplies by). A single global choice, not
@@ -8730,9 +8748,13 @@
     // when there's no timesheet at all. Deliberately broader than getPayslipOtHoursByMonth (which
     // skips zero-hour entries) — a month with $0 OT reported is still a month the worker was
     // employed and paid for, so it still counts as "covered" here.
+    // Despite the name, also includes manuallyAddedFullMonths — a month the caseworker declared
+    // "full month, basic salary only" by hand (the "+ Add full month" control) gets IDENTICAL
+    // treatment everywhere this function's result drives the full-month-assumption fallback or the
+    // Basic Salary Breakdown's monthKeys/override-radio visibility, as if a payslip had covered it.
     /** Returns every calendar month any current payslip entry's period touches, as a Set of "YYYY-MM" keys. */
     function getPayslipCoveredMonths() {
-      const months = new Set();
+      const months = new Set(manuallyAddedFullMonths);
       for (const entry of collectAllPayslipEntries()) {
         const range = payslipPeriodRange(entry);
         if (!range) continue;
@@ -8745,6 +8767,36 @@
       }
       return months;
     }
+
+    // Lets a caseworker claim a month with NEITHER a timesheet NOR a payslip at all — the existing
+    // full-month-assumption fallback above only fires for a month getPayslipCoveredMonths() already
+    // knows about, so a month with truly nothing from any source never even gets a row in the Basic
+    // Salary Breakdown table to override. Adding it here just makes it as-if-payslip-covered (see
+    // getPayslipCoveredMonths' own comment) — recomputeMonthlyPayTotals' existing "auto: assume a
+    // full month when this month has no real timesheet rows and nothing's claimed yet" branch then
+    // handles the actual proration identically to a real payslip-covered gap month, including still
+    // clamping against the declared claim period and still offering the per-month override radio
+    // (so it can be reverted back to 'timesheet' later if real data for that month turns up).
+    document.getElementById('addFullMonthBtn').addEventListener('click', () => {
+      const statusEl = document.getElementById('addFullMonthStatus');
+      const input = document.getElementById('addFullMonthInput');
+      const monthKey = input.value; // "YYYY-MM" from <input type="month">, or "" if unset
+      if (!monthKey) {
+        statusEl.className = 'status error';
+        statusEl.textContent = 'Pick a month first.';
+        return;
+      }
+      if (manuallyAddedFullMonths.has(monthKey)) {
+        statusEl.className = 'status error';
+        statusEl.textContent = `${monthKey} was already added.`;
+        return;
+      }
+      manuallyAddedFullMonths.add(monthKey);
+      input.value = '';
+      statusEl.className = 'status';
+      statusEl.textContent = `Added ${monthKey} as a full month (basic salary only) — see the Basic Salary Breakdown table below.`;
+      recomputeMonthlyPayTotals();
+    });
 
     // The rate every excess/overtime-hour computation for a given month should actually use — the
     // caseworker's global pick (otRateSource, set in the IPA summary card) between the computed
