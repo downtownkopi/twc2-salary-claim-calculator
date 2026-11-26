@@ -16,7 +16,10 @@ import {
 
 // Same standalone-job shape as the medical certificate job (see ./medicalCertificateJob) — a
 // payslip scan is its own independent OT-hours source, not part of the timesheet/IPA pipeline.
-export type PayslipPageResult = { source: string; image: string; entries: PayslipEntry[] };
+// fileIndex/pageIndex let the client build this page's "Rotate + Rescan" key directly from the
+// scan's own result, instead of depending on a separate positional zip against the /api/preview
+// staging data (that dependency meant rescan silently disappeared whenever preview was skipped).
+export type PayslipPageResult = { source: string; image: string; fileIndex: number; pageIndex: number; entries: PayslipEntry[] };
 export type PayslipJob = {
     status: "running" | "done" | "error";
     pages: PayslipPageResult[];
@@ -101,7 +104,7 @@ export async function runPayslipJob(
         const pageImage = await images.get(pi);
 
         const source = `${file.originalname} p${pi + 1}`;
-        const page: PayslipPageResult = { source, image: await resizeForDisplay(pageImage, 1400), entries: [] };
+        const page: PayslipPageResult = { source, image: await resizeForDisplay(pageImage, 1400), fileIndex: fi, pageIndex: pi, entries: [] };
         const results = await runSequentially(
             SCAN_TEMPERATURES.map(({ temperature, seed }) => () => extractPayslipEntries(pageImage, temperature, seed, interpretationHint))
         );

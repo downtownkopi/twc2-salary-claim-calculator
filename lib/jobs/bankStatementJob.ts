@@ -18,7 +18,10 @@ import {
 // standalone cross-check against a worker's own claimed payments, not part of the timesheet/IPA
 // pipeline (different files, no year, no spreadsheet output), so it gets its own background-job
 // track rather than being bolted onto ProcessJob's shape.
-export type BankStatementPageResult = { source: string; image: string; transactions: BankTransaction[] };
+// fileIndex/pageIndex let the client build this page's "Rotate + Rescan" key directly from the
+// scan's own result, instead of depending on a separate positional zip against the /api/preview
+// staging data (that dependency meant rescan silently disappeared whenever preview was skipped).
+export type BankStatementPageResult = { source: string; image: string; fileIndex: number; pageIndex: number; transactions: BankTransaction[] };
 export type BankStatementJob = {
     status: "running" | "done" | "error";
     pages: BankStatementPageResult[];
@@ -107,7 +110,7 @@ export async function runBankStatementJob(
         const pageImage = await images.get(pi);
 
         const source = `${file.originalname} p${pi + 1}`;
-        const page: BankStatementPageResult = { source, image: await resizeForDisplay(pageImage, 1400), transactions: [] };
+        const page: BankStatementPageResult = { source, image: await resizeForDisplay(pageImage, 1400), fileIndex: fi, pageIndex: pi, transactions: [] };
         // Same SCAN_TEMPERATURES multi-attempt pattern as timesheet scanning — a single pass here
         // can genuinely miss a page's transaction entirely (the bug this was added to fix: one
         // deterministic attempt skipped 2 of 3 real payments on a page, understating what the

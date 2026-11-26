@@ -17,7 +17,10 @@ import {
 // Same standalone-job shape as the medical bills job (see ./medicalBillsJob) — a medical
 // certificate scan checks for proof of MC leave and is its own independent cross-check, not part
 // of the timesheet/IPA pipeline or the medical bills (billed-amount) one.
-export type MedicalCertificatesPageResult = { source: string; image: string; entries: MedicalCertificateEntry[] };
+// fileIndex/pageIndex let the client build this page's "Rotate + Rescan" key directly from the
+// scan's own result, instead of depending on a separate positional zip against the /api/preview
+// staging data (that dependency meant rescan silently disappeared whenever preview was skipped).
+export type MedicalCertificatesPageResult = { source: string; image: string; fileIndex: number; pageIndex: number; entries: MedicalCertificateEntry[] };
 export type MedicalCertificateJob = {
     status: "running" | "done" | "error";
     pages: MedicalCertificatesPageResult[];
@@ -101,7 +104,7 @@ export async function runMedicalCertificateJob(
         const pageImage = await images.get(pi);
 
         const source = `${file.originalname} p${pi + 1}`;
-        const page: MedicalCertificatesPageResult = { source, image: await resizeForDisplay(pageImage, 1400), entries: [] };
+        const page: MedicalCertificatesPageResult = { source, image: await resizeForDisplay(pageImage, 1400), fileIndex: fi, pageIndex: pi, entries: [] };
         const results = await runSequentially(
             SCAN_TEMPERATURES.map(({ temperature, seed }) => () => extractMedicalCertificateEntries(pageImage, temperature, seed, interpretationHint))
         );

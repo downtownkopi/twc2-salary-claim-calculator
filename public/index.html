@@ -3353,14 +3353,16 @@
       // Doc (.docx)"/"Generate PDF (.pdf)" at the bottom always stay reachable after a scan completes.
       pageReviewsEl.style.display = 'block';
       if (data.pageReviews && data.pageReviews.length > 0) {
-        // Same order the server itself walked (pdfsPreviewPages, minus whatever the staging step
-        // excluded) — zipped with data.pageReviews by position so each card knows its own
-        // (fileIndex, pageIndex) for the per-page "Rotate + Rescan" action below. This is always
-        // batch 0 (the main submit) — a later "Add more timesheet files" scan goes through
-        // mergeTimesheetPageBatch instead, never through this initial-render path.
-        const rawOrderedKeys = pdfsPreviewPages
-          .filter(p => !excludedPdfsPages.has(`${p.fileIndex}-${p.pageIndex}`))
-          .map(p => {
+        // Each page's own (fileIndex, pageIndex) — sent back by the scan itself (lib/jobs/
+        // timesheetJob.ts's PageReview) — builds this page's "Rotate + Rescan" key directly, rather
+        // than zipping positionally against a separate /api/preview staging array (that dependency
+        // meant rescan silently disappeared entirely whenever preview was skipped — see
+        // PREVIEW_ENABLED). data.pageReviews already excludes whatever the staging step dropped (the
+        // server skips those pages before scanning at all), so no separate exclusion filter is
+        // needed here either. This is always batch 0 (the main submit) — a later "Add more timesheet
+        // files" scan goes through mergeTimesheetPageBatch instead, never through this initial-render
+        // path.
+        const rawOrderedKeys = data.pageReviews.map(p => {
             const plainKey = `${p.fileIndex}-${p.pageIndex}`;
             const compositeKey = `0:${plainKey}`;
             // Migrate (copy, not move) any rotation chosen during pre-scan staging onto the
@@ -6022,11 +6024,12 @@
       // cards would render into a still-display:none container and silently not appear.
       pageReviewsEl.style.display = 'block';
       document.getElementById('pageReviewListHeading').style.display = 'block';
-      // 1. Build this batch's composite keys. No rotation to migrate — this batch skipped the
-      // pre-scan staging step entirely (see the plan's scope cut), so every page starts at
-      // rotation 0, same as any page's first-ever scan.
-      const previewPages = previewPagesForBatch(batchId);
-      const orderedKeys = previewPages.map(p => `${batchId}:${p.fileIndex}-${p.pageIndex}`);
+      // 1. Build this batch's composite keys directly from the scan's own (fileIndex, pageIndex)
+      // per page (lib/jobs/timesheetJob.ts's PageReview), not a separate /api/preview staging array
+      // — same reasoning as renderFinalResult's rawOrderedKeys above. No rotation to migrate — this
+      // batch skipped the pre-scan staging step entirely (see the plan's scope cut), so every page
+      // starts at rotation 0, same as any page's first-ever scan.
+      const orderedKeys = newPageReviews.map(p => `${batchId}:${p.fileIndex}-${p.pageIndex}`);
 
       // 2. Disambiguate source collisions against every page already shown (e.g. two different
       // uploads both containing a file literally named "timesheet.pdf") — source strings drive
@@ -7081,11 +7084,12 @@
       bankPageReviewListEl.style.display = 'block';
       document.getElementById('bankPageReviewListHeading').style.display = 'block';
       // Always batch 0 (the main submit) — a later "Add more bank statement files" scan goes
-      // through mergeBankPageBatch instead, never through this live/initial-render path.
+      // through mergeBankPageBatch instead, never through this live/initial-render path. Built
+      // directly from each page's own (fileIndex, pageIndex) — lib/jobs/bankStatementJob.ts's
+      // BankStatementPageResult — not a separate /api/preview staging array; see the timesheet
+      // section's identical fix for why (rescan silently disappeared whenever preview was skipped).
       const rawOrderedKeys = done
-        ? bankStatementPreviewPages
-          .filter(p => !excludedBankStatementPages.has(`${p.fileIndex}-${p.pageIndex}`))
-          .map(p => {
+        ? pages.map(p => {
             const plainKey = `${p.fileIndex}-${p.pageIndex}`;
             const compositeKey = `0:${plainKey}`;
             // Migrate (copy) any rotation chosen during pre-scan staging onto the batch-aware key —
@@ -7245,8 +7249,7 @@
       pageReviewsEl.style.display = 'block';
       bankPageReviewListEl.style.display = 'block';
       document.getElementById('bankPageReviewListHeading').style.display = 'block';
-      const previewPages = previewPagesForBankBatch(batchId);
-      const orderedKeys = previewPages.map(p => `${batchId}:${p.fileIndex}-${p.pageIndex}`);
+      const orderedKeys = newPages.map(p => `${batchId}:${p.fileIndex}-${p.pageIndex}`);
 
       // Disambiguate source collisions against every page already shown (e.g. two different
       // uploads both containing a file literally named "statement.pdf").
@@ -7614,9 +7617,7 @@
       // Always batch 0 (the main submit) — a later "Add more medical bill files" scan goes through
       // mergeMedicalBillsPageBatch instead, never through this live/initial-render path.
       const rawOrderedKeys = done
-        ? medicalBillsPreviewPages
-          .filter(p => !excludedMedicalBillsPages.has(`${p.fileIndex}-${p.pageIndex}`))
-          .map(p => {
+        ? pages.map(p => {
             const plainKey = `${p.fileIndex}-${p.pageIndex}`;
             const compositeKey = `0:${plainKey}`;
             // Migrate (copy) any rotation chosen during pre-scan staging onto the batch-aware key —
@@ -7744,8 +7745,7 @@
       pageReviewsEl.style.display = 'block';
       medicalPageReviewListEl.style.display = 'block';
       document.getElementById('medicalPageReviewListHeading').style.display = 'block';
-      const previewPages = previewPagesForMedicalBillsBatch(batchId);
-      const orderedKeys = previewPages.map(p => `${batchId}:${p.fileIndex}-${p.pageIndex}`);
+      const orderedKeys = newPages.map(p => `${batchId}:${p.fileIndex}-${p.pageIndex}`);
 
       const existingSources = new Set([...medicalPageReviewListEl.querySelectorAll('.page-review-source span')].map(el => el.textContent));
       const dedupedPages = newPages.map(page => {
@@ -8142,9 +8142,7 @@
       // Always batch 0 (the main submit) — a later "Add more medical certificate files" scan goes
       // through mergeMedicalCertPageBatch instead, never through this live/initial-render path.
       const rawOrderedKeys = done
-        ? medicalCertificatesPreviewPages
-          .filter(p => !excludedMedicalCertificatesPages.has(`${p.fileIndex}-${p.pageIndex}`))
-          .map(p => {
+        ? pages.map(p => {
             const plainKey = `${p.fileIndex}-${p.pageIndex}`;
             const compositeKey = `0:${plainKey}`;
             // Migrate (copy) any rotation chosen during pre-scan staging onto the batch-aware key —
@@ -8274,8 +8272,7 @@
       pageReviewsEl.style.display = 'block';
       medicalCertPageReviewListEl.style.display = 'block';
       document.getElementById('medicalCertPageReviewListHeading').style.display = 'block';
-      const previewPages = previewPagesForMedicalCertBatch(batchId);
-      const orderedKeys = previewPages.map(p => `${batchId}:${p.fileIndex}-${p.pageIndex}`);
+      const orderedKeys = newPages.map(p => `${batchId}:${p.fileIndex}-${p.pageIndex}`);
 
       const existingSources = new Set([...medicalCertPageReviewListEl.querySelectorAll('.page-review-source span')].map(el => el.textContent));
       const dedupedPages = newPages.map(page => {
@@ -9006,9 +9003,7 @@
       // Always batch 0 (the main submit) — a later "Add more payslip files" scan goes through
       // mergePayslipPageBatch instead, never through this live/initial-render path.
       const rawOrderedKeys = done
-        ? payslipsPreviewPages
-          .filter(p => !excludedPayslipsPages.has(`${p.fileIndex}-${p.pageIndex}`))
-          .map(p => {
+        ? pages.map(p => {
             const plainKey = `${p.fileIndex}-${p.pageIndex}`;
             const compositeKey = `0:${plainKey}`;
             // Migrate (copy) any rotation chosen during pre-scan staging onto the batch-aware key —
@@ -9138,8 +9133,7 @@
       pageReviewsEl.style.display = 'block';
       payslipPageReviewListEl.style.display = 'block';
       document.getElementById('payslipPageReviewListHeading').style.display = 'block';
-      const previewPages = previewPagesForPayslipsBatch(batchId);
-      const orderedKeys = previewPages.map(p => `${batchId}:${p.fileIndex}-${p.pageIndex}`);
+      const orderedKeys = newPages.map(p => `${batchId}:${p.fileIndex}-${p.pageIndex}`);
 
       const existingSources = new Set([...payslipPageReviewListEl.querySelectorAll('.page-review-source span')].map(el => el.textContent));
       const dedupedPages = newPages.map(page => {

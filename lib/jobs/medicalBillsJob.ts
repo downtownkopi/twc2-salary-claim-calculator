@@ -17,7 +17,10 @@ import {
 // Same standalone-job shape as the bank statement job (see ./bankStatementJob) — a medical bills
 // scan checks for unreimbursed costs and is its own independent cross-check, not part of the
 // timesheet/IPA pipeline.
-export type MedicalBillsPageResult = { source: string; image: string; entries: MedicalBillEntry[] };
+// fileIndex/pageIndex let the client build this page's "Rotate + Rescan" key directly from the
+// scan's own result, instead of depending on a separate positional zip against the /api/preview
+// staging data (that dependency meant rescan silently disappeared whenever preview was skipped).
+export type MedicalBillsPageResult = { source: string; image: string; fileIndex: number; pageIndex: number; entries: MedicalBillEntry[] };
 export type MedicalBillsJob = {
     status: "running" | "done" | "error";
     pages: MedicalBillsPageResult[];
@@ -101,7 +104,7 @@ export async function runMedicalBillsJob(
         const pageImage = await images.get(pi);
 
         const source = `${file.originalname} p${pi + 1}`;
-        const page: MedicalBillsPageResult = { source, image: await resizeForDisplay(pageImage, 1400), entries: [] };
+        const page: MedicalBillsPageResult = { source, image: await resizeForDisplay(pageImage, 1400), fileIndex: fi, pageIndex: pi, entries: [] };
         const results = await runSequentially(
             SCAN_TEMPERATURES.map(({ temperature, seed }) => () => extractMedicalBillEntries(pageImage, temperature, seed, interpretationHint))
         );

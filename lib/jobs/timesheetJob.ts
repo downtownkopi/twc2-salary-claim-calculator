@@ -51,6 +51,12 @@ export type RotationMap = { pdfs?: Record<string, number>; ipa?: Record<string, 
 export type PageReview = {
     source: string;
     image: string;
+    // Which uploaded file (0-indexed, upload order) and which page within it (0-indexed) this
+    // review came from — lets the client build this page's "Rotate + Rescan" key directly from the
+    // scan result itself, rather than depending on a separate positional zip against the
+    // /api/preview staging data (see pageImages' own comment above, where this is set).
+    fileIndex: number;
+    pageIndex: number;
     entries: { date: string; type: string;[k: string]: unknown }[];
     warnings: FillWarning[];
     dataModel: PageDataModel;
@@ -228,7 +234,7 @@ export async function runProcessJob(
     // scramble page order in the final review UI to "whichever finished first" instead of the
     // order the files/pages were actually uploaded in. A page that fails before reaching its first
     // write leaves a hole, filtered out below once every page has settled.
-    const pageImages: ({ source: string; image: string } | undefined)[] = [];
+    const pageImages: ({ source: string; image: string; fileIndex: number; pageIndex: number } | undefined)[] = [];
     // dataModel/pageContext per page, keyed by source — populated once extractPageContext runs
     // below. Carried into pageReviews purely so a later "flag this page" action (public/index.html)
     // can send this classification along with the flag, without the client having to re-derive it.
@@ -767,7 +773,12 @@ export async function runProcessJob(
                 // not the raw (possibly sideways) render.
                 const pageImage = await images.get(i);
                 displayImage = await resizeForDisplay(pageImage);
-                pageImages[orderIndex] = { source, image: displayImage };
+                // fileIndex/pageIndex carried through to PageReview below so the client can build
+                // this page's "Rotate + Rescan" key directly from the scan's own result, instead of
+                // depending on a separate positional zip against the /api/preview staging data (that
+                // dependency meant rescan silently disappeared entirely whenever preview was skipped
+                // — see PREVIEW_ENABLED in public/index.html).
+                pageImages[orderIndex] = { source, image: displayImage, fileIndex: fi, pageIndex: i };
 
                 // Page-level context (e.g. a month header) + timesheet/data-model classification —
                 // normally already computed by the prescan pass above; only re-run here on a prescan
@@ -1594,6 +1605,8 @@ export async function runProcessJob(
                     job.pages[orderIndex] = {
                         source,
                         image: displayImage,
+                        fileIndex: fi,
+                        pageIndex: i,
                         entries: entriesForSource(source),
                         warnings: warnings.filter(w => w.source.split(", ").includes(source)),
                         dataModel,
@@ -1801,8 +1814,8 @@ export async function runProcessJob(
     // Holes (pages that threw before ever writing their pageImages slot — see processPage) are
     // dropped here; every slot that DID get written keeps its original upload-order position
     // relative to the others, since pageImages was written by index, not push().
-    const orderedPageImages = pageImages.filter((p): p is { source: string; image: string } => p !== undefined);
-    const pageReviews: PageReview[] = orderedPageImages.map(({ source, image }) => {
+    const orderedPageImages = pageImages.filter((p): p is { source: string; image: string; fileIndex: number; pageIndex: number } => p !== undefined);
+    const pageReviews: PageReview[] = orderedPageImages.map(({ source, image, fileIndex, pageIndex }) => {
         const entries = entriesForSource(source);
 
         // Some warnings combine multiple sources into one comma-joined string (e.g. a multi-shift
@@ -1816,6 +1829,8 @@ export async function runProcessJob(
         return {
             source,
             image,
+            fileIndex,
+            pageIndex,
             entries,
             warnings: pageWarnings,
             dataModel: meta?.dataModel ?? "unclear",
