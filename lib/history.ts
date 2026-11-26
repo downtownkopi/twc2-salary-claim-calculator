@@ -153,7 +153,11 @@ export function getScanForOwner(id: string, userId: number): ScanRow | null {
     return row ?? null;
 }
 
-export type AdminScanListRow = ScanListRow & { user_fullname: string; user_email: string };
+// user_id is included (unlike ScanListRow, which deliberately omits it) so the "All scans"
+// dashboard — open to every caseworker, not just admins — can tell the caller which rows are their
+// own and offer Delete only on those (DELETE /api/history/:id is owner-scoped regardless, but the
+// UI shouldn't even show a Delete button on a scan the click would just 404 on).
+export type AdminScanListRow = ScanListRow & { user_id: number; user_fullname: string; user_email: string };
 
 /** Lists scans across every user (admin dashboard) — optionally scoped to one user_id for drill-down. Never includes result_json. */
 export function listAllScans(opts: { limit: number; offset: number; scanType?: string; userId?: number }): { rows: AdminScanListRow[]; total: number } {
@@ -162,7 +166,7 @@ export function listAllScans(opts: { limit: number; offset: number; scanType?: s
     const params = { scanType: opts.scanType ?? null, userId: opts.userId ?? null, limit: opts.limit, offset: opts.offset };
     const rows = db
         .prepare(
-            `SELECT id, scan_type, title, cost_usd, duration_ms, created_at, user_fullname, user_email
+            `SELECT id, scan_type, title, cost_usd, duration_ms, created_at, user_id, user_fullname, user_email
              FROM scans ${whereClause} ORDER BY created_at DESC LIMIT @limit OFFSET @offset`
         )
         .all(params) as AdminScanListRow[];

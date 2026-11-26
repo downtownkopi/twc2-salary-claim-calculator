@@ -174,7 +174,7 @@
       text-align: left;
       padding: 6px 10px 6px 0;
       border-bottom: 1px solid var(--border);
-      vertical-align: top;
+      vertical-align: middle;
     }
 
     .history-table th {
@@ -1012,6 +1012,22 @@
     }
 
     .row-delete-btn:hover {
+      opacity: 0.85;
+    }
+
+    .history-view-btn {
+      background: var(--accent);
+      color: white;
+      border: none;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 5px 7px;
+      border-radius: 4px;
+      cursor: pointer;
+    }
+
+    .history-view-btn:hover {
       opacity: 0.85;
     }
 
@@ -2230,10 +2246,15 @@
     // the scan (viewing another caseworker's case data is in scope for the admin dashboard, editing
     // it is not) and points "Back" at the admin dashboard instead of the personal history list.
     let viewingAsAdminReadOnly = false;
-    // Populated once from GET /api/me on page load — gates whether the "Admin dashboard" nav button
-    // ever renders. The admin API routes themselves are the real security boundary (403 for a
-    // non-admin); this is purely a UI convenience so a non-admin never sees a dead-end link.
+    // Populated once from GET /api/me on page load — gates whether the cost cards/tables/column show
+    // in the "All scans" dashboard (that view itself is open to everyone; only its cost figures are
+    // admin-only — see GET /api/admin/cost-summary and the cost_usd stripping in GET /api/admin/scans,
+    // the real security boundary this is a client-side mirror of).
     let isCurrentUserAdmin = false;
+    // Also populated from GET /api/me — lets the "All scans" dashboard offer Delete only on rows the
+    // current user actually owns (DELETE /api/history/:id is owner-scoped server-side regardless,
+    // this just avoids showing a button that would 404).
+    let currentUserId = null;
     let ipaRotations = {};
     // Every {fileIndex, pageIndex} pair the staging preview found, in file/page order — same order
     // server.ts's own pageTasks loop walks (see runProcessJob), just without the excluded-page
@@ -9301,8 +9322,8 @@
           <td>${row.title ? escapeHtml(row.title) : '<span class="muted">—</span>'}</td>
           <td>${cost}</td>
           <td>
-            <button type="button" class="generate-btn" data-history-view="${row.id}" data-history-type="${row.scan_type}">View</button>
-            <button type="button" class="generate-btn" data-history-delete="${row.id}" title="Delete this scan" style="margin-left:6px;">Delete</button>
+            <button type="button" class="history-view-btn" data-history-view="${row.id}" data-history-type="${row.scan_type}" title="View" aria-label="View"><svg viewBox="0 0 16 16" style="width:14px;height:14px;flex-shrink:0;" fill="currentColor" aria-hidden="true"><path d="M8 3C4.5 3 1.5 5.1 0 8c1.5 2.9 4.5 5 8 5s6.5-2.1 8-5c-1.5-2.9-4.5-5-8-5zm0 8.3A3.3 3.3 0 1 1 8 4.7a3.3 3.3 0 0 1 0 6.6zm0-5.3a2 2 0 1 0 0 4 2 2 0 0 0 0-4z"/></svg></button>
+            <button type="button" class="row-delete-btn" data-history-delete="${row.id}" title="Delete this scan" aria-label="Delete this scan" style="margin-left:6px;"><svg viewBox="0 0 16 16" style="width:13px;height:13px;flex-shrink:0;" fill="currentColor" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
           </td>
         </tr>`;
       }).join('');
@@ -9544,12 +9565,13 @@
     const adminScansPaginationEl = document.getElementById('adminScansPagination');
     let adminScansOffset = 0;
 
-    /** Fetches /api/me once on load to know whether to show the cost cards/tables/column (admin-only display). */
+    /** Fetches /api/me once on load to know whether to show the cost cards/tables/column (admin-only display), and whose rows in "All scans" are deletable. */
     async function checkAdminAccess() {
       try {
         const res = await fetch('/api/me');
         const data = await res.json();
         isCurrentUserAdmin = !!data.isAdmin;
+        currentUserId = data.id;
         document.getElementById('adminCostSection').style.display = isCurrentUserAdmin ? '' : 'none';
         document.getElementById('adminScansCostHeader').style.display = isCurrentUserAdmin ? '' : 'none';
       } catch {
@@ -9634,17 +9656,29 @@
         // The Cost column (<th id="adminScansCostHeader">) is hidden entirely for a non-admin (see
         // checkAdminAccess) — skip this <td> too so the row's columns still line up with the header.
         const costCell = isCurrentUserAdmin ? `<td>${cost}</td>` : '';
+        // Delete is only offered on a scan the current user actually performed themselves — the
+        // server enforces this regardless (DELETE /api/history/:id 404s on anyone else's scan), but
+        // there's no point showing a button that would just fail for a scan belonging to another
+        // caseworker.
+        const deleteBtn = row.user_id === currentUserId
+          ? `<button type="button" class="row-delete-btn" data-admin-scan-delete="${row.id}" title="Delete this scan" aria-label="Delete this scan" style="margin-left:6px;"><svg viewBox="0 0 16 16" style="width:13px;height:13px;flex-shrink:0;" fill="currentColor" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>`
+          : '';
         return `<tr>
           <td>${date}</td>
           <td>${typeLabel}</td>
           <td>${escapeHtml(row.user_fullname || '')}</td>
           <td>${row.title ? escapeHtml(row.title) : '<span class="muted">—</span>'}</td>
           ${costCell}
-          <td><button type="button" class="generate-btn" data-admin-scan-view="${row.id}" data-admin-scan-type="${row.scan_type}">View</button></td>
+          <td>
+            <button type="button" class="history-view-btn" data-admin-scan-view="${row.id}" data-admin-scan-type="${row.scan_type}" title="View" aria-label="View"><svg viewBox="0 0 16 16" style="width:14px;height:14px;flex-shrink:0;" fill="currentColor" aria-hidden="true"><path d="M8 3C4.5 3 1.5 5.1 0 8c1.5 2.9 4.5 5 8 5s6.5-2.1 8-5c-1.5-2.9-4.5-5-8-5zm0 8.3A3.3 3.3 0 1 1 8 4.7a3.3 3.3 0 0 1 0 6.6zm0-5.3a2 2 0 1 0 0 4 2 2 0 0 0 0-4z"/></svg></button>${deleteBtn}
+          </td>
         </tr>`;
       }).join('');
       adminScansTableBodyEl.querySelectorAll('[data-admin-scan-view]').forEach(btn => {
         btn.addEventListener('click', () => openAdminScanDetail(btn.dataset.adminScanView, btn.dataset.adminScanType));
+      });
+      adminScansTableBodyEl.querySelectorAll('[data-admin-scan-delete]').forEach(btn => {
+        btn.addEventListener('click', () => deleteAdminScan(btn.dataset.adminScanDelete));
       });
 
       const hasPrev = adminScansOffset > 0;
@@ -9656,6 +9690,23 @@
       `;
       if (hasPrev) document.getElementById('adminScansPrevBtn').addEventListener('click', () => { adminScansOffset = Math.max(0, adminScansOffset - HISTORY_PAGE_SIZE); loadAdminScansList(); });
       if (hasNext) document.getElementById('adminScansNextBtn').addEventListener('click', () => { adminScansOffset += HISTORY_PAGE_SIZE; loadAdminScansList(); });
+    }
+
+    // Same DELETE /api/history/:id route the personal history list's deleteHistoryScan uses — this
+    // is just the "All scans" dashboard's own entry point to it, reloading its own list afterward
+    // instead of the personal one.
+    /** Deletes one of the current user's own scans from the "All scans" dashboard (after confirmation) and refreshes the list. */
+    async function deleteAdminScan(scanId) {
+      if (!confirm('Delete this scan? This cannot be undone.')) return;
+      try {
+        const res = await fetch(`/api/history/${scanId}`, { method: 'DELETE' });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || `Server returned ${res.status}`);
+        loadAdminScansList();
+      } catch (err) {
+        adminScansStatusEl.className = 'status error';
+        adminScansStatusEl.textContent = 'Error deleting scan: ' + err.message;
+      }
     }
 
     /** Opens a scan from the admin dashboard — same loaders as the personal history list, just read-only (see viewingAsAdminReadOnly). */
