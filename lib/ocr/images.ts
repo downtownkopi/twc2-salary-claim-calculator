@@ -47,6 +47,20 @@ async function boostFaintContrast(png: Buffer): Promise<Buffer> {
 // pages; this caps concurrent rendering of a single PDF's own pages).
 const PDF_RENDER_CONCURRENCY = 1;
 
+// Caps how large a single rendered page is allowed to come out, regardless of what `scale ×
+// the PDF's own native page size` would otherwise produce. scale is a FIXED multiplier with zero
+// awareness of how large a page's native resolution already is — fine for a normal low-res scanned
+// page (the case scale 3.0 was tuned for), but a real-world timesheet is just as likely to be a PDF
+// built from full-resolution phone-camera photos (one per page), where the native page size is
+// already huge. Observed live: a 20-page upload like this rendered its first page at 6804×12096px
+// at scale 3.0 — a 314MB raw buffer for ONE page, a major contributor to a production memory spike
+// severe enough to crash-loop the process. Same ceiling imageToPages below already uses for a raw
+// photo upload (already proven legible for OCR there) — downscaled immediately after render, before
+// boostFaintContrast or anything else touches the oversized buffer, so it never propagates further
+// into the pipeline (base64 encoding, the agentic loop's conversation history, MAX_PAGE_CONCURRENCY
+// pages processing at once).
+const MAX_RENDERED_PAGE_DIMENSION = 2500;
+
 // Convert a PDF (path or in-memory buffer) into per-page PNG files on disk, one per page. Pages
 // used to be collected into one in-memory base64 array — for a large multi-page upload (e.g.
 // ~159 pages), that held every rendered page's bytes in RAM at once for the whole job. Writing
@@ -90,7 +104,11 @@ export async function pdfToImages(input: string | Buffer, destDir: string, maxPa
             const i = nextPageIndex++;
             if (i >= total) return;
             const pageBuffer = await document.getPage(i + 1);
-            const boosted = await boostFaintContrast(pageBuffer);
+            const capped = await sharp(pageBuffer)
+                .resize({ width: MAX_RENDERED_PAGE_DIMENSION, height: MAX_RENDERED_PAGE_DIMENSION, fit: "inside", withoutEnlargement: true })
+                .png()
+                .toBuffer();
+            const boosted = await boostFaintContrast(capped);
             await writeFile(PagedImages.pagePath(destDir, i), boosted);
         }
     }
