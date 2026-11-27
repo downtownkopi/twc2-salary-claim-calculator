@@ -9781,18 +9781,33 @@
     }
 
     /** Fetches one saved claim's full record (every scan type it contains) and renders them all together. */
-    async function openHistoryDetail(groupId) {
+    /** Whether any scan in a fetched claim belongs to the current user — the real ownership check, independent of which view (list/admin/deep link) led here. */
+    function claimOwnedByCurrentUser(data) {
+      return Object.values(data.types || {}).some(t => t.userId === currentUserId);
+    }
+    /**
+     * Fetches one saved claim and renders it.
+     * @param {string} groupId
+     * @param {{forceReadOnly?: boolean}} [opts] - `forceReadOnly: true` (used only by
+     * openAdminScanDetail) keeps the admin dashboard's own "view only, even your own records,
+     * editing stays out of scope here" policy regardless of actual ownership. Omitted everywhere
+     * else — real ownership (compared against the fetched claim's own userId) decides whether Save
+     * shows, so a caseworker revisiting their OWN claim via a ?claim= deep link (e.g. their own
+     * "Copy link", or a bookmark) still gets to edit it, not just non-owners viewing a shared link.
+     */
+    async function openHistoryDetail(groupId, opts) {
       // Whichever list is currently on screen — the caseworker's own history list, or (if
-      // viewingAsAdminReadOnly was just set by openAdminScanDetail) the admin dashboard's scans
+      // opts.forceReadOnly was just set by openAdminScanDetail) the admin dashboard's scans
       // table — gets the loading/error message; writing it to the other, hidden one would leave
       // the visible view showing no feedback at all.
-      const statusEl = viewingAsAdminReadOnly ? adminScansStatusEl : historyListStatusEl;
+      const statusEl = (opts && opts.forceReadOnly) ? adminScansStatusEl : historyListStatusEl;
       statusEl.className = 'status loading';
       statusEl.textContent = 'Loading…';
       try {
         const res = await fetch(`/api/claims/${groupId}`);
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || `Server returned ${res.status}`);
+        viewingAsAdminReadOnly = (opts && opts.forceReadOnly) ? true : !claimOwnedByCurrentUser(data);
         enterHistoryDetailView(data);
       } catch (err) {
         statusEl.className = 'status error';
@@ -10035,7 +10050,10 @@
         // Not logged in / request failed — leave cost sections hidden, same as a non-admin.
       }
     }
-    checkAdminAccess();
+    // Captured (not fire-and-forget) so openHistoryDetailFromUrl can await it before deciding
+    // whether a deep-linked claim is actually owned by the current user — currentUserId isn't
+    // known until this resolves.
+    const adminAccessPromise = checkAdminAccess();
 
     function showAdminDashboardView() {
       document.getElementById('scanFormWrap').style.display = 'none';
@@ -10170,8 +10188,7 @@
 
     /** Opens a claim from the admin dashboard — same combined detail view as the personal history list, just read-only (see viewingAsAdminReadOnly). */
     function openAdminScanDetail(groupId) {
-      viewingAsAdminReadOnly = true;
-      openHistoryDetail(groupId);
+      openHistoryDetail(groupId, { forceReadOnly: true });
     }
 
     document.getElementById('copyHistoryLinkBtn').addEventListener('click', async () => {
@@ -10188,15 +10205,18 @@
 
     // Opens whatever claim the URL's ?claim= points at — same loader either a "View" click or this
     // deep link ends up calling (openHistoryDetail), just reached on page load instead of a click.
-    // Read-only (same as opening from the admin dashboard) since a shared link's recipient may well
-    // not be the claim's own owner — PUT/DELETE /api/claims/:groupId is owner-scoped regardless,
-    // this just avoids showing a Save button that would merely 404 for most recipients.
+    // NOT forced read-only — openHistoryDetail compares the fetched claim's own userId against
+    // currentUserId, so the owner reopening their own "Copy link"/bookmark still gets Save, while a
+    // shared link's non-owner recipient still only gets a read-only view (PUT/DELETE
+    // /api/claims/:groupId is owner-scoped regardless; this just avoids showing a Save button that
+    // would merely 404 for them). Awaits adminAccessPromise first since currentUserId isn't known
+    // until that /api/me fetch resolves.
     /** Opens the claim named in the current URL's ?claim= query param, if present. */
     async function openHistoryDetailFromUrl() {
       const params = new URLSearchParams(location.search);
       const groupId = params.get('claim');
       if (!groupId) return;
-      viewingAsAdminReadOnly = true;
+      await adminAccessPromise;
       openingFromUrlSync = true;
       try {
         await openHistoryDetail(groupId);

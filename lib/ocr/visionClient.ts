@@ -25,16 +25,18 @@ import { logVisionEvent } from "../visionDebugLog";
 export const PRIMARY_VISION_MODEL = "xiaomi/mimo-v2.6-flash";
 // Escalation target when every agreeing PRIMARY_VISION_MODEL attempt returns zero rows (see
 // lib/jobs/timesheetJob.ts's agentic one_worker_many_dates/one_date_many_workers/
-// many_workers_many_dates branches). Previously qwen/qwen3-vl-235b-a22b-instruct, validated against
-// PRIMARY_VISION_MODEL's (then xiaomi/mimo-v2.5's) empty-array bail-out on
+// many_workers_many_dates branches). Briefly xiaomi/mimo-v2.6-pro (same mimo family as the 2026-11-25
+// primary swap above, so an escalation was at least a genuinely different model class) — but never
+// re-validated against the actual empty-array case this tier exists for, and notably more expensive
+// per token ($0.435/$0.87 per M) than qwen3-vl-235b below for no demonstrated accuracy benefit.
+// Reverted to qwen/qwen3-vl-235b-a22b-instruct on 2026-11-27 — this is the model that was ORIGINALLY
+// validated here against PRIMARY_VISION_MODEL's (then xiaomi/mimo-v2.5's) empty-array bail-out on
 // sample-data/137X/137X_Timesheets.pdf p1 (61 dense handwritten clock-time rows across 4
 // side-by-side monthly sub-tables): v2.5 $0.0063/0 rows vs qwen3-vl-235b $0.0163/62 rows, matching a
-// manual read of the page. Repointed to xiaomi/mimo-v2.6-pro on 2026-11-25 alongside the primary
-// model swap above — same mimo family as the new primary (so an escalation is a genuinely different
-// model class), already spot-checked accurate on the page-0.pdf sample above. Not yet re-validated
-// against the specific 137X_Timesheets.pdf empty-array case qwen3-vl-235b was chosen for — re-test
-// there if v2.6-flash's own empty-array rate turns out to be non-trivial in practice.
-export const FALLBACK_VISION_MODEL = "xiaomi/mimo-v2.6-pro";
+// manual read of the page. Also cheaper overall than mimo-v2.6-pro ($0.21/$1.90 per M vs
+// $0.435/$0.87) for this task — OCR calls are image-token-dominated on the input side, where
+// qwen3-vl-235b is the cheaper of the two.
+export const FALLBACK_VISION_MODEL = "qwen/qwen3-vl-235b-a22b-instruct";
 
 // Used only by translateTierCondition (lib/tierCondition.ts) — a tiny, non-vision, low-stakes
 // text task (turning one sentence like "time beyond 5pm" into an expression), so it deliberately
