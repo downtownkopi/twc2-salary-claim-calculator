@@ -246,7 +246,24 @@ export async function runAgentLoop(
         // cannot call a tool it isn't offered, forcing at least one genuine attempt at reading the
         // full page (via emitRows, optionally after getTargetWorker/describeShape) before cropping
         // becomes an option at all, from turn 1 onward.
-        const tools = buildTools(turn > 0);
+        const isLastTurn = turn === maxTurns - 1;
+        // Observed live on dense pages: a model that's still exploring (repeatedly cropping,
+        // never emitting) at turn 0..maxTurns-2 just keeps exploring until the hard cap silently
+        // drops the whole page as "did not converge" — a worse outcome than a committed,
+        // possibly-imperfect answer. On the LAST turn, withhold every exploratory tool so only the
+        // two terminal tools remain — toolChoice "required" then forces an actual emitRows/
+        // flagForHuman call instead of letting the budget run out on another crop.
+        const tools = isLastTurn ? buildTools(true).filter(t => t.name === "emitRows" || t.name === "flagForHuman") : buildTools(turn > 0);
+
+        if (isLastTurn) {
+            messages.push({
+                role: "user",
+                content: [{
+                    type: "text",
+                    text: "This is your last turn. You must call emitRows now with your best reading so far (leave genuinely illegible fields null rather than guessing), or flagForHuman if you cannot extract anything usable. No further exploration tools are available.",
+                }],
+            });
+        }
 
         let response;
         try {
