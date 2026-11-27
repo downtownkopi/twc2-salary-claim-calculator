@@ -2318,14 +2318,8 @@
     // Mirrors pdfsPreviewPages (batch 0's own {fileIndex,pageIndex} list, populated by the pre-scan
     // staging step) but for every OTHER batch — a batch added via "Add more timesheet files" skips
     // the staging UI entirely (see the plan's scope cut), so its {fileIndex,pageIndex} list is
-    // learned via a silent /api/preview call instead and stored here, keyed by batchId. Batch 0
-    // itself is never stored here — `previewPagesForBatch(0)` reads the existing global
-    // `pdfsPreviewPages` directly, so the staging step doesn't need to also mirror into this object.
+    // learned via a silent /api/preview call instead and stored here, keyed by batchId.
     let pdfsPreviewPagesByBatch = {};
-    /** Returns the known {fileIndex,pageIndex} list for a given timesheet upload batch. */
-    function previewPagesForBatch(batchId) {
-      return batchId === 0 ? pdfsPreviewPages : (pdfsPreviewPagesByBatch[batchId] || []);
-    }
 
     // ===== Timesheet/IPA staging preview (pre-scan rotate/exclude step) =====
     // Both pdfs and ipa staging grids are now page-level (rotate/delete per page) — the only real
@@ -5926,7 +5920,14 @@
 
         // Excludes every OTHER page of this same file — only the target page actually gets
         // (re-)scanned; the rest of the batch, and the rest of this file, is left untouched.
-        const pageCount = previewPagesForBatch(batchId).filter(p => p.fileIndex === fileIndex).length;
+        // Counted from the rendered rescan-control elements currently in the DOM (one per page of
+        // this file actually in the review), not a /api/preview-derived array — that array is empty
+        // whenever preview is skipped (e.g. PREVIEW_ENABLED = false), which silently zeroed this
+        // count, excluded nothing, and made a "rescan this page" request rescan the WHOLE file
+        // instead — whichever page happened to land first in the result then got spliced into this
+        // card regardless of which page was actually clicked (observed live: rescanning a Jan 2026
+        // card showed an unrelated Oct 2026 page's screenshot afterward).
+        const pageCount = [...pageReviewList.querySelectorAll('.page-rescan-controls')].filter(c => Number(c.dataset.batchId) === batchId && Number(c.dataset.fileIndex) === fileIndex).length;
         const excluded = [];
         for (let pi = 0; pi < pageCount; pi++) if (pi !== pageIndex) excluded.push(`0-${pi}`);
 
@@ -6808,10 +6809,6 @@
     // the timesheet section. Batch 0 is always the main submit's bankStatementInput.files.
     let bankStatementFileBatches = [];
     let bankStatementPreviewPagesByBatch = {};
-    /** Returns the known {fileIndex,pageIndex} list for a given bank-statement upload batch. */
-    function previewPagesForBankBatch(batchId) {
-      return batchId === 0 ? bankStatementPreviewPages : (bankStatementPreviewPagesByBatch[batchId] || []);
-    }
 
     /** Renders one staging-page thumbnail (image + rotate/delete buttons) for the bank statement upload. */
     function renderBankStageTile(key, label, imageB64) {
@@ -7204,7 +7201,10 @@
         statusEl.className = 'page-rescan-status';
         statusEl.textContent = 'Rescanning…';
 
-        const pageCount = previewPagesForBankBatch(batchId).filter(p => p.fileIndex === fileIndex).length;
+        // Counted from the rendered rescan-control elements in the DOM, not a /api/preview-derived
+        // array — see the timesheet section's identical fix/comment for why (that array being empty
+        // whenever preview is skipped made a single-page rescan silently rescan the whole file).
+        const pageCount = [...bankPageReviewListEl.querySelectorAll('.page-rescan-controls')].filter(c => Number(c.dataset.batchId) === batchId && Number(c.dataset.fileIndex) === fileIndex).length;
         const excluded = [];
         for (let pi = 0; pi < pageCount; pi++) if (pi !== pageIndex) excluded.push(`0-${pi}`);
 
@@ -7440,10 +7440,6 @@
     // the timesheet section. Batch 0 is always the main submit's medicalBillsInput.files.
     let medicalBillsFileBatches = [];
     let medicalBillsPreviewPagesByBatch = {};
-    /** Returns the known {fileIndex,pageIndex} list for a given medical-bills upload batch. */
-    function previewPagesForMedicalBillsBatch(batchId) {
-      return batchId === 0 ? medicalBillsPreviewPages : (medicalBillsPreviewPagesByBatch[batchId] || []);
-    }
 
     /** Renders one staging-page thumbnail (image + rotate/delete buttons) for the medical bills upload. */
     function renderMedicalStageTile(key, label, imageB64) {
@@ -7702,7 +7698,10 @@
         statusEl.className = 'page-rescan-status';
         statusEl.textContent = 'Rescanning…';
 
-        const pageCount = previewPagesForMedicalBillsBatch(batchId).filter(p => p.fileIndex === fileIndex).length;
+        // Counted from the rendered rescan-control elements in the DOM, not a /api/preview-derived
+        // array — see the timesheet section's identical fix/comment for why (that array being empty
+        // whenever preview is skipped made a single-page rescan silently rescan the whole file).
+        const pageCount = [...medicalPageReviewListEl.querySelectorAll('.page-rescan-controls')].filter(c => Number(c.dataset.batchId) === batchId && Number(c.dataset.fileIndex) === fileIndex).length;
         const excluded = [];
         for (let pi = 0; pi < pageCount; pi++) if (pi !== pageIndex) excluded.push(`0-${pi}`);
 
@@ -7958,10 +7957,6 @@
     // the timesheet section. Batch 0 is always the main submit's medicalCertificatesInput.files.
     let medicalCertificatesFileBatches = [];
     let medicalCertificatesPreviewPagesByBatch = {};
-    /** Returns the known {fileIndex,pageIndex} list for a given medical-certificates upload batch. */
-    function previewPagesForMedicalCertBatch(batchId) {
-      return batchId === 0 ? medicalCertificatesPreviewPages : (medicalCertificatesPreviewPagesByBatch[batchId] || []);
-    }
 
     /** Renders one staging-page thumbnail (image + rotate/delete buttons) for the medical certificates upload. */
     function renderMedicalCertStageTile(key, label, imageB64) {
@@ -8228,7 +8223,10 @@
         statusEl.className = 'page-rescan-status';
         statusEl.textContent = 'Rescanning…';
 
-        const pageCount = previewPagesForMedicalCertBatch(batchId).filter(p => p.fileIndex === fileIndex).length;
+        // Counted from the rendered rescan-control elements in the DOM, not a /api/preview-derived
+        // array — see the timesheet section's identical fix/comment for why (that array being empty
+        // whenever preview is skipped made a single-page rescan silently rescan the whole file).
+        const pageCount = [...medicalCertPageReviewListEl.querySelectorAll('.page-rescan-controls')].filter(c => Number(c.dataset.batchId) === batchId && Number(c.dataset.fileIndex) === fileIndex).length;
         const excluded = [];
         for (let pi = 0; pi < pageCount; pi++) if (pi !== pageIndex) excluded.push(`0-${pi}`);
 
@@ -8450,10 +8448,6 @@
     // the timesheet section. Batch 0 is always the main submit's payslipsInput.files.
     let payslipsFileBatches = [];
     let payslipsPreviewPagesByBatch = {};
-    /** Returns the known {fileIndex,pageIndex} list for a given payslips upload batch. */
-    function previewPagesForPayslipsBatch(batchId) {
-      return batchId === 0 ? payslipsPreviewPages : (payslipsPreviewPagesByBatch[batchId] || []);
-    }
 
     /** Renders one staging-page thumbnail (image + rotate/delete buttons) for the payslip upload. */
     function renderPayslipStageTile(key, label, imageB64) {
@@ -9124,7 +9118,10 @@
         statusEl.className = 'page-rescan-status';
         statusEl.textContent = 'Rescanning…';
 
-        const pageCount = previewPagesForPayslipsBatch(batchId).filter(p => p.fileIndex === fileIndex).length;
+        // Counted from the rendered rescan-control elements in the DOM, not a /api/preview-derived
+        // array — see the timesheet section's identical fix/comment for why (that array being empty
+        // whenever preview is skipped made a single-page rescan silently rescan the whole file).
+        const pageCount = [...payslipPageReviewListEl.querySelectorAll('.page-rescan-controls')].filter(c => Number(c.dataset.batchId) === batchId && Number(c.dataset.fileIndex) === fileIndex).length;
         const excluded = [];
         for (let pi = 0; pi < pageCount; pi++) if (pi !== pageIndex) excluded.push(`0-${pi}`);
 
