@@ -1417,6 +1417,22 @@
     </div>
 
     <div id="scanFormWrap">
+      <!-- Caseworker-typed "Case label" ("456K-Hamid") -> an auto-generated tracking id
+           ("456K-Hamid-20261127-01", today's date + an auto-incrementing counter scoped to that
+           exact prefix — see lib/history.ts's nextTitleForPrefix). Shown/editable here (post-scan
+           or reopened from history) in addition to the main form's own pre-scan "Case label" field
+           — can be (re)generated at any point. Outside <form id="form"> on purpose — this is a
+           standalone action against an already-existing claim, not a scan-submission field. -->
+      <div class="field" id="claimTitleWrap" style="display:none">
+        <h4>Case label</h4>
+        <div class="file-list" id="claimTitleDisplay"></div>
+        <div class="history-nav-row">
+          <input type="text" id="titlePrefixRegenerateInput" placeholder="Case label e.g. 456K-Hamid" style="min-width:160px;">
+          <button type="button" class="generate-btn" id="generateTitleBtn">Generate ID</button>
+          <span class="status" id="generateTitleStatus"></span>
+        </div>
+      </div>
+
       <div class="rules-summary">
         <div class="rules-summary-cat">Guardrails — flagged live on each row</div>
         <table class="rules-summary-table">
@@ -1704,22 +1720,6 @@
           <h4>Reading notes</h4>
           <textarea id="caseNoteInput" placeholder="Reading notes for this scan (visible to any caseworker who opens this claim)…" rows="2" style="width:100%; resize:vertical;"></textarea>
         </div>
-        <!-- Caseworker-typed "Case label" ("456K-Hamid") -> an auto-generated tracking id
-             ("456K-Hamid-20261127-01", today's date + an auto-incrementing counter scoped to that
-             exact prefix — see lib/history.ts's nextTitleForPrefix). Shown/editable here (post-scan
-             or reopened from history) in addition to the main form's own pre-scan "Case label"
-             field — can be (re)generated at any point. Same positioning reasoning as caseNoteWrap
-             above. -->
-        <div class="field" id="claimTitleWrap" style="display:none">
-          <h4>Case label</h4>
-          <div class="file-list" id="claimTitleDisplay"></div>
-          <div class="history-nav-row">
-            <input type="text" id="titlePrefixRegenerateInput" placeholder="Case label e.g. 456K-Hamid" style="min-width:160px;">
-            <button type="button" class="generate-btn" id="generateTitleBtn">Generate ID</button>
-            <span class="status" id="generateTitleStatus"></span>
-          </div>
-        </div>
-
         <hr />
 
         <!-- Only the pre-scan upload/submit UI — "Worker's schedule" and everything above stays
@@ -10153,11 +10153,9 @@
       }
     });
 
-    // titlePrefixRegenerateInput now lives inside <form id="form"> (moved there to match the main
-    // page's own "Case label" field position, right before the pre-scan upload section) — a plain
-    // text input's default Enter behavior submits its enclosing form, which here would mean
-    // accidentally kicking off a brand-new "Extract details" scan instead of generating an id.
-    // Enter now triggers "Generate ID" directly instead, same as clicking the button.
+    // Enter triggers "Generate ID" directly, same as clicking the button — nicer than requiring a
+    // mouse click for a single-field action (titlePrefixRegenerateInput lives outside <form
+    // id="form"> so Enter was never at risk of submitting a scan here, just a UX nicety).
     document.getElementById('titlePrefixRegenerateInput').addEventListener('keydown', (e) => {
       if (e.key === 'Enter') {
         e.preventDefault();
