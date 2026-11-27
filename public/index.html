@@ -1713,6 +1713,12 @@
 
         <hr />
 
+        <!-- Only the pre-scan upload/submit UI — "Worker's schedule" and everything above stays
+             visible when reviewing a historical claim too (those settings directly drive the
+             Summary/guardrail tables a caseworker needs while reviewing, same as live). Hidden
+             (not the whole #scanFormWrap) by enterHistoryDetailView; shown again by
+             showScanFormView. -->
+        <div id="scanUploadSection">
         <h2 id="documentsHeading">Documents</h2>
         <div class="upload-warning">⚠ Make sure every page — IPA letter and timesheets alike — is upright before
           uploading. A sideways page (common in scanned/photographed PDFs) can cause the scan to silently misread dates
@@ -1802,6 +1808,7 @@
         <div class="status" id="medicalCertificatesStatus"></div>
         <div class="status" id="payslipsStatus"></div>
         <ul class="month-summary" id="otCapWarnings" style="display:none"></ul>
+        </div>
       </form>
     </div>
   </div>
@@ -9744,6 +9751,7 @@
       document.getElementById('adminDashboardView').style.display = 'none';
       pageReviewsEl.style.display = 'none';
       document.getElementById('scanFormWrap').style.display = '';
+      document.getElementById('scanUploadSection').style.display = '';
       document.getElementById('backToFormBtn').style.display = 'none';
       document.getElementById('backToAdminDashboardBtn').style.display = 'none';
       currentHistoryScanId = null;
@@ -9905,7 +9913,12 @@
     function enterHistoryDetailView(group) {
       historyListViewEl.style.display = 'none';
       document.getElementById('adminDashboardView').style.display = 'none';
-      document.getElementById('scanFormWrap').style.display = 'none';
+      // scanFormWrap stays visible (not hidden wholesale like the list views below) — "Worker's
+      // schedule" (rest day/half-day/standard break/claim period/etc.) directly drives the
+      // Summary/guardrail tables a caseworker needs while reviewing a historical claim too, same
+      // as live. Only the pre-scan upload/submit UI (#scanUploadSection) is irrelevant here.
+      document.getElementById('scanFormWrap').style.display = '';
+      document.getElementById('scanUploadSection').style.display = 'none';
       currentHistoryScanId = group.groupId;
       currentHistoryPresentTypes = new Set(Object.keys(group.types));
       // Puts the claim's groupId in the URL so the address bar itself is a shareable link back to
