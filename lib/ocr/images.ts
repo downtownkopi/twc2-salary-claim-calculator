@@ -1,65 +1,40 @@
-import { pdf } from "pdf-to-img";
 import sharp from "sharp";
 import { writeFile } from "fs/promises";
+import * as path from "path";
+import Piscina from "piscina";
 import { PagedImages, ensurePagedImagesDir } from "./pagedImages";
+import { boostFaintContrast } from "./pageImageHelpers";
+import type { RenderPdfPagesTask, RenderPdfPagesResult } from "./pdfRenderWorker";
 
 export { PagedImages } from "./pagedImages";
+// Re-exported for existing callers/imports of boostFaintContrast from this module — the
+// implementation itself moved to lib/ocr/pageImageHelpers.ts (shared with pdfRenderWorker.ts
+// without that worker needing to import this module, which constructs the Piscina pool below —
+// see renderPool's own comment for why that matters).
+export { boostFaintContrast } from "./pageImageHelpers";
 
-// Contrast boost for genuinely low-contrast pages (faint pen, washed-out photocopies) — centered
-// on the page's own measured brightness (mean) rather than a hard min/max stretch. Tested against
-// real faint samples before adopting this: a full min/max stretch (sharp's .normalize()) thins
-// faint pen strokes enough to flip digit reads (9 misread as 6, repeatedly, on an otherwise
-// perfectly-read page); this mean-centered version left that same page's accuracy unchanged, and
-// surfaced at least one previously "illegible" cell on a genuinely hard low-contrast sample. Only
-// applied below a stdev threshold so a normal, already-decent-contrast scan is never touched —
-// the risk demonstrated above is specifically from applying this where it isn't needed.
-const LOW_CONTRAST_STDEV_THRESHOLD = 30;
-const CONTRAST_BOOST_FACTOR = 1.6;
-
-/**
- * Boosts contrast on a genuinely low-contrast page image (faint pen, washed-out photocopy),
- * centered on the page's own measured brightness. A no-op for already-decent-contrast pages.
- *
- * @param png - The page image as a PNG buffer.
- * @returns The (possibly contrast-boosted) PNG buffer.
- */
-async function boostFaintContrast(png: Buffer): Promise<Buffer> {
-    const stats = await sharp(png).grayscale().stats();
-    const stdev = stats.channels[0].stdev;
-    if (stdev >= LOW_CONTRAST_STDEV_THRESHOLD) return png;
-    const mean = stats.channels[0].mean;
-    const offset = mean * (1 - CONTRAST_BOOST_FACTOR);
-    return sharp(png).linear(CONTRAST_BOOST_FACTOR, offset).png().toBuffer();
-}
-
-// How many pages pdfToImages renders at once. Originally bumped to 4 to keep /api/preview's single
-// blocking request fast enough to avoid a hosting-proxy timeout (a slow render risked a Cloudflare
-// 524) — each concurrent page is its own full uncompressed raster buffer (width × height × 4 bytes,
-// plus a same-size boostFaintContrast copy), so running several at once directly multiplies peak
-// memory, which turned out to matter more in practice: a large/photographed-page upload (a
-// real-world timesheet is just as likely to be phone photos as a clean digital export) spiked
-// production memory hard enough to crash-loop the process and starve a co-hosted service on the
-// same VPS. Both /api/preview and the real scan are background jobs polled to completion now (see
-// lib/jobs/previewJob.ts), so a slow render no longer risks a dead connection either way — back to
-// 1 (true sequential) to remove that memory multiplier entirely; revisit only if render wall-clock
-// time itself becomes the actual complaint, not perceived overall scan slowness. Separate from
-// jobs/shared.ts's MAX_PAGE_CONCURRENCY (that caps concurrent vision-API calls on already-rendered
-// pages; this caps concurrent rendering of a single PDF's own pages).
-const PDF_RENDER_CONCURRENCY = 1;
-
-// Caps how large a single rendered page is allowed to come out, regardless of what `scale ×
-// the PDF's own native page size` would otherwise produce. scale is a FIXED multiplier with zero
-// awareness of how large a page's native resolution already is — fine for a normal low-res scanned
-// page (the case scale 3.0 was tuned for), but a real-world timesheet is just as likely to be a PDF
-// built from full-resolution phone-camera photos (one per page), where the native page size is
-// already huge. Observed live: a 20-page upload like this rendered its first page at 6804×12096px
-// at scale 3.0 — a 314MB raw buffer for ONE page, a major contributor to a production memory spike
-// severe enough to crash-loop the process. Same ceiling imageToPages below already uses for a raw
-// photo upload (already proven legible for OCR there) — downscaled immediately after render, before
-// boostFaintContrast or anything else touches the oversized buffer, so it never propagates further
-// into the pipeline (base64 encoding, the agentic loop's conversation history, MAX_PAGE_CONCURRENCY
-// pages processing at once).
-const MAX_RENDERED_PAGE_DIMENSION = 2500;
+// The actual per-page rendering (pdfRenderWorker.ts's renderPdfPages) runs in a pool of worker
+// threads, not here on the main thread. Why: pdf.js's page.render() (via node-canvas) does its
+// decode/draw work as synchronous JS, not offloaded to libuv's threadpool the way e.g. sharp's
+// operations are — a single large/high-resolution page can tie up the main thread for 10+ seconds
+// of pure CPU work, during which this one Node process can't service ANY other request (a
+// different caseworker's page load, /api/me, anything), since Node's main thread is single. A
+// worker pool means the HTTP-serving thread stays free the whole time a render is in progress,
+// regardless of how large or slow that render is. maxThreads deliberately conservative (not CPU
+// count) — this VPS has already crash-looped once from a rendering-driven memory spike, and more
+// concurrent render threads directly multiplies how many of those oversized intermediate buffers
+// (see lib/ocr/pageImageHelpers.ts's MAX_RENDERED_PAGE_DIMENSION comment) can exist in memory at once.
+// execArgv explicitly registers tsx's require hook in the spawned worker, rather than relying on
+// worker_threads' default execArgv inheritance from the parent process — that inheritance only
+// carries tsx/cjs through when the PARENT itself was launched with `node --require tsx/cjs` (true
+// for `npm run server`, confirmed working), but not when the parent is vitest's own test runtime
+// (vite-node, not plain node+tsx) — a worker spawned there had no TS loader at all and failed to
+// load pdfRenderWorker.ts with ERR_UNKNOWN_FILE_EXTENSION. Explicit beats inherited here.
+const renderPool = new Piscina({
+    filename: path.join(__dirname, "pdfRenderWorker.ts"),
+    maxThreads: Number(process.env.PDF_RENDER_MAX_THREADS) || 2,
+    execArgv: ["--require", "tsx/cjs"],
+});
 
 // Convert a PDF (path or in-memory buffer) into per-page PNG files on disk, one per page. Pages
 // used to be collected into one in-memory base64 array — for a large multi-page upload (e.g.
@@ -68,7 +43,8 @@ const MAX_RENDERED_PAGE_DIMENSION = 2500;
 // only when a caller actually needs them, bounds peak RAM to however many pages are in flight
 // rather than the total page count.
 /**
- * Renders every page of a PDF to a PNG file on disk.
+ * Renders every page of a PDF to a PNG file on disk, via a worker-thread pool (see
+ * {@link renderPool}'s own comment — keeps this off the main thread entirely).
  *
  * @param input - The PDF, as a file path or an in-memory buffer.
  * @param destDir - Directory to write each page's PNG into; created if missing.
@@ -76,46 +52,17 @@ const MAX_RENDERED_PAGE_DIMENSION = 2500;
  * already exceeds this, instead of spending time/disk rendering pages that would just be discarded
  * once the job-wide page cap is hit anyway.
  * @param scale - Render resolution multiplier; defaults to 3.0 (the legibility floor needed for
- * actual OCR). Callers that only need these pages for a human-facing preview (downscaled further
- * for display anyway, e.g. /api/preview) should pass a cheaper value — rendering at 3.0 just to
- * immediately throw away most of those pixels wastes the bulk of the time this function spends.
+ * actual OCR — bumped from 2.0 after a systematic, unanimous-across-reconciliation-attempts misread
+ * of dense, small handwritten digits at the lower scale). Callers that only need these pages for a
+ * human-facing preview (downscaled further for display anyway, e.g. /api/preview) should pass a
+ * cheaper value — rendering at 3.0 just to immediately throw away most of those pixels wastes the
+ * bulk of the time this function spends.
  * @returns A {@link PagedImages} over the rendered pages, in page order.
  */
 export async function pdfToImages(input: string | Buffer, destDir: string, maxPages?: number, scale = 3.0): Promise<PagedImages> {
-    await ensurePagedImagesDir(destDir);
-    // Bumped from 2.0 after a systematic (unanimous-across-attempts) misread of dense, small
-    // handwritten digits — the failure wasn't inconsistency between attempts (which the
-    // multi-attempt reconciliation in lib/reconcile.ts is designed to catch), it was the same
-    // legibility limit hit every time. Higher scale trades more tokens/latency per page for
-    // clearer source pixels.
-    const document = await pdf(input, { scale });
-    if (maxPages !== undefined && document.length > maxPages) {
-        await document.destroy();
-        throw new Error(`this file has ${document.length} pages, over the ${maxPages}-page limit per scan — please split it into smaller uploads`);
-    }
-    const total = document.length;
-    // A simple fixed-size worker pool over page indices, rather than
-    // for-await-of/Symbol.asyncIterator's strictly-one-page-at-a-time default — lets up to
-    // PDF_RENDER_CONCURRENCY pages render concurrently. document.getPage is 1-indexed; this
-    // function's own page indices (and PagedImages') stay 0-indexed throughout.
-    let nextPageIndex = 0;
-    async function renderNextAvailablePage(): Promise<void> {
-        for (;;) {
-            const i = nextPageIndex++;
-            if (i >= total) return;
-            const pageBuffer = await document.getPage(i + 1);
-            const capped = await sharp(pageBuffer)
-                .resize({ width: MAX_RENDERED_PAGE_DIMENSION, height: MAX_RENDERED_PAGE_DIMENSION, fit: "inside", withoutEnlargement: true })
-                .png()
-                .toBuffer();
-            const boosted = await boostFaintContrast(capped);
-            await writeFile(PagedImages.pagePath(destDir, i), boosted);
-        }
-    }
-    await Promise.all(
-        Array.from({ length: Math.min(PDF_RENDER_CONCURRENCY, total) }, renderNextAvailablePage)
-    );
-    return new PagedImages(destDir, total);
+    const task: RenderPdfPagesTask = { input, destDir, maxPages, scale };
+    const { pageCount }: RenderPdfPagesResult = await renderPool.run(task);
+    return new PagedImages(destDir, pageCount);
 }
 
 // A single photographed/scanned timesheet (jpg/png/etc, common in real-world uploads — phone

@@ -27,6 +27,7 @@
     "multer": "^2.2.0",
     "pdf-to-img": "^6.2.0",
     "pdfkit": "^0.19.1",
+    "piscina": "^5.3.2",
     "sharp": "^0.35.3"
   },
   "devDependencies": {
