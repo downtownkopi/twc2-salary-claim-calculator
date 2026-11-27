@@ -3232,6 +3232,12 @@
         if (medicalResult.status === 'fulfilled' && medicalResult.value !== undefined) currentHistoryPresentTypes.add('medical_bills');
         if (medicalCertResult.status === 'fulfilled' && medicalCertResult.value !== undefined) currentHistoryPresentTypes.add('medical_certificates');
         if (payslipsResult.status === 'fulfilled' && payslipsResult.value !== undefined) currentHistoryPresentTypes.add('payslips');
+        // Always attempted on Save regardless of whether a real file was scanned this round — the
+        // always-visible "manually added" card (renderManualBankCard/renderManualPayslipCard) lets
+        // a caseworker type a row with zero files, and Save needs to actually send it (an empty
+        // array for a type with no manual rows either is a harmless no-op server-side).
+        currentHistoryPresentTypes.add('bank_statement');
+        currentHistoryPresentTypes.add('payslips');
         document.getElementById('saveHistoryChangesBtn').style.display = '';
         document.getElementById('saveHistoryChangesStatus').textContent = '';
         document.getElementById('caseNoteWrap').style.display = '';
@@ -7379,6 +7385,28 @@
     // Shared by the batch live-progress render and the single-page rescan splice (same idea as
     // timesheet's renderPageReview) — key/reviewIndex undefined during live polling (no rescan
     // controls needed on a page that's still mid-scan as part of the same batch).
+    // Always-present, no-thumbnail counterpart to renderBankPageCard — lets a caseworker record a
+    // payment (e.g. cash, or a statement they don't have) with zero bank-statement files ever
+    // uploaded, mirroring IPA's always-editable fields and timesheet's "Add day"/"Add month".
+    // Reuses the exact same `.bt-table-container`/`.bt-add-amount-btn`/`.page-review-row` classes as
+    // a real page card so wireBankPageCard/collectAllBankTransactions pick it up with no changes.
+    /** Renders the always-visible "manually added" bank-transaction card (no file/thumbnail behind it). */
+    function renderManualBankCard(transactions) {
+      return `
+    <div class="page-review-row">
+      <div class="page-review-details">
+        <div class="page-review-source"><span>Manually added</span></div>
+        <div class="bt-table-container">${transactions.length === 0
+          ? '<div class="review-hint">No manually added payments yet.</div>'
+          : formatBankTransactionsTableEditable(transactions.map(t => ({ ...t, source: 'manually added' })))}</div>
+        <div class="page-add-day">
+          <div class="review-hint">Record a payment with no bank statement to upload.</div>
+          <button type="button" class="add-day-btn bt-add-amount-btn" data-source="manually added">+ Add amount</button>
+        </div>
+      </div>
+    </div>`;
+    }
+
     /** Renders one bank-statement page-review card: source thumbnail, editable transactions, optional rescan controls. */
     function renderBankPageCard(p, key, reviewIndex) {
       // `key` is `${batchId}:${fileIndex}-${pageIndex}` — same scheme as the timesheet section's
@@ -7419,8 +7447,11 @@
     // job is done (key/reviewIndex only computed then) — a page still mid-scan as part of this same
     // batch has nothing sensible to rescan yet.
     /** Renders the bank-statement page-by-page review as pages arrive during a scan (or on completion). */
-    function renderBankLivePages(pages, done) {
-      if (pages.length === 0) return;
+    function renderBankLivePages(pages, done, manualTransactions) {
+      manualTransactions = manualTransactions || [];
+      // Mid-scan with nothing yet: nothing to show. Once `done`, always proceed even with zero
+      // pages — the always-visible "manually added" card below needs to render regardless.
+      if (pages.length === 0 && !done) return;
       pageReviewsEl.style.display = 'block'; // reveal page-by-page review even if the main scan hasn't produced anything yet
       bankPageReviewListEl.style.display = 'block';
       document.getElementById('bankPageReviewListHeading').style.display = 'block';
@@ -7457,7 +7488,7 @@
       const orderedKeys = order.map(i => rawOrderedKeys[i]);
       bankPageReviewListEl.innerHTML = sortedPages
         .map((p, idx) => renderBankPageCard(p, viewingHistoryRecord ? `history:${order[idx]}` : (done ? orderedKeys[idx] : undefined), done ? idx : undefined))
-        .join('');
+        .join('') + (done ? renderManualBankCard(manualTransactions) : '');
       bankPageReviewListEl.querySelectorAll('.page-review-row').forEach(wireBankPageCard);
       if (done) bankPageReviewListEl.querySelectorAll('.page-rescan-controls').forEach(wireBankRescanControls);
       // "Add more bank statement files" — only shown here for the LIVE case (same reasoning as the
@@ -7727,6 +7758,9 @@
         recomputeMonthlyPayTotals(); // payment breakdown's per-month "payment received" column reads payslip data too
         updateSummarySectionVisibility();
         updateOwedVsPaidBox();
+        // No bank statement uploaded this round — still show the always-visible "manually added"
+        // card so a caseworker can record a payment with no file to attach.
+        renderBankLivePages([], true, []);
         return;
       }
       paidIsAssumedZero = false;
@@ -9374,6 +9408,26 @@
 
     // Shared by the batch live-progress render and the single-page rescan splice — same idea as
     // renderMedicalCertPageCard.
+    // Always-present, no-thumbnail counterpart to renderPayslipPageCard — same reasoning as
+    // renderManualBankCard: lets a caseworker record an OT/pay figure with zero payslip files ever
+    // uploaded.
+    /** Renders the always-visible "manually added" payslip-entry card (no file/thumbnail behind it). */
+    function renderManualPayslipCard(entries) {
+      return `
+    <div class="page-review-row">
+      <div class="page-review-details">
+        <div class="page-review-source"><span>Manually added</span></div>
+        <div class="payslip-table-container">${entries.length === 0
+          ? '<div class="review-hint">No manually added entries yet.</div>'
+          : formatPayslipEntriesTableEditable(entries.map(t => ({ ...t, source: 'manually added' })))}</div>
+        <div class="page-add-day">
+          <div class="review-hint">Record an OT/pay figure with no payslip to upload.</div>
+          <button type="button" class="add-day-btn payslip-add-entry-btn" data-source="manually added">+ Add entry</button>
+        </div>
+      </div>
+    </div>`;
+    }
+
     /** Renders one payslip page-review card: source thumbnail, editable entries, optional rescan controls. */
     function renderPayslipPageCard(p, key, reviewIndex) {
       // `key` is `${batchId}:${fileIndex}-${pageIndex}` — same scheme as the timesheet section's
@@ -9405,8 +9459,9 @@
     }
 
     /** Renders the payslip page-by-page review as pages arrive during a scan (or on completion). */
-    function renderPayslipLivePages(pages, done) {
-      if (pages.length === 0) return;
+    function renderPayslipLivePages(pages, done, manualEntries) {
+      manualEntries = manualEntries || [];
+      if (pages.length === 0 && !done) return;
       pageReviewsEl.style.display = 'block';
       payslipPageReviewListEl.style.display = 'block';
       document.getElementById('payslipPageReviewListHeading').style.display = 'block';
@@ -9440,7 +9495,7 @@
       const orderedKeys = order.map(i => rawOrderedKeys[i]);
       payslipPageReviewListEl.innerHTML = sortedPages
         .map((p, idx) => renderPayslipPageCard(p, viewingHistoryRecord ? `history:${order[idx]}` : (done ? orderedKeys[idx] : undefined), done ? idx : undefined))
-        .join('');
+        .join('') + (done ? renderManualPayslipCard(manualEntries) : '');
       payslipPageReviewListEl.querySelectorAll('.page-review-row').forEach(wirePayslipPageCard);
       if (done) payslipPageReviewListEl.querySelectorAll('.page-rescan-controls').forEach(wirePayslipRescanControls);
       // "Add more payslip files" — same reasoning as the other sections' equivalents.
@@ -9679,7 +9734,12 @@
       document.getElementById('payslipsAddMoreWrap').style.display = 'none';
       document.getElementById('payslipsAddMoreInput').value = '';
       document.getElementById('payslipsAddMoreStatus').textContent = '';
-      if (files.length === 0) return;
+      if (files.length === 0) {
+        // No payslip uploaded this round — still show the always-visible "manually added" card so
+        // a caseworker can record an OT/pay figure with no file to attach.
+        renderPayslipLivePages([], true, []);
+        return;
+      }
 
       payslipsStatusEl.className = 'status';
       payslipsStatusEl.textContent = '';
@@ -9930,6 +9990,10 @@
       document.getElementById('scanUploadSection').style.display = 'none';
       currentHistoryScanId = group.groupId;
       currentHistoryPresentTypes = new Set(Object.keys(group.types));
+      // Always attempted on Save, regardless of whether this claim actually has a bank_statement/
+      // payslips scan — see the identical comment at the live-submit success block above.
+      currentHistoryPresentTypes.add('bank_statement');
+      currentHistoryPresentTypes.add('payslips');
       // Puts the claim's groupId in the URL so the address bar itself is a shareable link back to
       // this exact claim (see the location.search check on page load) — any other logged-in
       // caseworker opening it hits the same GET /api/claims/:groupId this click
@@ -10023,10 +10087,17 @@
           document.getElementById('pageReviewListHeading').style.display = 'block';
         }
       }
-      if (group.types.bank_statement) {
+      {
+        // Rendered even when this claim has no bank_statement scan at all — the always-visible
+        // "manually added" card (renderManualBankCard) needs to show regardless, so a caseworker
+        // can record a payment with no file to attach. "manually added" rows live in the flat
+        // `transactions` array (never in any real page's own `pages[i].transactions`), so filtering
+        // by source here is enough to recover them across reloads.
         bankStatementPreviewPages = [];
         excludedBankStatementPages = new Set();
-        renderBankLivePages(group.types.bank_statement.result.pages || [], true);
+        const bankResult = group.types.bank_statement?.result;
+        const manualBankTxns = (bankResult?.transactions || []).filter(t => t.source === 'manually added');
+        renderBankLivePages(bankResult?.pages || [], true, manualBankTxns);
       }
       if (group.types.medical_bills) {
         medicalBillsPreviewPages = [];
@@ -10038,10 +10109,13 @@
         excludedMedicalCertificatesPages = new Set();
         renderMedicalCertLivePages(group.types.medical_certificates.result.pages || [], true);
       }
-      if (group.types.payslips) {
+      {
+        // Same reasoning as the bank_statement block above (renderManualPayslipCard).
         payslipsPreviewPages = [];
         excludedPayslipsPages = new Set();
-        renderPayslipLivePages(group.types.payslips.result.pages || [], true);
+        const payslipResult = group.types.payslips?.result;
+        const manualPayslipEntries = (payslipResult?.entries || []).filter(t => t.source === 'manually added');
+        renderPayslipLivePages(payslipResult?.pages || [], true, manualPayslipEntries);
       }
 
       // A claim's timesheet section has no bank-statement/payslip scan of its own attached unless

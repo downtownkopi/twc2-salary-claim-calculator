@@ -769,7 +769,11 @@ app.get("/api/history/:scanId/image/:ref", (req, res) => {
 // array that type actually has (reviewRows/transactions/entries — see lib/history.ts's
 // EDITABLE_FIELD_BY_SCAN_TYPE); nothing else in a saved scan (images, scan_type, cost) can be
 // touched through this route. `types` only needs to include whichever scan types are actually
-// present/edited on screen — a type this claim doesn't have is silently ignored.
+// present/edited on screen — a type this claim doesn't have is silently ignored for timesheet
+// (no manual-entry UI for it); for bank_statement/medical_bills/medical_certificates/payslips,
+// non-empty rows for a not-yet-present type create a brand-new zero-cost scan row (see
+// lib/history.ts's updateClaimFields) — this is how "manually add a bank transaction/payslip
+// entry with no file ever uploaded" gets persisted.
 app.put("/api/claims/:groupId", express.json({ limit: "5mb" }), (req, res) => {
     const userId = getAuthedUser(req).id;
     const rawTypes = req.body?.types;

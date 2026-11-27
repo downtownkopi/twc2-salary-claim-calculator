@@ -2,6 +2,7 @@ import Database from "better-sqlite3";
 import * as path from "path";
 import { mkdirSync, writeFileSync } from "fs";
 import { rm } from "fs/promises";
+import { randomUUID } from "crypto";
 
 // First persistent store in this app — everything else (processJobs, bankJobs, medicalJobs,
 // medicalCertJobs, payslipJobs) is an in-memory Map with TTL eviction (see lib/jobs/shared.ts).
@@ -567,7 +568,12 @@ export function replaceScanPage(
  * single caseworker per claim in practice, not worth the complexity yet.
  *
  * @param perTypeRows - Only the scan types actually present/edited on screen need to appear here;
- * a type this claim doesn't have is silently ignored (no matching scan row to update).
+ * a type this claim doesn't have is silently ignored for TIMESHEET (no manual-entry UI for it —
+ * "Add day"/"Add month" always operate on an existing timesheet scan); for the other 4 types, rows
+ * sent for a not-yet-present type create a brand-new zero-cost scan row tagged with this claim's
+ * id (e.g. a caseworker typing a bank transaction with no bank statement ever uploaded) — same
+ * "claim gains a type with no real scan behind it" idea as `POST /api/claims/:groupId/append`'s own
+ * no-existing-scan branch, just with an empty manually-built result instead of a vision call.
  * @param notes - The claim's free-text case note. `undefined` leaves it untouched; an explicit
  * `null`/`''` clears it.
  * @param title - The claim's own title, independent of any scan type's own `title` column.
@@ -588,7 +594,18 @@ export function updateClaimFields(
     const txn = db.transaction(() => {
         let matchedAny = false;
         for (const [scanType, edit] of Object.entries(perTypeRows) as [ScanType, { rows: unknown[]; ipa?: unknown }][]) {
-            const scan = scans.find(s => s.scan_type === scanType);
+            let scan = scans.find(s => s.scan_type === scanType);
+            if (!scan && edit && edit.rows.length > 0 && scanType !== "timesheet") {
+                const anyScan = scans[0];
+                const field = EDITABLE_FIELD_BY_SCAN_TYPE[scanType];
+                const newScanId = randomUUID();
+                const newResult = JSON.stringify({ pages: [], [field]: [] });
+                db.prepare(
+                    `INSERT INTO scans (id, scan_type, user_id, user_fullname, user_email, title, result_json, cost_usd, duration_ms, claim_id) VALUES (@id, @scanType, @userId, @userFullname, @userEmail, NULL, @resultJson, 0, 0, @groupId)`
+                ).run({ id: newScanId, scanType, userId: anyScan.user_id, userFullname: anyScan.user_fullname, userEmail: anyScan.user_email, resultJson: newResult, groupId });
+                scan = getScanById(newScanId) ?? undefined;
+                if (scan) scans.push(scan);
+            }
             if (!scan || !edit) continue;
             matchedAny = true;
             const field = EDITABLE_FIELD_BY_SCAN_TYPE[scanType];
