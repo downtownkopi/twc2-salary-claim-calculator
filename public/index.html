@@ -1425,6 +1425,17 @@
     <div class="history-nav-row" id="caseNoteWrap" style="display:none">
       <textarea id="caseNoteInput" placeholder="Case notes (visible to any caseworker who opens this claim)…" rows="2" style="flex:1; min-width:240px; resize:vertical;"></textarea>
     </div>
+    <!-- Caseworker-typed "Case label" ("456K-Hamid") -> an auto-generated tracking id
+         ("456K-Hamid-20261127-01", today's date + an auto-incrementing counter scoped to that
+         exact prefix — see lib/history.ts's nextTitleForPrefix). Shown/editable here (post-scan or
+         reopened from history) in addition to the main form's own pre-scan "Case label" field —
+         can be (re)generated at any point. -->
+    <div class="history-nav-row" id="claimTitleWrap" style="display:none">
+      <span id="claimTitleDisplay" class="muted"></span>
+      <input type="text" id="titlePrefixRegenerateInput" placeholder="Case label e.g. 456K-Hamid" style="min-width:160px;">
+      <button type="button" class="generate-btn" id="generateTitleBtn">Generate ID</button>
+      <span class="status" id="generateTitleStatus"></span>
+    </div>
 
     <div id="scanFormWrap">
       <div class="rules-summary">
@@ -1709,6 +1720,14 @@
           and times.</div>
 
         <div class="field">
+          <h4>Case label (optional)</h4>
+          <div class="file-list">A short tracking id for this claim, e.g. "456K-Hamid" — the system appends today's
+            date and an auto-incrementing number (e.g. "456K-Hamid-20261127-01"). Can also be added after scanning, or
+            later from the history page.</div>
+          <input type="text" id="titlePrefixInput" style="width:100%" placeholder="e.g. 456K-Hamid">
+        </div>
+
+        <div class="field">
           <h4>Reading notes for this scan (optional)</h4>
           <div class="file-list">Tell the scan about anything on these specific pages that could otherwise be misread
             — e.g. "8 - 9pm on every date actually means 8am to 9pm", "the Qty column is clock-out time, not a
@@ -1791,6 +1810,9 @@
   <div id="historyListView" style="display:none">
     <h2>Scan history</h2>
     <div class="field" style="margin-bottom:10px;">
+      <label>Search
+        <input type="text" id="historySearchInput" placeholder="Search by case label e.g. 456K-Hamid">
+      </label>
       <label>Filter by type
         <select id="historyTypeFilter">
           <option value="">All types</option>
@@ -1870,6 +1892,9 @@
 
     <h3>All scans</h3>
     <div class="field" style="margin-bottom:10px;">
+      <label>Search
+        <input type="text" id="adminScansSearchInput" placeholder="Search by case label e.g. 456K-Hamid">
+      </label>
       <label>Filter by type
         <select id="adminScanTypeFilter">
           <option value="">All types</option>
@@ -3041,6 +3066,7 @@
       // lib/history.ts's `claims` table, instead of 5 separate unrelated history records).
       const formData = new FormData();
       formData.append('claimId', currentSubmitClaimId);
+      formData.append('titlePrefix', document.getElementById('titlePrefixInput').value.trim());
       for (const file of pdfsInput.files) formData.append('pdfs', file);
       if (ipaInput.files[0]) formData.append('ipa', ipaInput.files[0]);
       // Rotations + page exclusions confirmed in the staging preview above — same fileIndex/pageIndex
@@ -3200,6 +3226,18 @@
         // when this claim is reopened later, instead of being a one-time instruction that vanishes
         // the moment the scan finishes.
         document.getElementById('caseNoteInput').value = document.getElementById('scanHint').value.trim();
+        // The full generated title (date + auto-increment appended server-side — see
+        // lib/history.ts's nextTitleForPrefix) isn't known client-side until asked; a cheap GET
+        // right after a live scan is the simplest way to learn/display it (same data the history
+        // detail view would show on a later reopen).
+        document.getElementById('claimTitleWrap').style.display = '';
+        document.getElementById('titlePrefixRegenerateInput').value = '';
+        document.getElementById('claimTitleDisplay').textContent = 'Loading case ID…';
+        fetch(`/api/claims/${currentSubmitClaimId}`).then(r => r.json()).then(d => {
+          document.getElementById('claimTitleDisplay').textContent = d.title ? `Case ID: ${d.title}` : 'No case ID set yet.';
+        }).catch(() => {
+          document.getElementById('claimTitleDisplay').textContent = '';
+        });
         document.getElementById('copyHistoryLinkBtn').style.display = '';
         if (!openingFromUrlSync) {
           const linkUrl = new URL(location.href);
@@ -7044,6 +7082,15 @@
       }[c]));
     }
 
+    /** Returns a wrapped version of `fn` that only actually runs once `delayMs` has passed since the last call — used by the history/admin search boxes so a re-fetch happens once per pause in typing, not once per keystroke. */
+    function debounce(fn, delayMs) {
+      let timer = null;
+      return (...args) => {
+        clearTimeout(timer);
+        timer = setTimeout(() => fn(...args), delayMs);
+      };
+    }
+
     // A page/IPA image field is raw base64 PNG bytes for a live scan, but a URL
     // (/api/history/:id/image/:ref) for one loaded from history (see lib/history.ts's
     // rehydrateImageRefs) — both are valid `<img src>` values, just not interchangeably: a URL
@@ -7677,6 +7724,7 @@
 
       const formData = new FormData();
       formData.append('claimId', currentSubmitClaimId);
+      formData.append('titlePrefix', document.getElementById('titlePrefixInput').value.trim());
       for (const f of files) formData.append('statements', f);
       formData.append('rotations', JSON.stringify(bankStatementRotations));
       formData.append('excludedPages', JSON.stringify([...excludedBankStatementPages]));
@@ -8211,6 +8259,7 @@
 
       const formData = new FormData();
       formData.append('claimId', currentSubmitClaimId);
+      formData.append('titlePrefix', document.getElementById('titlePrefixInput').value.trim());
       for (const f of files) formData.append('medicalBills', f);
       formData.append('rotations', JSON.stringify(medicalBillsRotations));
       formData.append('excludedPages', JSON.stringify([...excludedMedicalBillsPages]));
@@ -8714,6 +8763,7 @@
 
       const formData = new FormData();
       formData.append('claimId', currentSubmitClaimId);
+      formData.append('titlePrefix', document.getElementById('titlePrefixInput').value.trim());
       for (const f of files) formData.append('medicalCertificates', f);
       formData.append('rotations', JSON.stringify(medicalCertificatesRotations));
       formData.append('excludedPages', JSON.stringify([...excludedMedicalCertificatesPages]));
@@ -9622,6 +9672,7 @@
 
       const formData = new FormData();
       formData.append('claimId', currentSubmitClaimId);
+      formData.append('titlePrefix', document.getElementById('titlePrefixInput').value.trim());
       for (const f of files) formData.append('payslips', f);
       formData.append('rotations', JSON.stringify(payslipsRotations));
       formData.append('excludedPages', JSON.stringify([...excludedPayslipsPages]));
@@ -9684,6 +9735,7 @@
       viewedFromAdminDashboard = false;
       document.getElementById('saveHistoryChangesBtn').style.display = 'none';
       document.getElementById('caseNoteWrap').style.display = 'none';
+      document.getElementById('claimTitleWrap').style.display = 'none';
       clearHistoryLinkUrl();
       historyOffset = 0;
       loadHistoryList();
@@ -9704,6 +9756,7 @@
       viewedFromAdminDashboard = false;
       document.getElementById('saveHistoryChangesBtn').style.display = 'none';
       document.getElementById('caseNoteWrap').style.display = 'none';
+      document.getElementById('claimTitleWrap').style.display = 'none';
       viewingHistoryRecord = false;
       clearHistoryLinkUrl();
     }
@@ -9712,6 +9765,9 @@
     document.getElementById('backToFormBtn').addEventListener('click', showScanFormView);
     document.getElementById('backToAdminDashboardBtn').addEventListener('click', showAdminDashboardView);
     document.getElementById('historyTypeFilter').addEventListener('change', () => { historyOffset = 0; loadHistoryList(); });
+    // Debounced — re-fetches 300ms after the caseworker stops typing, not on every keystroke, same
+    // as the admin dashboard's identical search box below (debounce helper shared via `debounce`).
+    document.getElementById('historySearchInput').addEventListener('input', debounce(() => { historyOffset = 0; loadHistoryList(); }, 300));
 
     /** Fetches one page of the current user's claim history and renders it as a table. */
     async function loadHistoryList() {
@@ -9721,7 +9777,9 @@
       try {
         const type = document.getElementById('historyTypeFilter').value;
         const typeParam = type ? `&type=${encodeURIComponent(type)}` : '';
-        const res = await fetch(`/api/history?limit=${HISTORY_PAGE_SIZE}&offset=${historyOffset}${typeParam}`);
+        const search = document.getElementById('historySearchInput').value.trim();
+        const searchParam = search ? `&search=${encodeURIComponent(search)}` : '';
+        const res = await fetch(`/api/history?limit=${HISTORY_PAGE_SIZE}&offset=${historyOffset}${typeParam}${searchParam}`);
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || `Server returned ${res.status}`);
         renderHistoryTable(data);
@@ -9884,6 +9942,10 @@
       const caseNoteInputEl = document.getElementById('caseNoteInput');
       caseNoteInputEl.value = group.notes || '';
       caseNoteInputEl.disabled = viewingAsAdminReadOnly;
+      document.getElementById('claimTitleWrap').style.display = viewingAsAdminReadOnly ? 'none' : '';
+      document.getElementById('claimTitleDisplay').textContent = group.title ? `Case ID: ${group.title}` : 'No case ID set yet.';
+      document.getElementById('titlePrefixRegenerateInput').value = '';
+      document.getElementById('generateTitleStatus').textContent = '';
       pageReviewsEl.style.display = 'block';
 
       // Reset EVERY type's section first, regardless of which ones this claim actually has — same
@@ -10038,6 +10100,42 @@
       }
     });
 
+    // Generates (or regenerates) this claim's tracking id from a typed "Case label" prefix (e.g.
+    // "456K-Hamid" -> "456K-Hamid-20261127-01") — works both right after a live scan and when
+    // reopened from history, same button either way.
+    document.getElementById('generateTitleBtn').addEventListener('click', async () => {
+      const statusEl = document.getElementById('generateTitleStatus');
+      const input = document.getElementById('titlePrefixRegenerateInput');
+      const prefix = input.value.trim();
+      if (!currentHistoryScanId || !prefix) {
+        statusEl.className = 'status error';
+        statusEl.textContent = 'Type a case label first.';
+        return;
+      }
+      const btn = document.getElementById('generateTitleBtn');
+      btn.disabled = true;
+      statusEl.className = 'status loading';
+      statusEl.textContent = 'Generating…';
+      try {
+        const res = await fetch(`/api/claims/${currentHistoryScanId}/generate-title`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ prefix }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || `Server returned ${res.status}`);
+        document.getElementById('claimTitleDisplay').textContent = `Case ID: ${data.title}`;
+        input.value = '';
+        statusEl.className = 'status';
+        statusEl.textContent = 'Generated.';
+      } catch (err) {
+        statusEl.className = 'status error';
+        statusEl.textContent = 'Error: ' + err.message;
+      } finally {
+        btn.disabled = false;
+      }
+    });
+
     // ===== All scans (dashboard) =====
     // Oversight across every caseworker's scans — open to any authenticated user, not just admins
     // (see GET /api/admin/scans server-side). Cost figures (the cost cards/tables, and the Cost
@@ -10085,6 +10183,7 @@
       viewedFromAdminDashboard = false;
       document.getElementById('saveHistoryChangesBtn').style.display = 'none';
       document.getElementById('caseNoteWrap').style.display = 'none';
+      document.getElementById('claimTitleWrap').style.display = 'none';
       clearHistoryLinkUrl();
       adminScansOffset = 0;
       if (isCurrentUserAdmin) loadAdminCostSummary();
@@ -10093,6 +10192,7 @@
 
     document.getElementById('viewAdminDashboardBtn').addEventListener('click', showAdminDashboardView);
     document.getElementById('adminScanTypeFilter').addEventListener('change', () => { adminScansOffset = 0; loadAdminScansList(); });
+    document.getElementById('adminScansSearchInput').addEventListener('input', debounce(() => { adminScansOffset = 0; loadAdminScansList(); }, 300));
 
     function formatAdminCost(n) {
       return `$${(n || 0).toFixed(4)}`;
@@ -10124,7 +10224,9 @@
       try {
         const type = document.getElementById('adminScanTypeFilter').value;
         const typeParam = type ? `&type=${encodeURIComponent(type)}` : '';
-        const res = await fetch(`/api/admin/scans?limit=${HISTORY_PAGE_SIZE}&offset=${adminScansOffset}${typeParam}`);
+        const search = document.getElementById('adminScansSearchInput').value.trim();
+        const searchParam = search ? `&search=${encodeURIComponent(search)}` : '';
+        const res = await fetch(`/api/admin/scans?limit=${HISTORY_PAGE_SIZE}&offset=${adminScansOffset}${typeParam}${searchParam}`);
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || `Server returned ${res.status}`);
         renderAdminScansTable(data);

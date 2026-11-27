@@ -31,6 +31,7 @@ import {
     getScanById,
     rehydrateImageRefs,
     updateClaimFields,
+    setClaimTitle,
     deleteClaim,
     listClaimsForUser,
     listAllClaims,
@@ -209,6 +210,14 @@ function resolveClaimId(req: express.Request): string {
     return typeof req.body?.claimId === "string" && req.body.claimId.trim() ? req.body.claimId.trim() : randomUUID();
 }
 
+// The "Case label" typed on the main form (e.g. "456K-Hamid") before a combined submit — sent
+// identically to all 5 scan types' own POST (same sharing pattern as claimId above), so whichever
+// one actually creates the claims row (see ensureClaim) can generate the full title regardless of
+// which types were attached to this submit.
+function parseTitlePrefix(req: express.Request): string | undefined {
+    return typeof req.body?.titlePrefix === "string" && req.body.titlePrefix.trim() ? req.body.titlePrefix.trim() : undefined;
+}
+
 app.post(
     "/api/process",
     upload.fields([
@@ -307,7 +316,7 @@ app.post(
         const authedUser = getAuthedUser(req);
         // The "Reading notes for this scan" text, if any, becomes the claim's initial case note —
         // see ensureClaim's own comment on why.
-        ensureClaim(claimId, authedUser.id, authedUser.fullname, authedUser.email, interpretationHint);
+        ensureClaim(claimId, authedUser.id, authedUser.fullname, authedUser.email, interpretationHint, parseTitlePrefix(req));
         processJobs.set(jobId, {
             status: "running",
             pages: [],
@@ -422,7 +431,7 @@ app.post(
         const jobId = randomUUID();
         const claimId = resolveClaimId(req);
         const authedUser = getAuthedUser(req);
-        ensureClaim(claimId, authedUser.id, authedUser.fullname, authedUser.email);
+        ensureClaim(claimId, authedUser.id, authedUser.fullname, authedUser.email, undefined, parseTitlePrefix(req));
         bankJobs.set(jobId, { status: "running", pages: [], result: null, error: null, userId: authedUser.id, userFullname: authedUser.fullname, userEmail: authedUser.email });
         acquireJobSlot()
             .then(() => runBankStatementJob(jobId, claimId, undefined, files, rotations, excludedPages, interpretationHint))
@@ -495,7 +504,7 @@ app.post(
         const jobId = randomUUID();
         const claimId = resolveClaimId(req);
         const authedUser = getAuthedUser(req);
-        ensureClaim(claimId, authedUser.id, authedUser.fullname, authedUser.email);
+        ensureClaim(claimId, authedUser.id, authedUser.fullname, authedUser.email, undefined, parseTitlePrefix(req));
         medicalJobs.set(jobId, { status: "running", pages: [], result: null, error: null, userId: authedUser.id, userFullname: authedUser.fullname, userEmail: authedUser.email });
         acquireJobSlot()
             .then(() => runMedicalBillsJob(jobId, claimId, undefined, files, rotations, excludedPages, interpretationHint))
@@ -561,7 +570,7 @@ app.post(
         const jobId = randomUUID();
         const claimId = resolveClaimId(req);
         const authedUser = getAuthedUser(req);
-        ensureClaim(claimId, authedUser.id, authedUser.fullname, authedUser.email);
+        ensureClaim(claimId, authedUser.id, authedUser.fullname, authedUser.email, undefined, parseTitlePrefix(req));
         medicalCertJobs.set(jobId, { status: "running", pages: [], result: null, error: null, userId: authedUser.id, userFullname: authedUser.fullname, userEmail: authedUser.email });
         acquireJobSlot()
             .then(() => runMedicalCertificateJob(jobId, claimId, undefined, files, rotations, excludedPages, interpretationHint))
@@ -627,7 +636,7 @@ app.post(
         const jobId = randomUUID();
         const claimId = resolveClaimId(req);
         const authedUser = getAuthedUser(req);
-        ensureClaim(claimId, authedUser.id, authedUser.fullname, authedUser.email);
+        ensureClaim(claimId, authedUser.id, authedUser.fullname, authedUser.email, undefined, parseTitlePrefix(req));
         payslipJobs.set(jobId, { status: "running", pages: [], result: null, error: null, userId: authedUser.id, userFullname: authedUser.fullname, userEmail: authedUser.email });
         acquireJobSlot()
             .then(() => runPayslipJob(jobId, claimId, undefined, files, rotations, excludedPages, interpretationHint))
@@ -676,7 +685,8 @@ app.get("/api/history", (req, res) => {
     const limit = Math.min(Math.max(Number(req.query.limit) || 25, 1), 100);
     const offset = Math.max(Number(req.query.offset) || 0, 0);
     const scanType = typeof req.query.type === "string" ? req.query.type : undefined;
-    const { rows, total } = listClaimsForUser(userId, { limit, offset, scanType });
+    const search = typeof req.query.search === "string" && req.query.search.trim() ? req.query.search.trim() : undefined;
+    const { rows, total } = listClaimsForUser(userId, { limit, offset, scanType, search });
     res.json({ rows, total, limit, offset });
 });
 
@@ -691,7 +701,8 @@ app.get("/api/admin/scans", (req, res) => {
     const offset = Math.max(Number(req.query.offset) || 0, 0);
     const scanType = typeof req.query.type === "string" ? req.query.type : undefined;
     const userId = req.query.userId !== undefined ? Number(req.query.userId) : undefined;
-    const { rows, total } = listAllClaims({ limit, offset, scanType, userId });
+    const search = typeof req.query.search === "string" && req.query.search.trim() ? req.query.search.trim() : undefined;
+    const { rows, total } = listAllClaims({ limit, offset, scanType, userId, search });
     const visibleRows = authedUser.isAdmin ? rows : rows.map(({ costUsd, ...rest }) => rest);
     res.json({ rows: visibleRows, total, limit, offset });
 });
@@ -778,6 +789,21 @@ app.put("/api/claims/:groupId", express.json({ limit: "5mb" }), (req, res) => {
     const updated = updateClaimFields(req.params.groupId, userId, perTypeRows, notes, title);
     if (!updated) return res.status(404).json({ error: "claim not found" });
     res.json({ success: true });
+});
+
+// Generates (or regenerates) a claim's title from a caseworker-typed "Case label" prefix — e.g.
+// "456K-Hamid" -> "456K-Hamid-20261127-01" (today's date + an auto-incrementing counter scoped to
+// that exact prefix, see lib/history.ts's nextTitleForPrefix). The explicit, caseworker-initiated
+// counterpart to ensureClaim's own automatic once-only fill at submit time — always overwrites any
+// existing title, since a caseworker clicking "Generate ID" again (e.g. after fixing a typo) means
+// it. Owner-scoped (setClaimTitle), same edit-class trust boundary as PUT/DELETE above.
+app.post("/api/claims/:groupId/generate-title", express.json({ limit: "1kb" }), (req, res) => {
+    const userId = getAuthedUser(req).id;
+    const prefix = typeof req.body?.prefix === "string" ? req.body.prefix.trim() : "";
+    if (!prefix) return res.status(400).json({ error: "prefix required" });
+    const title = setClaimTitle(req.params.groupId as string, userId, prefix);
+    if (title === null) return res.status(404).json({ error: "claim not found" });
+    res.json({ title });
 });
 
 // Deletes a claim (every scan type it contains) a caseworker performed themselves — owner-scoped

@@ -178,6 +178,36 @@ export function persistScan(opts: PersistScanOpts): void {
     }
 }
 
+// Escapes regex metacharacters in a caseworker-typed prefix before it's spliced into a RegExp —
+// the prefix is free text (could contain "." or "(" etc.), never meant to be interpreted as a
+// pattern itself.
+function escapeRegExp(s: string): string {
+    return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+// A caseworker's own tracking id for a claim, e.g. "456K-Hamid" typed into "Case label" — the
+// system appends today's date and an auto-incrementing counter scoped to that exact prefix (not
+// globally, not per-day — see the user-facing field's own description), producing
+// "456K-Hamid-20261127-01". Scans every existing claim's title for one matching this exact prefix
+// (LIKE `${prefix}-%`, then a precise regex match so a prefix that happens to be a substring of a
+// longer different prefix doesn't collide) and takes the highest counter + 1. `prefix` is used
+// directly in a SQL LIKE pattern — a caseworker-typed "%" or "_" would behave as a LIKE wildcard
+// rather than a literal character here; low-risk given this is an internal case-management tool
+// with no untrusted public input, not hardened further.
+/** Computes the next full title for a given case-label prefix (e.g. "456K-Hamid" -> "456K-Hamid-20261127-01"). */
+export function nextTitleForPrefix(prefix: string): string {
+    const trimmed = prefix.trim();
+    const rows = db.prepare(`SELECT title FROM claims WHERE title LIKE @pattern`).all({ pattern: `${trimmed}-%` }) as { title: string | null }[];
+    const re = new RegExp(`^${escapeRegExp(trimmed)}-\\d{8}-(\\d+)$`);
+    let maxSeq = 0;
+    for (const row of rows) {
+        const m = row.title?.match(re);
+        if (m) maxSeq = Math.max(maxSeq, parseInt(m[1], 10));
+    }
+    const today = new Date().toISOString().slice(0, 10).replace(/-/g, "");
+    return `${trimmed}-${today}-${String(maxSeq + 1).padStart(2, "0")}`;
+}
+
 /**
  * Ensures a `claims` row exists for `claimId`, creating it if this is the first of possibly-several
  * scan-type POSTs from the same combined "Extract details" submit to reach the server. `INSERT OR
@@ -193,13 +223,24 @@ export function persistScan(opts: PersistScanOpts): void {
  * passes nothing, and the second statement below only fills `notes` if it's still unset (handles
  * the race where a non-timesheet type's own ensureClaim call creates the row first, before
  * timesheet's call — with its real hint — arrives), never overwrites an already-set note.
+ * @param titlePrefix - The "Case label" typed on the main form BEFORE submitting (e.g.
+ * "456K-Hamid") — unlike `notes`, every one of the 5 scan types' own routes can pass this (a
+ * payslip-only claim should still be able to get a title), so the same "only fill if still unset"
+ * guard applies regardless of which scan type's request happens to create the row first.
  */
-export function ensureClaim(claimId: string, userId: number, userFullname: string, userEmail: string, notes?: string | null): void {
+export function ensureClaim(claimId: string, userId: number, userFullname: string, userEmail: string, notes?: string | null, titlePrefix?: string): void {
     db.prepare(
         `INSERT OR IGNORE INTO claims (id, user_id, user_fullname, user_email, notes) VALUES (@id, @userId, @userFullname, @userEmail, @notes)`
     ).run({ id: claimId, userId, userFullname, userEmail, notes: notes ?? null });
     if (notes) {
         db.prepare(`UPDATE claims SET notes = COALESCE(notes, @notes) WHERE id = @id`).run({ id: claimId, notes });
+    }
+    if (titlePrefix && titlePrefix.trim()) {
+        const existing = db.prepare(`SELECT title FROM claims WHERE id = @id`).get({ id: claimId }) as { title: string | null } | undefined;
+        if (existing && !existing.title) {
+            const generated = nextTitleForPrefix(titlePrefix);
+            db.prepare(`UPDATE claims SET title = COALESCE(title, @title) WHERE id = @id`).run({ id: claimId, title: generated });
+        }
     }
 }
 
@@ -253,35 +294,53 @@ export type ClaimListRow = {
  * includes `result_json` — kept small regardless of how large any one claim's payload is.
  * Pagination applies to the GROUPED claims, not the underlying scan rows.
  */
-export function listClaimsForUser(userId: number, opts: { limit: number; offset: number; scanType?: string }): { rows: ClaimListRow[]; total: number } {
-    const havingType = opts.scanType ? `HAVING SUM(scan_type = @scanType) > 0` : "";
-    // MAX(title)/MIN(user_id)-style aggregates are a "good enough, not guaranteed deterministic
-    // across ties" pick — SQLite's MAX over text is lexicographic, not "most meaningful title";
-    // in practice this almost always resolves to the timesheet's IPA-derived worker name anyway,
-    // since every OTHER scan type's title is always null (COALESCE/MAX skips nulls).
+export function listClaimsForUser(userId: number, opts: { limit: number; offset: number; scanType?: string; search?: string }): { rows: ClaimListRow[]; total: number } {
+    // Both conditions apply to the GROUPED result (one row per claim), so they're HAVING clauses,
+    // not WHERE. `title` prefers the `claims` table's own title (the caseworker-generated "Case
+    // label" tracking id, e.g. "456K-Hamid-20261127-01" — see ensureClaim/setClaimTitle) over any
+    // individual scan row's own `title` column (only ever set for timesheet, from the IPA's
+    // workerName) — a LEFT JOIN against `claims` (keyed by the same `COALESCE(claim_id, id)`
+    // groupId every other claims query already uses), not just `scans.title`, which a claim that's
+    // been given a real case label would otherwise never actually have NULL'd out server-side; a
+    // legacy claim with no `claims` row yet (c.title is NULL) still falls back to the scan-level
+    // title exactly as before. `search` matches against this SAME resolved title — the thing a
+    // caseworker actually wants to search by — not raw SQL LIKE-escaped (a typed "%"/"_" behaves as
+    // a wildcard; low-risk internal tool, not hardened further, same as nextTitleForPrefix's own
+    // LIKE usage).
+    const havingParts: string[] = [];
+    if (opts.scanType) havingParts.push("SUM(s.scan_type = @scanType) > 0");
+    if (opts.search) havingParts.push("COALESCE(MAX(c.title), MAX(s.title)) LIKE @search");
+    const having = havingParts.length > 0 ? `HAVING ${havingParts.join(" AND ")}` : "";
+    const params = { userId, scanType: opts.scanType ?? null, search: opts.search ? `%${opts.search}%` : null, limit: opts.limit, offset: opts.offset };
     const rows = db
         .prepare(
-            `SELECT COALESCE(claim_id, id) AS groupId,
-                    GROUP_CONCAT(DISTINCT scan_type) AS scanTypesCsv,
-                    MAX(title) AS title,
-                    SUM(cost_usd) AS costUsd,
-                    MAX(created_at) AS createdAt
-             FROM scans
-             WHERE user_id = @userId
+            `SELECT COALESCE(s.claim_id, s.id) AS groupId,
+                    GROUP_CONCAT(DISTINCT s.scan_type) AS scanTypesCsv,
+                    COALESCE(MAX(c.title), MAX(s.title)) AS title,
+                    SUM(s.cost_usd) AS costUsd,
+                    MAX(s.created_at) AS createdAt
+             FROM scans s
+             LEFT JOIN claims c ON c.id = COALESCE(s.claim_id, s.id)
+             WHERE s.user_id = @userId
              GROUP BY groupId
-             ${havingType}
+             ${having}
              ORDER BY createdAt DESC
              LIMIT @limit OFFSET @offset`
         )
-        .all({ userId, scanType: opts.scanType ?? null, limit: opts.limit, offset: opts.offset }) as Array<{
+        .all(params) as Array<{
             groupId: string; scanTypesCsv: string; title: string | null; costUsd: number | null; createdAt: string;
         }>;
     const total = (
         db.prepare(
             `SELECT COUNT(*) as c FROM (
-                SELECT COALESCE(claim_id, id) AS groupId FROM scans WHERE user_id = @userId GROUP BY groupId ${havingType}
+                SELECT COALESCE(s.claim_id, s.id) AS groupId
+                FROM scans s
+                LEFT JOIN claims c ON c.id = COALESCE(s.claim_id, s.id)
+                WHERE s.user_id = @userId
+                GROUP BY groupId
+                ${having}
              )`
-        ).get({ userId, scanType: opts.scanType ?? null }) as { c: number }
+        ).get(params) as { c: number }
     ).c;
     return {
         rows: rows.map(r => ({ groupId: r.groupId, scanTypes: r.scanTypesCsv.split(",") as ScanType[], title: r.title, costUsd: r.costUsd, createdAt: r.createdAt })),
@@ -292,25 +351,31 @@ export function listClaimsForUser(userId: number, opts: { limit: number; offset:
 export type AdminClaimListRow = ClaimListRow & { userId: number; userFullname: string; userEmail: string };
 
 /** Lists claims across every user (admin dashboard) — optionally scoped to one user_id for drill-down. Never includes result_json. */
-export function listAllClaims(opts: { limit: number; offset: number; scanType?: string; userId?: number }): { rows: AdminClaimListRow[]; total: number } {
-    const conditions = [opts.userId !== undefined ? "user_id = @userId" : null].filter((c): c is string => c !== null);
+export function listAllClaims(opts: { limit: number; offset: number; scanType?: string; userId?: number; search?: string }): { rows: AdminClaimListRow[]; total: number } {
+    const conditions = [opts.userId !== undefined ? "s.user_id = @userId" : null].filter((c): c is string => c !== null);
     const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
-    const havingType = opts.scanType ? `HAVING SUM(scan_type = @scanType) > 0` : "";
-    const params = { scanType: opts.scanType ?? null, userId: opts.userId ?? null, limit: opts.limit, offset: opts.offset };
+    // See listClaimsForUser's identical comment on why `title` prefers the `claims` table's own
+    // title (via a LEFT JOIN) over `scans.title`, and why both filters below are HAVING clauses.
+    const havingParts: string[] = [];
+    if (opts.scanType) havingParts.push("SUM(s.scan_type = @scanType) > 0");
+    if (opts.search) havingParts.push("COALESCE(MAX(c.title), MAX(s.title)) LIKE @search");
+    const having = havingParts.length > 0 ? `HAVING ${havingParts.join(" AND ")}` : "";
+    const params = { scanType: opts.scanType ?? null, userId: opts.userId ?? null, search: opts.search ? `%${opts.search}%` : null, limit: opts.limit, offset: opts.offset };
     const rows = db
         .prepare(
-            `SELECT COALESCE(claim_id, id) AS groupId,
-                    GROUP_CONCAT(DISTINCT scan_type) AS scanTypesCsv,
-                    MAX(title) AS title,
-                    SUM(cost_usd) AS costUsd,
-                    MAX(created_at) AS createdAt,
-                    MAX(user_id) AS userId,
-                    MAX(user_fullname) AS userFullname,
-                    MAX(user_email) AS userEmail
-             FROM scans
+            `SELECT COALESCE(s.claim_id, s.id) AS groupId,
+                    GROUP_CONCAT(DISTINCT s.scan_type) AS scanTypesCsv,
+                    COALESCE(MAX(c.title), MAX(s.title)) AS title,
+                    SUM(s.cost_usd) AS costUsd,
+                    MAX(s.created_at) AS createdAt,
+                    MAX(s.user_id) AS userId,
+                    MAX(s.user_fullname) AS userFullname,
+                    MAX(s.user_email) AS userEmail
+             FROM scans s
+             LEFT JOIN claims c ON c.id = COALESCE(s.claim_id, s.id)
              ${whereClause}
              GROUP BY groupId
-             ${havingType}
+             ${having}
              ORDER BY createdAt DESC
              LIMIT @limit OFFSET @offset`
         )
@@ -319,7 +384,16 @@ export function listAllClaims(opts: { limit: number; offset: number; scanType?: 
             userId: number; userFullname: string; userEmail: string;
         }>;
     const total = (
-        db.prepare(`SELECT COUNT(*) as c FROM (SELECT COALESCE(claim_id, id) AS groupId FROM scans ${whereClause} GROUP BY groupId ${havingType})`).get(params) as { c: number }
+        db.prepare(
+            `SELECT COUNT(*) as c FROM (
+                SELECT COALESCE(s.claim_id, s.id) AS groupId
+                FROM scans s
+                LEFT JOIN claims c ON c.id = COALESCE(s.claim_id, s.id)
+                ${whereClause}
+                GROUP BY groupId
+                ${having}
+             )`
+        ).get(params) as { c: number }
     ).c;
     return {
         rows: rows.map(r => ({
@@ -549,6 +623,25 @@ export function updateClaimFields(
         return matchedAny;
     });
     return txn();
+}
+
+/**
+ * Generates (or regenerates) a claim's title from a caseworker-typed "Case label" prefix — the
+ * explicit after-the-fact action (post-scan, or from a reopened history page), as opposed to
+ * `ensureClaim`'s own automatic once-only fill at submit time. Always overwrites any existing
+ * title (unlike `ensureClaim`'s race-safe "only if still unset" guard) — this is a deliberate,
+ * single caseworker-initiated action, not a race between concurrent requests, so there's nothing
+ * to protect against here; a caseworker clicking "Generate ID" again after fixing a typo in the
+ * prefix should always take effect.
+ *
+ * @returns The newly generated title, or `null` if `groupId`+`userId` matched no claim at all.
+ */
+export function setClaimTitle(groupId: string, userId: number, prefix: string): string | null {
+    const scans = scansForGroup(groupId, userId);
+    if (scans.length === 0) return null;
+    const generated = nextTitleForPrefix(prefix);
+    const updated = updateClaimFields(groupId, userId, {}, undefined, generated);
+    return updated ? generated : null;
 }
 
 // Same ownership scoping as before — a caseworker can only delete their own claims, never another
