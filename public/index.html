@@ -1416,6 +1416,15 @@
       <button type="button" class="generate-btn" id="copyHistoryLinkBtn" style="display:none">Copy link</button>
       <span class="status" id="saveHistoryChangesStatus"></span>
     </div>
+    <!-- A caseworker's own free-text case note, independent of any one scan type — one per claim
+         (lib/history.ts's `claims.notes`), editable from both right after a live scan finishes and
+         from reopening the same claim in history later (see the main submit handler's success
+         branch and enterHistoryDetailView). Shown whenever a claim actually exists to attach a note
+         to; hidden on the blank form / history list, same as saveHistoryChangesBtn. Saved via the
+         same "Save changes" button, not a separate one — see saveHistoryChangesBtn's handler. -->
+    <div class="history-nav-row" id="caseNoteWrap" style="display:none">
+      <textarea id="caseNoteInput" placeholder="Case notes (visible to any caseworker who opens this claim)…" rows="2" style="flex:1; min-width:240px; resize:vertical;"></textarea>
+    </div>
 
     <div id="scanFormWrap">
       <div class="rules-summary">
@@ -2276,17 +2285,28 @@
     // storage (see lib/jobs/shared.ts's TTL cleanup), so "Rescan"/"Rotate" (which need to re-attach
     // the original File object) can never work there; renderIpaCard checks this to hide those
     // controls. renderPageReview doesn't need this flag — it already gates on whether a `key` was
-    // passed, which loadTimesheetHistoryRecord ensures is always undefined for a history page.
+    // passed, which enterHistoryDetailView's timesheet branch ensures is always undefined for a history page.
     let viewingHistoryRecord = false;
-    // Set together whenever a history detail view loads, cleared on returning to the form or the
-    // history list — identifies which saved record (and which scan type's collector function) the
-    // "Save changes" button should act on. null/null means "not viewing a history detail" (a live
-    // scan, the list view, or the blank form), which the button's own visibility already tracks,
-    // but having both explicit avoids relying on DOM visibility as the source of truth.
+    // Set whenever a history detail view loads (or a live multi-type scan finishes — see the main
+    // submit handler), cleared on returning to the form or the history list — identifies which
+    // saved CLAIM (not a single scan row anymore — a claim can bundle several scan types from one
+    // combined submit, see lib/history.ts's claims table) the "Save changes" button should act on.
+    // null means "not viewing a claim" (the list view or the blank form before any scan has run),
+    // which the button's own visibility already tracks, but having this explicit avoids relying on
+    // DOM visibility as the source of truth.
     let currentHistoryScanId = null;
-    let currentHistoryScanType = null;
-    // True only while openHistoryDetailFromUrl is actively opening a scan reached via the URL
-    // itself (initial page load with ?scan=&type=, or a popstate back/forward) — tells
+    // Which of the 5 scan types are actually present/shown for the current claim — drives which
+    // HISTORY_ROW_COLLECTORS run on Save (a claim that only ever had a timesheet scanned has
+    // nothing to collect for bank/medical/payslip, and collecting+sending an empty/stale array for
+    // an absent type would silently fabricate a scan row for it server-side). A Set, not the old
+    // single currentHistoryScanType, because a combined claim can hold more than one type at once.
+    let currentHistoryPresentTypes = new Set();
+    // Set once per "Extract details" click (see the main submit handler), shared across every scan
+    // type's own POST that submit fires off — lets the server group them into one claim. Read (not
+    // set) by runBankStatementScan/runMedicalBillsScan/runMedicalCertificatesScan/runPayslipsScan.
+    let currentSubmitClaimId = null;
+    // True only while openHistoryDetailFromUrl is actively opening a claim reached via the URL
+    // itself (initial page load with ?claim=, or a popstate back/forward) — tells
     // enterHistoryDetailView to skip its own history.pushState, since the browser's navigation
     // already put the URL there; pushing again would duplicate the entry and break back/forward.
     let openingFromUrlSync = false;
@@ -2946,6 +2966,11 @@
 
     form.addEventListener('submit', async (e) => {
       e.preventDefault();
+      // Set FIRST, before anything else in this handler — the payslip-year-detection fallback just
+      // below can fire runPayslipsScan() early (before the main Promise.allSettled fan-out further
+      // down), and that early fire still needs the same shared claimId as every other scan type in
+      // this submit, or it would land as its own separate, ungrouped claim.
+      currentSubmitClaimId = crypto.randomUUID();
       // With zero timesheet files there's no printed date header anywhere for runProcessJob's
       // year detection to read (see the fallbackYear derivation below) — without a claim period
       // start date either, the whole scan is guaranteed to fail server-side after several seconds
@@ -3003,7 +3028,12 @@
       interpretationDisagreementPanelEl.innerHTML = '';
       interpretationDisagreementPanelEl.style.display = 'none';
 
+      // currentSubmitClaimId was already set at the very top of this handler (shared across every
+      // scan type's own POST — see runBankStatementScan/runMedicalBillsScan/
+      // runMedicalCertificatesScan/runPayslipsScan — so the server groups them into ONE claim,
+      // lib/history.ts's `claims` table, instead of 5 separate unrelated history records).
       const formData = new FormData();
+      formData.append('claimId', currentSubmitClaimId);
       for (const file of pdfsInput.files) formData.append('pdfs', file);
       if (ipaInput.files[0]) formData.append('ipa', ipaInput.files[0]);
       // Rotations + page exclusions confirmed in the staging preview above — same fileIndex/pageIndex
@@ -3138,6 +3168,33 @@
         const medicalCost = medicalResult.status === 'fulfilled' && typeof medicalResult.value === 'number' ? medicalResult.value : 0;
         const medicalCertCost = medicalCertResult.status === 'fulfilled' && typeof medicalCertResult.value === 'number' ? medicalCertResult.value : 0;
         const payslipsCost = payslipsResult.status === 'fulfilled' && typeof payslipsResult.value === 'number' ? payslipsResult.value : 0;
+
+        // The combined claim this submit just created (or added to, for whichever types it
+        // covered) — persistScan always runs for the main scan (even a payslip-only claim with
+        // zero timesheet pages, see lib/jobs/timesheetJob.ts), so "timesheet" is present whenever
+        // mainScan itself didn't outright reject; the other 4 types only ever POST (and so only
+        // ever persist a scan row) when they actually had files — see each run*Scan's own
+        // `if (files.length === 0) return;` early-out, which resolves with `undefined`, not a cost
+        // number. Lets "Save changes"/the case note work immediately after a live scan, same as
+        // reopening this exact claim from history later would.
+        currentHistoryScanId = currentSubmitClaimId;
+        currentHistoryPresentTypes = new Set();
+        if (mainResult.status === 'fulfilled' && mainResult.value !== undefined) currentHistoryPresentTypes.add('timesheet');
+        if (bankResult.status === 'fulfilled' && bankResult.value !== undefined) currentHistoryPresentTypes.add('bank_statement');
+        if (medicalResult.status === 'fulfilled' && medicalResult.value !== undefined) currentHistoryPresentTypes.add('medical_bills');
+        if (medicalCertResult.status === 'fulfilled' && medicalCertResult.value !== undefined) currentHistoryPresentTypes.add('medical_certificates');
+        if (payslipsResult.status === 'fulfilled' && payslipsResult.value !== undefined) currentHistoryPresentTypes.add('payslips');
+        document.getElementById('saveHistoryChangesBtn').style.display = '';
+        document.getElementById('saveHistoryChangesStatus').textContent = '';
+        document.getElementById('caseNoteWrap').style.display = '';
+        document.getElementById('caseNoteInput').value = ''; // a brand-new claim never has a note yet
+        document.getElementById('copyHistoryLinkBtn').style.display = '';
+        if (!openingFromUrlSync) {
+          const linkUrl = new URL(location.href);
+          linkUrl.search = `?claim=${encodeURIComponent(currentSubmitClaimId)}`;
+          history.pushState({ claim: currentSubmitClaimId }, '', linkUrl);
+        }
+
         statusEl.className = 'status success';
         // currentYear is server-detected now (no manual picker — see renderFinalResult) — surfaced
         // here so a caseworker has some visible confirmation of what got auto-detected, since
@@ -3439,9 +3496,10 @@
         pageReviewList.querySelectorAll('.page-rescan-controls').forEach(wireTimesheetRescanControls);
         renderInterpretationDisagreements(sortedPageReviews, orderedKeys);
         // "Add more timesheet files" — lets a caseworker scan just a newly-arrived document later
-        // without re-scanning this batch. Never offered for a reopened history record (its original
-        // uploaded files are long gone from temp storage, same reasoning as viewingHistoryRecord's
-        // other uses).
+        // without re-scanning this batch. Only shown here for the LIVE case — a reopened claim's
+        // own visibility is set independently by enterHistoryDetailView (it posts to the claim-
+        // scoped append endpoint instead of this type's normal fresh-scan endpoint, see
+        // appendFilesToCurrentClaim), not through this render path at all.
         if (!viewingHistoryRecord) document.getElementById('pdfsAddMoreWrap').style.display = 'block';
         // Each page card was rendered with an empty placeholder list (see renderPageReview) — now
         // that they're in the DOM, populate each with the reviewRows whose `source` traces back to
@@ -5938,6 +5996,113 @@
       }
     }
 
+    // "Add more X files" while viewing an existing CLAIM (reopened from history, or right after it
+    // just finished live — both set `viewingHistoryRecord`/`currentHistoryScanId`) — posts to the
+    // claim-scoped append endpoint instead of the type's normal fresh-scan endpoint, and reloads
+    // the whole claim afterward via the existing combined loader rather than trying to splice the
+    // new pages in client-side. Simpler and correctness-guaranteed (the rendered state always
+    // matches exactly what the server persisted) at the cost of a full re-render instead of an
+    // incremental DOM merge — fine since this is a deliberate, infrequent action, not a hot path.
+    // Shared across the 4 "simple" scan types (bank_statement/medical_bills/medical_certificates/
+    // payslips) — timesheet isn't supported by the server endpoint yet (see
+    // POST /api/claims/:groupId/append's own comment in server.ts).
+    const APPEND_FIELD_BY_SCAN_TYPE = {
+      timesheet: 'pdfs',
+      bank_statement: 'statements',
+      medical_bills: 'medicalBills',
+      medical_certificates: 'medicalCertificates',
+      payslips: 'payslips',
+    };
+    /**
+     * Posts new files for one scan type to the current claim's append endpoint, polls the
+     * resulting job, then reloads the whole claim on success.
+     * @param {string} scanType - One of `APPEND_FIELD_BY_SCAN_TYPE`'s keys.
+     * @param {string} statusEndpoint - That type's normal job-status endpoint (e.g. '/api/bank-statement') — the append job polls the exact same way a fresh scan would.
+     * @param {FileList|File[]} files
+     * @param {HTMLElement} statusEl
+     * @param {HTMLButtonElement} btn
+     * @param {HTMLInputElement} inputEl
+     * @param {Object<string,string>} [extraFields] - Extra form fields timesheet's append needs
+     * (standardBreakHours/interpretationHint/fallbackYear/claimStartDate/claimEndDate) that the
+     * other 4 simpler types don't — see pdfsAddMoreBtn's handler.
+     */
+    async function appendFilesToCurrentClaim(scanType, statusEndpoint, files, statusEl, btn, inputEl, extraFields) {
+      btn.disabled = true;
+      statusEl.className = 'status loading';
+      statusEl.innerHTML = '<span class="spinner"></span>Scanning additional file(s)…';
+      try {
+        const formData = new FormData();
+        formData.append('scanType', scanType);
+        for (const f of files) formData.append(APPEND_FIELD_BY_SCAN_TYPE[scanType], f);
+        for (const [k, v] of Object.entries(extraFields || {})) formData.append(k, v);
+        const res = await fetch(`/api/claims/${currentHistoryScanId}/append`, { method: 'POST', body: formData });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || `Server returned ${res.status}`);
+        await pollSinglePageJob(statusEndpoint, data.jobId);
+        const groupId = currentHistoryScanId;
+        inputEl.value = '';
+        // Full reload — guarantees the rendered state matches exactly what the server just
+        // persisted. openingFromUrlSync suppresses enterHistoryDetailView's own pushState (the URL
+        // already points at this same claim, no need for a duplicate history entry).
+        openingFromUrlSync = true;
+        try {
+          await openHistoryDetail(groupId);
+        } finally {
+          openingFromUrlSync = false;
+        }
+        statusEl.className = 'status success';
+        statusEl.textContent = 'Added successfully.';
+      } catch (err) {
+        statusEl.className = 'status error';
+        statusEl.textContent = 'Error: ' + err.message;
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    // Rescanning a page that belongs to a saved CLAIM (not a live, still-in-browser-memory file) —
+    // the original uploaded file is long gone, but the stored page PNG is all a rescan actually
+    // needs (every scan primitive these 4 types use already operates on a rendered image buffer,
+    // never the original PDF). Pages rendered from a claim get a `"history:<pageIndex>"` key
+    // instead of the live `${batchId}:${fileIndex}-${pageIndex}` scheme (see each render*PageCard
+    // call site) — `<pageIndex>` is this page's own position in the claim's stored `result.pages`
+    // array, which `POST /api/claims/:groupId/rescan-page` needs to find the right stored image.
+    /**
+     * Rescans one page of the current claim from its persisted image, then reloads the claim.
+     * @param {string} scanType
+     * @param {number} pageIndex - This page's index in the claim's stored `result.pages` array.
+     * @param {number} rotationDeg - Pending rotation to apply before rescanning (0 if none).
+     * @param {string|null} hint - Caseworker's reading-convention hint, or null if cancelled (caller should bail before calling this).
+     * @param {HTMLElement} statusEl
+     * @param {HTMLButtonElement} btn
+     */
+    async function rescanCurrentClaimPage(scanType, pageIndex, rotationDeg, hint, statusEl, btn) {
+      btn.disabled = true;
+      statusEl.className = 'page-rescan-status';
+      statusEl.textContent = 'Rescanning…';
+      try {
+        const res = await fetch(`/api/claims/${currentHistoryScanId}/rescan-page`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ scanType, pageIndex, rotationDeg, interpretationHint: hint || undefined }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || `Server returned ${res.status}`);
+        const groupId = currentHistoryScanId;
+        openingFromUrlSync = true;
+        try {
+          await openHistoryDetail(groupId);
+        } finally {
+          openingFromUrlSync = false;
+        }
+      } catch (err) {
+        statusEl.className = 'page-rescan-status error';
+        statusEl.textContent = 'Error: ' + err.message;
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
     // Wires one page card's rotate/rescan buttons — called both on the initial batch render and
     // again on each fresh card a rescan produces (applyRescannedTimesheetPage), so the buttons keep
     // working after repeated use. pdfsRotations[key] is reused as the running rotation state here,
@@ -6226,6 +6391,26 @@
       if (input.files.length === 0) {
         statusEl.className = 'status error';
         statusEl.textContent = 'Choose at least one file first.';
+        return;
+      }
+      if (viewingHistoryRecord) {
+        // Timesheet's append reuses the full /api/process pipeline (agentic discovery, same as a
+        // fresh submit) — rotations are sent as RotationMap's nested `{pdfs:{...}}` shape (the
+        // server's append route re-parses this specifically for scanType "timesheet", unlike the
+        // other 4 types' flat rotations), even though a quick "Add more" here skips the pre-scan
+        // rotate/exclude staging grid, same scope cut the live-session version already makes.
+        const extraFields = {
+          rotations: JSON.stringify({ pdfs: {} }),
+          standardBreakHours: String(getStandardBreakHours()),
+        };
+        const scanHintVal = document.getElementById('scanHint').value.trim();
+        if (scanHintVal) extraFields.interpretationHint = scanHintVal;
+        if (currentYear && currentYear.length > 0) extraFields.fallbackYear = String(currentYear[0]);
+        const claimStart = document.getElementById('contractStartDate').value;
+        if (claimStart) extraFields.claimStartDate = claimStart;
+        const claimEnd = document.getElementById('contractEndDate').value;
+        if (claimEnd) extraFields.claimEndDate = claimEnd;
+        await appendFilesToCurrentClaim('timesheet', '/api/process', input.files, statusEl, btn, input, extraFields);
         return;
       }
       const batchId = pdfsFileBatches.push([...input.files]) - 1;
@@ -7198,13 +7383,15 @@
       const sortedPages = order.map(i => pages[i]);
       const orderedKeys = order.map(i => rawOrderedKeys[i]);
       bankPageReviewListEl.innerHTML = sortedPages
-        .map((p, idx) => renderBankPageCard(p, done ? orderedKeys[idx] : undefined, done ? idx : undefined))
+        .map((p, idx) => renderBankPageCard(p, viewingHistoryRecord ? `history:${order[idx]}` : (done ? orderedKeys[idx] : undefined), done ? idx : undefined))
         .join('');
       bankPageReviewListEl.querySelectorAll('.page-review-row').forEach(wireBankPageCard);
       if (done) bankPageReviewListEl.querySelectorAll('.page-rescan-controls').forEach(wireBankRescanControls);
-      // "Add more bank statement files" — same reasoning as the timesheet section's equivalent:
-      // never offered for a reopened history record (original files are long gone by then), and
-      // only once the batch is actually done (mid-scan, there's nothing stable to add onto yet).
+      // "Add more bank statement files" — only shown here for the LIVE case (same reasoning as the
+      // timesheet section's equivalent) — a reopened claim's own visibility is set independently by
+      // enterHistoryDetailView, which posts to the claim-scoped append endpoint instead of this
+      // route (see appendFilesToCurrentClaim) — and only once the batch is actually done (mid-scan,
+      // there's nothing stable to add onto yet).
       if (done && !viewingHistoryRecord) document.getElementById('bankStatementAddMoreWrap').style.display = 'block';
       refreshBankSummary();
     }
@@ -7257,6 +7444,12 @@
       });
 
       rescanBtn.addEventListener('click', async () => {
+        if (controls.dataset.batchId === 'history') {
+          const hint = promptRescanHint();
+          if (hint === null) return;
+          await rescanCurrentClaimPage('bank_statement', Number(key.split(':')[1]), bankStatementRotations[key] || 0, hint, statusEl, rescanBtn);
+          return;
+        }
         const file = bankStatementFileBatches[batchId]?.[fileIndex];
         if (!file) {
           statusEl.className = 'page-rescan-status error';
@@ -7391,6 +7584,10 @@
         statusEl.textContent = 'Choose at least one file first.';
         return;
       }
+      if (viewingHistoryRecord) {
+        await appendFilesToCurrentClaim('bank_statement', '/api/bank-statement', input.files, statusEl, btn, input);
+        return;
+      }
       const batchId = bankStatementFileBatches.push([...input.files]) - 1;
       btn.disabled = true;
       statusEl.className = 'status loading';
@@ -7467,6 +7664,7 @@
       bankResultsEl.innerHTML = '';
 
       const formData = new FormData();
+      formData.append('claimId', currentSubmitClaimId);
       for (const f of files) formData.append('statements', f);
       formData.append('rotations', JSON.stringify(bankStatementRotations));
       formData.append('excludedPages', JSON.stringify([...excludedBankStatementPages]));
@@ -7723,7 +7921,7 @@
       const sortedPages = order.map(i => pages[i]);
       const orderedKeys = order.map(i => rawOrderedKeys[i]);
       medicalPageReviewListEl.innerHTML = sortedPages
-        .map((p, idx) => renderMedicalPageCard(p, done ? orderedKeys[idx] : undefined, done ? idx : undefined))
+        .map((p, idx) => renderMedicalPageCard(p, viewingHistoryRecord ? `history:${order[idx]}` : (done ? orderedKeys[idx] : undefined), done ? idx : undefined))
         .join('');
       medicalPageReviewListEl.querySelectorAll('.page-review-row').forEach(wireMedicalPageCard);
       if (done) medicalPageReviewListEl.querySelectorAll('.page-rescan-controls').forEach(wireMedicalRescanControls);
@@ -7754,6 +7952,12 @@
       });
 
       rescanBtn.addEventListener('click', async () => {
+        if (controls.dataset.batchId === 'history') {
+          const hint = promptRescanHint();
+          if (hint === null) return;
+          await rescanCurrentClaimPage('medical_bills', Number(key.split(':')[1]), medicalBillsRotations[key] || 0, hint, statusEl, rescanBtn);
+          return;
+        }
         const file = medicalBillsFileBatches[batchId]?.[fileIndex];
         if (!file) {
           statusEl.className = 'page-rescan-status error';
@@ -7883,6 +8087,10 @@
         statusEl.textContent = 'Choose at least one file first.';
         return;
       }
+      if (viewingHistoryRecord) {
+        await appendFilesToCurrentClaim('medical_bills', '/api/medical-bills', input.files, statusEl, btn, input);
+        return;
+      }
       const batchId = medicalBillsFileBatches.push([...input.files]) - 1;
       btn.disabled = true;
       statusEl.className = 'status loading';
@@ -7990,6 +8198,7 @@
       medicalBillsStatusEl.textContent = '';
 
       const formData = new FormData();
+      formData.append('claimId', currentSubmitClaimId);
       for (const f of files) formData.append('medicalBills', f);
       formData.append('rotations', JSON.stringify(medicalBillsRotations));
       formData.append('excludedPages', JSON.stringify([...excludedMedicalBillsPages]));
@@ -8248,7 +8457,7 @@
       const sortedPages = order.map(i => pages[i]);
       const orderedKeys = order.map(i => rawOrderedKeys[i]);
       medicalCertPageReviewListEl.innerHTML = sortedPages
-        .map((p, idx) => renderMedicalCertPageCard(p, done ? orderedKeys[idx] : undefined, done ? idx : undefined))
+        .map((p, idx) => renderMedicalCertPageCard(p, viewingHistoryRecord ? `history:${order[idx]}` : (done ? orderedKeys[idx] : undefined), done ? idx : undefined))
         .join('');
       medicalCertPageReviewListEl.querySelectorAll('.page-review-row').forEach(wireMedicalCertPageCard);
       if (done) medicalCertPageReviewListEl.querySelectorAll('.page-rescan-controls').forEach(wireMedicalCertRescanControls);
@@ -8279,6 +8488,12 @@
       });
 
       rescanBtn.addEventListener('click', async () => {
+        if (controls.dataset.batchId === 'history') {
+          const hint = promptRescanHint();
+          if (hint === null) return;
+          await rescanCurrentClaimPage('medical_certificates', Number(key.split(':')[1]), medicalCertificatesRotations[key] || 0, hint, statusEl, rescanBtn);
+          return;
+        }
         const file = medicalCertificatesFileBatches[batchId]?.[fileIndex];
         if (!file) {
           statusEl.className = 'page-rescan-status error';
@@ -8408,6 +8623,10 @@
         statusEl.textContent = 'Choose at least one file first.';
         return;
       }
+      if (viewingHistoryRecord) {
+        await appendFilesToCurrentClaim('medical_certificates', '/api/medical-certificates', input.files, statusEl, btn, input);
+        return;
+      }
       const batchId = medicalCertificatesFileBatches.push([...input.files]) - 1;
       btn.disabled = true;
       statusEl.className = 'status loading';
@@ -8482,6 +8701,7 @@
       medicalCertificatesStatusEl.textContent = '';
 
       const formData = new FormData();
+      formData.append('claimId', currentSubmitClaimId);
       for (const f of files) formData.append('medicalCertificates', f);
       formData.append('rotations', JSON.stringify(medicalCertificatesRotations));
       formData.append('excludedPages', JSON.stringify([...excludedMedicalCertificatesPages]));
@@ -9143,7 +9363,7 @@
       const sortedPages = order.map(i => pages[i]);
       const orderedKeys = order.map(i => rawOrderedKeys[i]);
       payslipPageReviewListEl.innerHTML = sortedPages
-        .map((p, idx) => renderPayslipPageCard(p, done ? orderedKeys[idx] : undefined, done ? idx : undefined))
+        .map((p, idx) => renderPayslipPageCard(p, viewingHistoryRecord ? `history:${order[idx]}` : (done ? orderedKeys[idx] : undefined), done ? idx : undefined))
         .join('');
       payslipPageReviewListEl.querySelectorAll('.page-review-row').forEach(wirePayslipPageCard);
       if (done) payslipPageReviewListEl.querySelectorAll('.page-rescan-controls').forEach(wirePayslipRescanControls);
@@ -9174,6 +9394,12 @@
       });
 
       rescanBtn.addEventListener('click', async () => {
+        if (controls.dataset.batchId === 'history') {
+          const hint = promptRescanHint();
+          if (hint === null) return;
+          await rescanCurrentClaimPage('payslips', Number(key.split(':')[1]), payslipsRotations[key] || 0, hint, statusEl, rescanBtn);
+          return;
+        }
         const file = payslipsFileBatches[batchId]?.[fileIndex];
         if (!file) {
           statusEl.className = 'page-rescan-status error';
@@ -9306,6 +9532,10 @@
         statusEl.textContent = 'Choose at least one file first.';
         return;
       }
+      if (viewingHistoryRecord) {
+        await appendFilesToCurrentClaim('payslips', '/api/payslips', input.files, statusEl, btn, input);
+        return;
+      }
       const batchId = payslipsFileBatches.push([...input.files]) - 1;
       btn.disabled = true;
       statusEl.className = 'status loading';
@@ -9379,6 +9609,7 @@
       payslipsStatusEl.textContent = '';
 
       const formData = new FormData();
+      formData.append('claimId', currentSubmitClaimId);
       for (const f of files) formData.append('payslips', f);
       formData.append('rotations', JSON.stringify(payslipsRotations));
       formData.append('excludedPages', JSON.stringify([...excludedPayslipsPages]));
@@ -9396,9 +9627,11 @@
     }
 
     // ===== Scan history =====
-    // Lists every past scan the logged-in caseworker has run (see lib/history.ts, GET /api/history)
-    // and lets them reopen one in the exact same review UI a live scan uses (see
-    // loadHistoryRecordAsLive, wired per scan type as each one is built out).
+    // Lists every past CLAIM the logged-in caseworker has run (see lib/history.ts's `claims` table,
+    // GET /api/history) — one claim can bundle several scan types (timesheet/bank/medical/payslip)
+    // from the same combined "Extract details" submit — and lets them reopen one in the exact same
+    // review UI a live scan uses, with EVERY attached scan type shown together on one page, same as
+    // the live page already shows them together right after that submit.
     const historyListViewEl = document.getElementById('historyListView');
     const historyListStatusEl = document.getElementById('historyListStatus');
     const historyTableEl = document.getElementById('historyTable');
@@ -9416,10 +9649,10 @@
     };
 
     /** Hides the scan form and any currently-shown live/history review, shows the history list, and loads it. */
-    // Drops any ?scan=&type= from the address bar — called whenever a navigation leaves the detail
+    // Drops any ?claim= from the address bar — called whenever a navigation leaves the detail
     // view (back to a list, the admin dashboard, or the blank form), so the URL only ever points at
-    // a shareable link while a specific scan's detail is actually on screen.
-    /** Clears the ?scan=&type= query params from the URL, if present, without a page reload. */
+    // a shareable link while a specific claim's detail is actually on screen.
+    /** Clears the ?claim= query param from the URL, if present, without a page reload. */
     function clearHistoryLinkUrl() {
       if (!location.search) return;
       history.pushState({}, '', location.pathname);
@@ -9434,9 +9667,10 @@
       document.getElementById('backToAdminDashboardBtn').style.display = 'none';
       document.getElementById('copyHistoryLinkBtn').style.display = 'none';
       currentHistoryScanId = null;
-      currentHistoryScanType = null;
+      currentHistoryPresentTypes = new Set();
       viewingAsAdminReadOnly = false;
       document.getElementById('saveHistoryChangesBtn').style.display = 'none';
+      document.getElementById('caseNoteWrap').style.display = 'none';
       clearHistoryLinkUrl();
       historyOffset = 0;
       loadHistoryList();
@@ -9452,9 +9686,10 @@
       document.getElementById('backToAdminDashboardBtn').style.display = 'none';
       document.getElementById('copyHistoryLinkBtn').style.display = 'none';
       currentHistoryScanId = null;
-      currentHistoryScanType = null;
+      currentHistoryPresentTypes = new Set();
       viewingAsAdminReadOnly = false;
       document.getElementById('saveHistoryChangesBtn').style.display = 'none';
+      document.getElementById('caseNoteWrap').style.display = 'none';
       viewingHistoryRecord = false;
       clearHistoryLinkUrl();
     }
@@ -9464,7 +9699,7 @@
     document.getElementById('backToAdminDashboardBtn').addEventListener('click', showAdminDashboardView);
     document.getElementById('historyTypeFilter').addEventListener('change', () => { historyOffset = 0; loadHistoryList(); });
 
-    /** Fetches one page of the current user's scan history and renders it as a table. */
+    /** Fetches one page of the current user's claim history and renders it as a table. */
     async function loadHistoryList() {
       historyListStatusEl.className = 'status loading';
       historyListStatusEl.textContent = 'Loading…';
@@ -9482,6 +9717,11 @@
       }
     }
 
+    /** One row's scan-type labels, comma-joined (e.g. "Timesheet, Bank statement") — a claim can bundle several. */
+    function scanTypeBadges(scanTypes) {
+      return (scanTypes || []).map(t => HISTORY_SCAN_TYPE_LABELS[t] || t).join(', ');
+    }
+
     function renderHistoryTable(data) {
       if (data.rows.length === 0) {
         historyListStatusEl.className = 'status';
@@ -9493,22 +9733,21 @@
       historyListStatusEl.textContent = '';
       historyTableEl.style.display = '';
       historyTableBodyEl.innerHTML = data.rows.map(row => {
-        const date = new Date(row.created_at).toLocaleString();
-        const typeLabel = HISTORY_SCAN_TYPE_LABELS[row.scan_type] || row.scan_type;
-        const cost = row.cost_usd != null ? `$${row.cost_usd.toFixed(4)}` : '';
+        const date = new Date(row.createdAt).toLocaleString();
+        const cost = row.costUsd != null ? `$${row.costUsd.toFixed(4)}` : '';
         return `<tr>
           <td>${date}</td>
-          <td>${typeLabel}</td>
+          <td>${scanTypeBadges(row.scanTypes)}</td>
           <td>${row.title ? escapeHtml(row.title) : '<span class="muted">—</span>'}</td>
           <td>${cost}</td>
           <td>
-            <button type="button" class="history-view-btn" data-history-view="${row.id}" data-history-type="${row.scan_type}" title="View" aria-label="View"><svg viewBox="0 0 16 16" style="width:14px;height:14px;flex-shrink:0;" fill="currentColor" aria-hidden="true"><path d="M8 3C4.5 3 1.5 5.1 0 8c1.5 2.9 4.5 5 8 5s6.5-2.1 8-5c-1.5-2.9-4.5-5-8-5zm0 8.3A3.3 3.3 0 1 1 8 4.7a3.3 3.3 0 0 1 0 6.6zm0-5.3a2 2 0 1 0 0 4 2 2 0 0 0 0-4z"/></svg></button>
-            <button type="button" class="row-delete-btn" data-history-delete="${row.id}" title="Delete this scan" aria-label="Delete this scan" style="margin-left:6px;"><svg viewBox="0 0 16 16" style="width:13px;height:13px;flex-shrink:0;" fill="currentColor" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
+            <button type="button" class="history-view-btn" data-history-view="${row.groupId}" title="View" aria-label="View"><svg viewBox="0 0 16 16" style="width:14px;height:14px;flex-shrink:0;" fill="currentColor" aria-hidden="true"><path d="M8 3C4.5 3 1.5 5.1 0 8c1.5 2.9 4.5 5 8 5s6.5-2.1 8-5c-1.5-2.9-4.5-5-8-5zm0 8.3A3.3 3.3 0 1 1 8 4.7a3.3 3.3 0 0 1 0 6.6zm0-5.3a2 2 0 1 0 0 4 2 2 0 0 0 0-4z"/></svg></button>
+            <button type="button" class="row-delete-btn" data-history-delete="${row.groupId}" title="Delete this claim" aria-label="Delete this claim" style="margin-left:6px;"><svg viewBox="0 0 16 16" style="width:13px;height:13px;flex-shrink:0;" fill="currentColor" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
           </td>
         </tr>`;
       }).join('');
       historyTableBodyEl.querySelectorAll('[data-history-view]').forEach(btn => {
-        btn.addEventListener('click', () => openHistoryDetail(btn.dataset.historyView, btn.dataset.historyType));
+        btn.addEventListener('click', () => openHistoryDetail(btn.dataset.historyView));
       });
       historyTableBodyEl.querySelectorAll('[data-history-delete]').forEach(btn => {
         btn.addEventListener('click', () => deleteHistoryScan(btn.dataset.historyDelete));
@@ -9525,24 +9764,24 @@
       if (hasNext) document.getElementById('historyNextBtn').addEventListener('click', () => { historyOffset += HISTORY_PAGE_SIZE; loadHistoryList(); });
     }
 
-    // Owner-scoped server-side too (DELETE /api/history/:id 404s on anything not owned by the
+    // Owner-scoped server-side too (DELETE /api/claims/:groupId 404s on anything not owned by the
     // caller) — this confirm is just a courtesy against a misclick, not the actual safety boundary.
-    /** Deletes one of the caseworker's own saved scans (after confirmation) and refreshes the list. */
-    async function deleteHistoryScan(scanId) {
-      if (!confirm('Delete this scan? This cannot be undone.')) return;
+    /** Deletes one of the caseworker's own saved claims (every scan type it contains, after confirmation) and refreshes the list. */
+    async function deleteHistoryScan(groupId) {
+      if (!confirm('Delete this claim? This cannot be undone.')) return;
       try {
-        const res = await fetch(`/api/history/${scanId}`, { method: 'DELETE' });
+        const res = await fetch(`/api/claims/${groupId}`, { method: 'DELETE' });
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || `Server returned ${res.status}`);
         loadHistoryList();
       } catch (err) {
         historyListStatusEl.className = 'status error';
-        historyListStatusEl.textContent = 'Error deleting scan: ' + err.message;
+        historyListStatusEl.textContent = 'Error deleting claim: ' + err.message;
       }
     }
 
-    /** Fetches one saved scan's full record and hands it to the right scan type's loader. */
-    async function openHistoryDetail(scanId, scanType) {
+    /** Fetches one saved claim's full record (every scan type it contains) and renders them all together. */
+    async function openHistoryDetail(groupId) {
       // Whichever list is currently on screen — the caseworker's own history list, or (if
       // viewingAsAdminReadOnly was just set by openAdminScanDetail) the admin dashboard's scans
       // table — gets the loading/error message; writing it to the other, hidden one would leave
@@ -9551,67 +9790,57 @@
       statusEl.className = 'status loading';
       statusEl.textContent = 'Loading…';
       try {
-        const res = await fetch(`/api/history/${scanId}`);
+        const res = await fetch(`/api/claims/${groupId}`);
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || `Server returned ${res.status}`);
-        const loaders = {
-          timesheet: loadTimesheetHistoryRecord,
-          bank_statement: loadBankHistoryRecord,
-          medical_bills: loadMedicalBillsHistoryRecord,
-          medical_certificates: loadMedicalCertificatesHistoryRecord,
-          payslips: loadPayslipsHistoryRecord,
-        };
-        const loader = loaders[scanType];
-        if (loader) {
-          loader(data);
-        } else {
-          statusEl.className = 'status error';
-          statusEl.textContent = `Unknown scan type: ${scanType}`;
-        }
+        enterHistoryDetailView(data);
       } catch (err) {
         statusEl.className = 'status error';
         statusEl.textContent = 'Error: ' + err.message;
       }
     }
 
+    // Shared setup before rendering a claim's attached scan types: swaps the form/history-list
+    // views for the shared review area, tracks which claim "Save changes"/the case note should act
+    // on, and hides+clears every type's review section FIRST — a DIFFERENT claim opened right after
+    // this one must never show a leftover section from whichever types the previous claim had but
+    // this one doesn't. Then renders exactly the sections present in `group.types`, each through the
+    // exact same render path a live scan's completion uses (renderFinalResult / renderXLivePages) —
+    // same editable rows, same hover-highlight (image fields already came back as
+    // /api/history/:scanId/image/:ref URLs from the server, see rehydrateImageRefs in
+    // lib/history.ts), same export buttons underneath — reproducing the live page's own
+    // combined-sections layout exactly when more than one type is present.
     /**
-     * Re-renders a saved timesheet scan through the exact same path a live scan's completion uses
-     * (renderFinalResult) — same editable rows, same hover-highlight (image fields already came
-     * back as /api/history/:id/image/:ref URLs from the server, see rehydrateImageRefs in
-     * lib/history.ts), same export buttons underneath.
+     * Renders a full claim (every scan type it contains) into the shared review area.
+     * @param {object} group - `GET /api/claims/:groupId`'s response: `{ groupId, title, notes,
+     * createdAt, costUsd, types: { timesheet?, bank_statement?, medical_bills?,
+     * medical_certificates?, payslips? } }` — each present key shaped like the old single-scan GET
+     * response (`{ id, title, createdAt, durationMs, userId, userFullname, result }`).
      */
-    // Shared setup every one of the 5 loaders below runs before populating its own section: swaps
-    // the form/history-list views for the shared review area, tracks which record + scan type
-    // "Save changes" should act on, and hides every type's review section first — each scan type is
-    // its own standalone upload/scan flow, so a history record for one type never carries any of
-    // the others' data, and this stops a DIFFERENT type's leftover content from an earlier live scan
-    // this same browser session lingering alongside a freshly-opened, unrelated history record.
-    function enterHistoryDetailView(record) {
+    function enterHistoryDetailView(group) {
       historyListViewEl.style.display = 'none';
       document.getElementById('adminDashboardView').style.display = 'none';
       document.getElementById('scanFormWrap').style.display = 'none';
-      currentHistoryScanId = record.id;
-      currentHistoryScanType = record.scanType;
-      // Puts the scan id/type in the URL so the address bar is a shareable link back to this exact
-      // record (see copyHistoryLinkBtn below, and the location.search check on page load) — any
-      // other logged-in caseworker opening it hits the same GET /api/history/:id this click just
-      // did, which is open to every authenticated user (not just admins or the original scanner).
-      // pushState, not assigning location.search directly, so this doesn't trigger a page reload.
-      // Skipped when this render was reached via openHistoryDetailFromUrl (page load or a popstate
-      // back/forward) — the URL already points here (the browser's own navigation, or the link the
-      // page loaded with); pushing again would shove a duplicate entry on top of it, leaving
-      // back/forward stuck re-visiting the same record instead of actually moving anywhere.
+      currentHistoryScanId = group.groupId;
+      currentHistoryPresentTypes = new Set(Object.keys(group.types));
+      // Puts the claim's groupId in the URL so the address bar is a shareable link back to this
+      // exact claim (see copyHistoryLinkBtn below, and the location.search check on page load) —
+      // any other logged-in caseworker opening it hits the same GET /api/claims/:groupId this click
+      // just did, which is open to every authenticated user (not just admins or the original
+      // scanner). pushState, not assigning location.search directly, so this doesn't trigger a page
+      // reload. Skipped when this render was reached via openHistoryDetailFromUrl (page load or a
+      // popstate back/forward) — the URL already points here (the browser's own navigation, or the
+      // link the page loaded with); pushing again would shove a duplicate entry on top of it,
+      // leaving back/forward stuck re-visiting the same claim instead of actually moving anywhere.
       if (!openingFromUrlSync) {
         const linkUrl = new URL(location.href);
-        linkUrl.search = `?scan=${encodeURIComponent(record.id)}&type=${encodeURIComponent(record.scanType)}`;
-        history.pushState({ scan: record.id, type: record.scanType }, '', linkUrl);
+        linkUrl.search = `?claim=${encodeURIComponent(group.groupId)}`;
+        history.pushState({ claim: group.groupId }, '', linkUrl);
       }
       document.getElementById('copyHistoryLinkBtn').style.display = '';
-      // Set here (not just by loadTimesheetHistoryRecord) so every one of the 5 loaders correctly
-      // suppresses "Add more X files" / rescan controls that need an original File object long
-      // gone from temp storage by now — a caseworker opening a bank/medical/payslip record
-      // directly (never having viewed a timesheet one first this session) would otherwise still
-      // see this flag at its stale default.
+      // Set here so every section rendered below renders its claim-scoped "Add more X files"/rescan
+      // path (appendFilesToCurrentClaim/rescanCurrentClaimPage — posting against this claim's own
+      // persisted pages) instead of the live-session path that needs a real in-browser File object.
       viewingHistoryRecord = true;
       // Opened from the admin dashboard: no Save (editing another caseworker's case data is out of
       // scope — see viewingAsAdminReadOnly's own comment), and "Back" returns to the admin scans
@@ -9620,85 +9849,109 @@
       document.getElementById('backToAdminDashboardBtn').style.display = viewingAsAdminReadOnly ? '' : 'none';
       document.getElementById('saveHistoryChangesBtn').style.display = viewingAsAdminReadOnly ? 'none' : '';
       document.getElementById('saveHistoryChangesStatus').textContent = '';
+      document.getElementById('caseNoteWrap').style.display = viewingAsAdminReadOnly ? 'none' : '';
+      const caseNoteInputEl = document.getElementById('caseNoteInput');
+      caseNoteInputEl.value = group.notes || '';
+      caseNoteInputEl.disabled = viewingAsAdminReadOnly;
+      pageReviewsEl.style.display = 'block';
+
+      // Reset EVERY type's section first, regardless of which ones this claim actually has — same
+      // "clear stale content from whatever was on screen before" reasoning the single-scan version
+      // of this function always had.
       ipaPageReviewEl.style.display = 'none';
       document.getElementById('ipaPageReviewHeading').style.display = 'none';
       document.getElementById('ipaAddMoreWrap').style.display = 'none';
       ipaReviewEl.style.display = 'none';
       pageReviewList.innerHTML = '';
       document.getElementById('pageReviewListHeading').style.display = 'none';
-      // "Add more timesheet files" never makes sense for a reopened history record — the original
-      // uploaded files are long gone from temp storage by then (same reasoning viewingHistoryRecord
-      // already captures for the IPA/timesheet rescan controls) — see renderFinalResult's own guard.
-      document.getElementById('pdfsAddMoreWrap').style.display = 'none';
       bankPageReviewListEl.innerHTML = '';
       bankPageReviewListEl.style.display = 'none';
       document.getElementById('bankPageReviewListHeading').style.display = 'none';
-      document.getElementById('bankStatementAddMoreWrap').style.display = 'none';
       medicalPageReviewListEl.innerHTML = '';
       medicalPageReviewListEl.style.display = 'none';
       document.getElementById('medicalPageReviewListHeading').style.display = 'none';
-      document.getElementById('medicalBillsAddMoreWrap').style.display = 'none';
       medicalCertPageReviewListEl.innerHTML = '';
       medicalCertPageReviewListEl.style.display = 'none';
       document.getElementById('medicalCertPageReviewListHeading').style.display = 'none';
-      document.getElementById('medicalCertificatesAddMoreWrap').style.display = 'none';
       payslipPageReviewListEl.innerHTML = '';
       payslipPageReviewListEl.style.display = 'none';
       document.getElementById('payslipPageReviewListHeading').style.display = 'none';
-      document.getElementById('payslipsAddMoreWrap').style.display = 'none';
+      // Unlike the IPA "Add more" control (still unsupported against a saved claim — re-sending/
+      // replacing the IPA letter needs its own flow, see ipaAddMoreWrap above), all 5 scan types
+      // CAN append to (or be added as a brand-new type on) an existing claim — see
+      // appendFilesToCurrentClaim. Offered whenever a claim is actually editable (not an admin's
+      // read-only view of someone else's), regardless of whether THIS claim already has that type.
+      const canAppendToThisClaim = !viewingAsAdminReadOnly;
+      document.getElementById('pdfsAddMoreWrap').style.display = canAppendToThisClaim ? 'block' : 'none';
+      document.getElementById('bankStatementAddMoreWrap').style.display = canAppendToThisClaim ? 'block' : 'none';
+      document.getElementById('medicalBillsAddMoreWrap').style.display = canAppendToThisClaim ? 'block' : 'none';
+      document.getElementById('medicalCertificatesAddMoreWrap').style.display = canAppendToThisClaim ? 'block' : 'none';
+      document.getElementById('payslipsAddMoreWrap').style.display = canAppendToThisClaim ? 'block' : 'none';
       ['monthlyPayTotals', 'allowancesBreakdown', 'overtimeBreakdown', 'restBreakdown', 'publicHolidayBreakdown', 'payslipBreakdown', 'bankResults', 'medicalBillsResults', 'owedVsPaidBox'].forEach(id => {
         const el = document.getElementById(id);
         el.style.display = 'none';
         el.innerHTML = '';
       });
-    }
 
-    function loadTimesheetHistoryRecord(record) {
-      enterHistoryDetailView(record);
-      // A live scan earlier in this same browser session could have left these populated from a
-      // DIFFERENT upload — renderFinalResult uses them to attach per-page "Rotate + Rescan" controls
-      // by (fileIndex, pageIndex), which make no sense for a saved record (its original uploaded
-      // files are long gone from temp storage). Resetting to empty before rendering means every
-      // page gets no rescan key, regardless of what the current session happened to have loaded
-      // before — not just "happens to be empty on a fresh page load".
-      pdfsPreviewPages = [];
-      excludedPdfsPages = new Set();
-      renderFinalResult(record.result);
-    }
+      // Now render exactly whichever of the 5 sections this claim actually has, each through the
+      // exact same path its own live scan's completion uses.
+      if (group.types.timesheet) {
+        // A live scan earlier in this same browser session could have left these populated from a
+        // DIFFERENT upload — renderFinalResult uses them to attach per-page "Rotate + Rescan"
+        // controls by (fileIndex, pageIndex), which make no sense for a saved claim (its original
+        // uploaded files are long gone from temp storage). Resetting to empty before rendering
+        // means every page gets no rescan key, regardless of what the current session happened to
+        // have loaded before.
+        pdfsPreviewPages = [];
+        excludedPdfsPages = new Set();
+        renderFinalResult(group.types.timesheet.result);
+        // renderFinalResult itself never shows this heading (only renderLivePages, the live-polling
+        // progress view, does) — a pre-existing gap from before this claim-grouping rework, not
+        // introduced by it; fixed here since it's one line and this is exactly the "look like the
+        // live page" bar this whole feature is held to.
+        if (group.types.timesheet.result.pageReviews?.length > 0) {
+          document.getElementById('pageReviewListHeading').style.display = 'block';
+        }
+      }
+      if (group.types.bank_statement) {
+        bankStatementPreviewPages = [];
+        excludedBankStatementPages = new Set();
+        renderBankLivePages(group.types.bank_statement.result.pages || [], true);
+      }
+      if (group.types.medical_bills) {
+        medicalBillsPreviewPages = [];
+        excludedMedicalBillsPages = new Set();
+        renderMedicalLivePages(group.types.medical_bills.result.pages || [], true);
+      }
+      if (group.types.medical_certificates) {
+        medicalCertificatesPreviewPages = [];
+        excludedMedicalCertificatesPages = new Set();
+        renderMedicalCertLivePages(group.types.medical_certificates.result.pages || [], true);
+      }
+      if (group.types.payslips) {
+        payslipsPreviewPages = [];
+        excludedPayslipsPages = new Set();
+        renderPayslipLivePages(group.types.payslips.result.pages || [], true);
+      }
 
-    // Same reuse approach as loadTimesheetHistoryRecord, but these 4 simpler scan types don't have
-    // a renderFinalResult-equivalent — their live poll just calls renderXLivePages(pages, done),
-    // which already self-contains its own summary refresh (refreshBankSummary/
-    // refreshMedicalBillsClaim/refreshMedicalCertGuardrails/refreshPayslipDerivedTotals all run at
-    // the end of their respective renderXLivePages — confirmed by reading each one directly, not
-    // assumed). Passing done=true renders every page WITH rescan controls unless the preview-pages
-    // globals are reset first — same stale-session-state concern as the timesheet case above.
-    function loadBankHistoryRecord(record) {
-      enterHistoryDetailView(record);
-      bankStatementPreviewPages = [];
-      excludedBankStatementPages = new Set();
-      renderBankLivePages(record.result.pages || [], true);
-    }
-
-    function loadMedicalBillsHistoryRecord(record) {
-      enterHistoryDetailView(record);
-      medicalBillsPreviewPages = [];
-      excludedMedicalBillsPages = new Set();
-      renderMedicalLivePages(record.result.pages || [], true);
-    }
-
-    function loadMedicalCertificatesHistoryRecord(record) {
-      enterHistoryDetailView(record);
-      medicalCertificatesPreviewPages = [];
-      excludedMedicalCertificatesPages = new Set();
-      renderMedicalCertLivePages(record.result.pages || [], true);
-    }
-
-    function loadPayslipsHistoryRecord(record) {
-      enterHistoryDetailView(record);
-      payslipsPreviewPages = [];
-      excludedPayslipsPages = new Set();
-      renderPayslipLivePages(record.result.pages || [], true);
+      // A claim's timesheet section has no bank-statement/payslip scan of its own attached unless
+      // THIS SAME claim also has one (handled naturally above — refreshBankSummary/
+      // refreshPayslipDerivedTotals already ran as part of rendering those sections, if present).
+      // When a claim has a timesheet but genuinely no bank/payslip data at all, totalPaidCache is
+      // never set by the usual path (only reachable via a live "Extract details" submit) — without
+      // this, totalPaidCache stays at whatever stale value the global happened to hold, and
+      // updateOwedVsPaidBox's null-guard hides the headline "amount still owed" box entirely — even
+      // though the live flow shows it fine via the exact same "nothing attached, assume $0 paid"
+      // default runBankStatementScan's own no-files branch already uses. Only needed when this
+      // claim's own bank-statement section didn't already run (which sets totalPaidCache itself).
+      if (group.types.timesheet && !group.types.bank_statement) {
+        const payslipTotalPaid = [...getPayslipPaidByMonth().values()].reduce((sum, v) => sum + v, 0);
+        totalPaidCache = payslipTotalPaid;
+        paidIsAssumedZero = payslipTotalPaid === 0;
+        recomputeMonthlyPayTotals();
+        updateSummarySectionVisibility();
+        updateOwedVsPaidBox();
+      }
     }
 
     // The one editable array each scan type actually has — matches lib/history.ts's
@@ -9715,23 +9968,32 @@
 
     document.getElementById('saveHistoryChangesBtn').addEventListener('click', async () => {
       const statusEl = document.getElementById('saveHistoryChangesStatus');
-      const collector = HISTORY_ROW_COLLECTORS[currentHistoryScanType];
-      if (!currentHistoryScanId || !collector) return;
+      if (!currentHistoryScanId) return;
       const btn = document.getElementById('saveHistoryChangesBtn');
       btn.disabled = true;
       statusEl.className = 'status loading';
       statusEl.textContent = 'Saving…';
       try {
-        const rows = collector();
-        // Timesheet is the only scan type with a second editable thing (the IPA fields, next to
-        // reviewRows) — the other 4 types have nothing else editable, so `ipa` stays undefined and
-        // the server leaves their stored result untouched beyond `rows` (see server.ts's PUT route
-        // and lib/history.ts's updateScanEditableFields).
-        const ipa = currentHistoryScanType === 'timesheet' ? collectCurrentIpaFields() : undefined;
-        const res = await fetch(`/api/history/${currentHistoryScanId}`, {
+        // Only the scan types actually present/shown for this claim get collected — a type this
+        // claim doesn't have has nothing on screen to collect, and sending a stale/empty array for
+        // it would risk the server silently fabricating a row for a type this claim never had (see
+        // lib/history.ts's updateClaimFields, which already guards this server-side too, but there's
+        // no reason to even try).
+        const types = {};
+        for (const scanType of currentHistoryPresentTypes) {
+          const collector = HISTORY_ROW_COLLECTORS[scanType];
+          if (!collector) continue;
+          // Timesheet is the only scan type with a second editable thing (the IPA fields, next to
+          // reviewRows) — the other 4 types have nothing else editable, so `ipa` stays undefined and
+          // the server leaves their stored result untouched beyond `rows` (see server.ts's PUT
+          // route and lib/history.ts's updateClaimFields).
+          types[scanType] = { rows: collector(), ipa: scanType === 'timesheet' ? collectCurrentIpaFields() : undefined };
+        }
+        const notes = document.getElementById('caseNoteInput').value;
+        const res = await fetch(`/api/claims/${currentHistoryScanId}`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ rows, ipa }),
+          body: JSON.stringify({ types, notes }),
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || `Server returned ${res.status}`);
@@ -9784,9 +10046,10 @@
       document.getElementById('backToAdminDashboardBtn').style.display = 'none';
       document.getElementById('copyHistoryLinkBtn').style.display = 'none';
       currentHistoryScanId = null;
-      currentHistoryScanType = null;
+      currentHistoryPresentTypes = new Set();
       viewingAsAdminReadOnly = false;
       document.getElementById('saveHistoryChangesBtn').style.display = 'none';
+      document.getElementById('caseNoteWrap').style.display = 'none';
       clearHistoryLinkUrl();
       adminScansOffset = 0;
       if (isCurrentUserAdmin) loadAdminCostSummary();
@@ -9847,32 +10110,31 @@
       adminScansStatusEl.textContent = '';
       adminScansTableEl.style.display = '';
       adminScansTableBodyEl.innerHTML = data.rows.map(row => {
-        const date = new Date(row.created_at).toLocaleString();
-        const typeLabel = HISTORY_SCAN_TYPE_LABELS[row.scan_type] || row.scan_type;
-        const cost = row.cost_usd != null ? formatAdminCost(row.cost_usd) : '';
+        const date = new Date(row.createdAt).toLocaleString();
+        const cost = row.costUsd != null ? formatAdminCost(row.costUsd) : '';
         // The Cost column (<th id="adminScansCostHeader">) is hidden entirely for a non-admin (see
         // checkAdminAccess) — skip this <td> too so the row's columns still line up with the header.
         const costCell = isCurrentUserAdmin ? `<td>${cost}</td>` : '';
-        // Delete is only offered on a scan the current user actually performed themselves — the
-        // server enforces this regardless (DELETE /api/history/:id 404s on anyone else's scan), but
-        // there's no point showing a button that would just fail for a scan belonging to another
-        // caseworker.
-        const deleteBtn = row.user_id === currentUserId
-          ? `<button type="button" class="row-delete-btn" data-admin-scan-delete="${row.id}" title="Delete this scan" aria-label="Delete this scan" style="margin-left:6px;"><svg viewBox="0 0 16 16" style="width:13px;height:13px;flex-shrink:0;" fill="currentColor" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>`
+        // Delete is only offered on a claim the current user actually performed themselves — the
+        // server enforces this regardless (DELETE /api/claims/:groupId 404s on anyone else's
+        // claim), but there's no point showing a button that would just fail for a claim belonging
+        // to another caseworker.
+        const deleteBtn = row.userId === currentUserId
+          ? `<button type="button" class="row-delete-btn" data-admin-scan-delete="${row.groupId}" title="Delete this claim" aria-label="Delete this claim" style="margin-left:6px;"><svg viewBox="0 0 16 16" style="width:13px;height:13px;flex-shrink:0;" fill="currentColor" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>`
           : '';
         return `<tr>
           <td>${date}</td>
-          <td>${typeLabel}</td>
-          <td>${escapeHtml(row.user_fullname || '')}</td>
+          <td>${scanTypeBadges(row.scanTypes)}</td>
+          <td>${escapeHtml(row.userFullname || '')}</td>
           <td>${row.title ? escapeHtml(row.title) : '<span class="muted">—</span>'}</td>
           ${costCell}
           <td>
-            <button type="button" class="history-view-btn" data-admin-scan-view="${row.id}" data-admin-scan-type="${row.scan_type}" title="View" aria-label="View"><svg viewBox="0 0 16 16" style="width:14px;height:14px;flex-shrink:0;" fill="currentColor" aria-hidden="true"><path d="M8 3C4.5 3 1.5 5.1 0 8c1.5 2.9 4.5 5 8 5s6.5-2.1 8-5c-1.5-2.9-4.5-5-8-5zm0 8.3A3.3 3.3 0 1 1 8 4.7a3.3 3.3 0 0 1 0 6.6zm0-5.3a2 2 0 1 0 0 4 2 2 0 0 0 0-4z"/></svg></button>${deleteBtn}
+            <button type="button" class="history-view-btn" data-admin-scan-view="${row.groupId}" title="View" aria-label="View"><svg viewBox="0 0 16 16" style="width:14px;height:14px;flex-shrink:0;" fill="currentColor" aria-hidden="true"><path d="M8 3C4.5 3 1.5 5.1 0 8c1.5 2.9 4.5 5 8 5s6.5-2.1 8-5c-1.5-2.9-4.5-5-8-5zm0 8.3A3.3 3.3 0 1 1 8 4.7a3.3 3.3 0 0 1 0 6.6zm0-5.3a2 2 0 1 0 0 4 2 2 0 0 0 0-4z"/></svg></button>${deleteBtn}
           </td>
         </tr>`;
       }).join('');
       adminScansTableBodyEl.querySelectorAll('[data-admin-scan-view]').forEach(btn => {
-        btn.addEventListener('click', () => openAdminScanDetail(btn.dataset.adminScanView, btn.dataset.adminScanType));
+        btn.addEventListener('click', () => openAdminScanDetail(btn.dataset.adminScanView));
       });
       adminScansTableBodyEl.querySelectorAll('[data-admin-scan-delete]').forEach(btn => {
         btn.addEventListener('click', () => deleteAdminScan(btn.dataset.adminScanDelete));
@@ -9889,27 +10151,27 @@
       if (hasNext) document.getElementById('adminScansNextBtn').addEventListener('click', () => { adminScansOffset += HISTORY_PAGE_SIZE; loadAdminScansList(); });
     }
 
-    // Same DELETE /api/history/:id route the personal history list's deleteHistoryScan uses — this
-    // is just the "All scans" dashboard's own entry point to it, reloading its own list afterward
-    // instead of the personal one.
-    /** Deletes one of the current user's own scans from the "All scans" dashboard (after confirmation) and refreshes the list. */
-    async function deleteAdminScan(scanId) {
-      if (!confirm('Delete this scan? This cannot be undone.')) return;
+    // Same DELETE /api/claims/:groupId route the personal history list's deleteHistoryScan uses —
+    // this is just the "All scans" dashboard's own entry point to it, reloading its own list
+    // afterward instead of the personal one.
+    /** Deletes one of the current user's own claims from the "All scans" dashboard (after confirmation) and refreshes the list. */
+    async function deleteAdminScan(groupId) {
+      if (!confirm('Delete this claim? This cannot be undone.')) return;
       try {
-        const res = await fetch(`/api/history/${scanId}`, { method: 'DELETE' });
+        const res = await fetch(`/api/claims/${groupId}`, { method: 'DELETE' });
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || `Server returned ${res.status}`);
         loadAdminScansList();
       } catch (err) {
         adminScansStatusEl.className = 'status error';
-        adminScansStatusEl.textContent = 'Error deleting scan: ' + err.message;
+        adminScansStatusEl.textContent = 'Error deleting claim: ' + err.message;
       }
     }
 
-    /** Opens a scan from the admin dashboard — same loaders as the personal history list, just read-only (see viewingAsAdminReadOnly). */
-    function openAdminScanDetail(scanId, scanType) {
+    /** Opens a claim from the admin dashboard — same combined detail view as the personal history list, just read-only (see viewingAsAdminReadOnly). */
+    function openAdminScanDetail(groupId) {
       viewingAsAdminReadOnly = true;
-      openHistoryDetail(scanId, scanType);
+      openHistoryDetail(groupId);
     }
 
     document.getElementById('copyHistoryLinkBtn').addEventListener('click', async () => {
@@ -9924,21 +10186,20 @@
       }
     });
 
-    // Opens whatever scan the URL's ?scan=&type= points at — same loader either a "View" click or
-    // this deep link ends up calling (openHistoryDetail), just reached on page load instead of a
-    // click. Read-only (same as opening from the admin dashboard) since a shared link's recipient
-    // may well not be the scan's own owner — PUT /api/history/:id is owner-scoped regardless, this
-    // just avoids showing a Save button that would merely 404 for most recipients.
-    /** Opens the scan named in the current URL's ?scan=&type= query params, if present. */
+    // Opens whatever claim the URL's ?claim= points at — same loader either a "View" click or this
+    // deep link ends up calling (openHistoryDetail), just reached on page load instead of a click.
+    // Read-only (same as opening from the admin dashboard) since a shared link's recipient may well
+    // not be the claim's own owner — PUT/DELETE /api/claims/:groupId is owner-scoped regardless,
+    // this just avoids showing a Save button that would merely 404 for most recipients.
+    /** Opens the claim named in the current URL's ?claim= query param, if present. */
     async function openHistoryDetailFromUrl() {
       const params = new URLSearchParams(location.search);
-      const scanId = params.get('scan');
-      const scanType = params.get('type');
-      if (!scanId || !scanType) return;
+      const groupId = params.get('claim');
+      if (!groupId) return;
       viewingAsAdminReadOnly = true;
       openingFromUrlSync = true;
       try {
-        await openHistoryDetail(scanId, scanType);
+        await openHistoryDetail(groupId);
       } finally {
         openingFromUrlSync = false;
       }
@@ -9946,11 +10207,11 @@
     openHistoryDetailFromUrl();
 
     // Keeps the back/forward buttons usable once a shared link has been opened — a popstate back to
-    // a plain URL (no ?scan=&type=) lands on the blank form rather than leaving the just-closed
-    // detail view's stale content on screen with no indication anything changed.
+    // a plain URL (no ?claim=) lands on the blank form rather than leaving the just-closed detail
+    // view's stale content on screen with no indication anything changed.
     window.addEventListener('popstate', () => {
       const params = new URLSearchParams(location.search);
-      if (params.get('scan') && params.get('type')) {
+      if (params.get('claim')) {
         openHistoryDetailFromUrl();
       } else {
         showScanFormView();

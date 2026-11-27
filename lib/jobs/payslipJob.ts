@@ -1,7 +1,7 @@
 import * as path from "path";
 import { resizeForDisplay, rotateImage, type PagedImages } from "../ocr";
 import { extractPayslipEntries, mergePayslipEntries, periodRange, type PayslipEntry } from "../payslips";
-import { persistScan } from "../history";
+import { persistScan, appendScanPages } from "../history";
 import {
     loadPagesForFile,
     SCAN_TEMPERATURES,
@@ -31,6 +31,28 @@ export type PayslipJob = {
     userEmail: string;
 };
 export const payslipJobs = new Map<string, PayslipJob>();
+
+/**
+ * Rescans ONE already-rendered page image — same SCAN_TEMPERATURES multi-attempt +
+ * mergePayslipEntries voting as the main per-page loop above, scoped to a single page with no
+ * file/PDF-rendering step. Used by `POST /api/claims/:groupId/rescan-page`.
+ */
+export async function rescanPersistedPayslipPage(pageImageBase64: string, interpretationHint?: string): Promise<{ entries: PayslipEntry[]; costUsd: number }> {
+    const results = await runSequentially(
+        SCAN_TEMPERATURES.map(({ temperature, seed }) => () => extractPayslipEntries(pageImageBase64, temperature, seed, interpretationHint))
+    );
+    let costUsd = 0;
+    const attempts: PayslipEntry[][] = [];
+    for (const result of results) {
+        if (result.status === "fulfilled") {
+            attempts.push(result.value.entries);
+            costUsd += result.value.cost;
+        } else {
+            console.error("payslip single-page rescan attempt failed:", result.reason);
+        }
+    }
+    return { entries: mergePayslipEntries(attempts), costUsd };
+}
 /** Schedules a payslip job's entry to be evicted from {@link payslipJobs} after {@link JOB_TTL_MS}, and reclaims its temp page dir immediately. */
 export function schedulePayslipJobCleanup(jobId: string) {
     cleanupJobDir(jobPagesDir(jobId));
@@ -44,6 +66,9 @@ export function schedulePayslipJobCleanup(jobId: string) {
  * `payslipJobs.get(jobId)`.
  *
  * @param jobId - The job's id in {@link payslipJobs} (already set to `"running"` by the caller).
+ * @param claimId - Groups this scan together with any other scan types submitted in the same
+ * combined "Extract details" click (see lib/history.ts's `claims` table) — forwarded straight into
+ * persistScan at the end of this function.
  * @param files - The uploaded payslip files.
  * @param rotations - Human-confirmed page rotations, keyed `"<fileIndex>-<pageIndex>"`.
  * @param excludedPages - Pages dropped by the caseworker in staging, same keying as `rotations`.
@@ -53,6 +78,8 @@ export function schedulePayslipJobCleanup(jobId: string) {
  */
 export async function runPayslipJob(
     jobId: string,
+    claimId: string,
+    appendToScanId: string | undefined,
     files: Express.Multer.File[],
     rotations: Record<string, number>,
     excludedPages: Set<string>,
@@ -163,16 +190,26 @@ export async function runPayslipJob(
     job.pages = orderedPages;
     job.result = { entries, costUsd: totalCostUsd, durationMs: Date.now() - startedAt };
     job.status = "done";
-    persistScan({
-        id: jobId,
-        scanType: "payslips",
-        userId: job.userId,
-        userFullname: job.userFullname,
-        userEmail: job.userEmail,
-        title: null,
-        costUsd: job.result.costUsd,
-        durationMs: job.result.durationMs,
-        result: job.result,
-        pages: job.pages,
-    });
+    if (appendToScanId) {
+        appendScanPages(appendToScanId, job.userId, {
+            result: job.result,
+            pages: job.pages,
+            costUsd: job.result.costUsd,
+            durationMs: job.result.durationMs,
+        });
+    } else {
+        persistScan({
+            id: jobId,
+            claimId,
+            scanType: "payslips",
+            userId: job.userId,
+            userFullname: job.userFullname,
+            userEmail: job.userEmail,
+            title: null,
+            costUsd: job.result.costUsd,
+            durationMs: job.result.durationMs,
+            result: job.result,
+            pages: job.pages,
+        });
+    }
 }

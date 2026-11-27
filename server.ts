@@ -3,6 +3,7 @@ import multer from "multer";
 import cookieParser from "cookie-parser";
 import jwt from "jsonwebtoken";
 import * as path from "path";
+import { readFileSync, existsSync } from "fs";
 import { randomUUID } from "crypto";
 import { translateTierCondition, parseTierConditionsBatch } from "./lib/tierCondition";
 import { buildWorkerPersonalDetailsDocx } from "./lib/workerDetailsDocx";
@@ -17,21 +18,26 @@ import {
     releaseJobSlot,
 } from "./lib/jobs/shared";
 import { processJobs, runProcessJob, scheduleJobCleanup, type RotationMap } from "./lib/jobs/timesheetJob";
-import { bankJobs, runBankStatementJob, scheduleBankJobCleanup } from "./lib/jobs/bankStatementJob";
-import { medicalJobs, runMedicalBillsJob, scheduleMedicalJobCleanup } from "./lib/jobs/medicalBillsJob";
-import { medicalCertJobs, runMedicalCertificateJob, scheduleMedicalCertJobCleanup } from "./lib/jobs/medicalCertificateJob";
-import { payslipJobs, runPayslipJob, schedulePayslipJobCleanup } from "./lib/jobs/payslipJob";
+import { bankJobs, runBankStatementJob, scheduleBankJobCleanup, rescanPersistedBankPage } from "./lib/jobs/bankStatementJob";
+import { medicalJobs, runMedicalBillsJob, scheduleMedicalJobCleanup, rescanPersistedMedicalBillsPage } from "./lib/jobs/medicalBillsJob";
+import { medicalCertJobs, runMedicalCertificateJob, scheduleMedicalCertJobCleanup, rescanPersistedMedicalCertPage } from "./lib/jobs/medicalCertificateJob";
+import { payslipJobs, runPayslipJob, schedulePayslipJobCleanup, rescanPersistedPayslipPage } from "./lib/jobs/payslipJob";
 import { previewJobs, runPreviewJob, schedulePreviewJobCleanup, blankPreviewJob } from "./lib/jobs/previewJob";
+import { rotateImage } from "./lib/ocr";
 import {
-    listScansForUser,
-    getScanForOwner,
+    ensureClaim,
+    getClaimGroup,
+    getClaimGroupAny,
     getScanById,
     rehydrateImageRefs,
-    updateScanEditableFields,
-    deleteScanForOwner,
-    listAllScans,
+    updateClaimFields,
+    deleteClaim,
+    listClaimsForUser,
+    listAllClaims,
     getCostSummary,
+    replaceScanPage,
     HISTORY_IMAGES_DIR,
+    type ScanType,
 } from "./lib/history";
 
 const PORT = process.env.PORT || 3002;
@@ -193,6 +199,16 @@ app.get("/api/preview/:jobId", (req, res) => {
     res.json(job);
 });
 
+// Resolves the `claimId` a combined "Extract details" submit shares across however many of the 5
+// scan-type POSTs it actually fires (public/index.html generates ONE crypto.randomUUID() up front
+// and sends it to each — see the client's submit handler). Falls back to minting a fresh one
+// server-side for an older/unmodified client that doesn't send one at all, so this never 400s —
+// that request just becomes its own standalone single-scan-type claim, same as every claim was
+// before this grouping existed.
+function resolveClaimId(req: express.Request): string {
+    return typeof req.body?.claimId === "string" && req.body.claimId.trim() ? req.body.claimId.trim() : randomUUID();
+}
+
 app.post(
     "/api/process",
     upload.fields([
@@ -286,8 +302,10 @@ app.post(
         // GET /api/process/:jobId, which renders each page's card as soon as that page finishes rather
         // than waiting for the entire batch.
         const jobId = randomUUID();
+        const claimId = resolveClaimId(req);
         const controller = new AbortController();
         const authedUser = getAuthedUser(req);
+        ensureClaim(claimId, authedUser.id, authedUser.fullname, authedUser.email);
         processJobs.set(jobId, {
             status: "running",
             pages: [],
@@ -304,7 +322,7 @@ app.post(
         // until a concurrency slot is free, so peak memory/CPU stays bounded to MAX_CONCURRENT_JOBS
         // regardless of how many caseworkers upload at the same moment.
         acquireJobSlot()
-            .then(() => runProcessJob(jobId, files, ipaFile, rotations, excludedPages, excludedIpaPages, standardBreakHours, fallbackYear, controller.signal, interpretationHint, claimStartDate, claimEndDate))
+            .then(() => runProcessJob(jobId, claimId, undefined, files, ipaFile, rotations, excludedPages, excludedIpaPages, standardBreakHours, fallbackYear, controller.signal, interpretationHint, claimStartDate, claimEndDate))
             .catch(e => {
                 const job = processJobs.get(jobId);
                 if (job && job.status === "running") { job.status = "error"; job.error = e.message; }
@@ -400,10 +418,12 @@ app.post(
         const interpretationHint = typeof req.body.interpretationHint === "string" && req.body.interpretationHint.trim() ? req.body.interpretationHint.trim() : undefined;
 
         const jobId = randomUUID();
+        const claimId = resolveClaimId(req);
         const authedUser = getAuthedUser(req);
+        ensureClaim(claimId, authedUser.id, authedUser.fullname, authedUser.email);
         bankJobs.set(jobId, { status: "running", pages: [], result: null, error: null, userId: authedUser.id, userFullname: authedUser.fullname, userEmail: authedUser.email });
         acquireJobSlot()
-            .then(() => runBankStatementJob(jobId, files, rotations, excludedPages, interpretationHint))
+            .then(() => runBankStatementJob(jobId, claimId, undefined, files, rotations, excludedPages, interpretationHint))
             .catch(e => {
                 const job = bankJobs.get(jobId);
                 if (job) { job.status = "error"; job.error = e.message; }
@@ -471,10 +491,12 @@ app.post(
         const interpretationHint = typeof req.body.interpretationHint === "string" && req.body.interpretationHint.trim() ? req.body.interpretationHint.trim() : undefined;
 
         const jobId = randomUUID();
+        const claimId = resolveClaimId(req);
         const authedUser = getAuthedUser(req);
+        ensureClaim(claimId, authedUser.id, authedUser.fullname, authedUser.email);
         medicalJobs.set(jobId, { status: "running", pages: [], result: null, error: null, userId: authedUser.id, userFullname: authedUser.fullname, userEmail: authedUser.email });
         acquireJobSlot()
-            .then(() => runMedicalBillsJob(jobId, files, rotations, excludedPages, interpretationHint))
+            .then(() => runMedicalBillsJob(jobId, claimId, undefined, files, rotations, excludedPages, interpretationHint))
             .catch(e => {
                 const job = medicalJobs.get(jobId);
                 if (job) { job.status = "error"; job.error = e.message; }
@@ -535,10 +557,12 @@ app.post(
         const interpretationHint = typeof req.body.interpretationHint === "string" && req.body.interpretationHint.trim() ? req.body.interpretationHint.trim() : undefined;
 
         const jobId = randomUUID();
+        const claimId = resolveClaimId(req);
         const authedUser = getAuthedUser(req);
+        ensureClaim(claimId, authedUser.id, authedUser.fullname, authedUser.email);
         medicalCertJobs.set(jobId, { status: "running", pages: [], result: null, error: null, userId: authedUser.id, userFullname: authedUser.fullname, userEmail: authedUser.email });
         acquireJobSlot()
-            .then(() => runMedicalCertificateJob(jobId, files, rotations, excludedPages, interpretationHint))
+            .then(() => runMedicalCertificateJob(jobId, claimId, undefined, files, rotations, excludedPages, interpretationHint))
             .catch(e => {
                 const job = medicalCertJobs.get(jobId);
                 if (job) { job.status = "error"; job.error = e.message; }
@@ -599,10 +623,12 @@ app.post(
         const interpretationHint = typeof req.body.interpretationHint === "string" && req.body.interpretationHint.trim() ? req.body.interpretationHint.trim() : undefined;
 
         const jobId = randomUUID();
+        const claimId = resolveClaimId(req);
         const authedUser = getAuthedUser(req);
+        ensureClaim(claimId, authedUser.id, authedUser.fullname, authedUser.email);
         payslipJobs.set(jobId, { status: "running", pages: [], result: null, error: null, userId: authedUser.id, userFullname: authedUser.fullname, userEmail: authedUser.email });
         acquireJobSlot()
-            .then(() => runPayslipJob(jobId, files, rotations, excludedPages, interpretationHint))
+            .then(() => runPayslipJob(jobId, claimId, undefined, files, rotations, excludedPages, interpretationHint))
             .catch(e => {
                 const job = payslipJobs.get(jobId);
                 if (job) { job.status = "error"; job.error = e.message; }
@@ -633,23 +659,27 @@ app.get("/api/payslips/:jobId", (req, res) => {
 
 // Scan history — the first persistent store in this app (see lib/history.ts). Every finished scan
 // of any of the 5 types above gets a row here via persistScan(), keyed to whichever caseworker ran
-// it (from the SSO JWT, see getAuthedUser above). These 3 routes let a caseworker revisit a past
-// scan: list their own scans, fetch one in full (re-rendered through the same review UI a live
-// scan uses), and view its page images.
+// it (from the SSO JWT, see getAuthedUser above), and grouped into a "claim" (lib/history.ts's
+// `claims` table) alongside any OTHER scan types submitted in the same combined "Extract details"
+// click. These routes let a caseworker revisit a past claim: list their own claims, fetch one in
+// full — EVERY scan type it contains at once, not just one — re-rendered through the same review
+// UI a live multi-type scan uses, and view its page images.
 //
-// Lists the current user's scans, most recent first — never includes result_json (could be large
-// for a timesheet's pageReviews), just enough to render a history list row.
+// Lists the current user's claims, most recent first — one row per claim (however many scan types
+// it contains), never includes result_json (could be large for a timesheet's pageReviews), just
+// enough to render a history list row. `rows[].groupId` is what every other /api/claims/* route
+// below expects as its :groupId param.
 app.get("/api/history", (req, res) => {
     const userId = getAuthedUser(req).id;
     const limit = Math.min(Math.max(Number(req.query.limit) || 25, 1), 100);
     const offset = Math.max(Number(req.query.offset) || 0, 0);
     const scanType = typeof req.query.type === "string" ? req.query.type : undefined;
-    const { rows, total } = listScansForUser(userId, { limit, offset, scanType });
+    const { rows, total } = listClaimsForUser(userId, { limit, offset, scanType });
     res.json({ rows, total, limit, offset });
 });
 
-// "All scans" dashboard — oversight across every caseworker's scans, not just the requester's own.
-// Open to any authenticated user (not admin-gated) — a caseworker can review any claim's scans the
+// "All claims" dashboard — oversight across every caseworker's claims, not just the requester's
+// own. Open to any authenticated user (not admin-gated) — a caseworker can review any claim the
 // same way an admin does. Cost figures are the one thing still admin-only: stripped from the
 // listing below for a non-admin, and getCostSummary (its own separate endpoint) stays behind
 // requireAdmin entirely.
@@ -659,8 +689,8 @@ app.get("/api/admin/scans", (req, res) => {
     const offset = Math.max(Number(req.query.offset) || 0, 0);
     const scanType = typeof req.query.type === "string" ? req.query.type : undefined;
     const userId = req.query.userId !== undefined ? Number(req.query.userId) : undefined;
-    const { rows, total } = listAllScans({ limit, offset, scanType, userId });
-    const visibleRows = authedUser.isAdmin ? rows : rows.map(({ cost_usd, ...rest }) => rest);
+    const { rows, total } = listAllClaims({ limit, offset, scanType, userId });
+    const visibleRows = authedUser.isAdmin ? rows : rows.map(({ costUsd, ...rest }) => rest);
     res.json({ rows: visibleRows, total, limit, offset });
 });
 
@@ -671,33 +701,46 @@ app.get("/api/admin/cost-summary", (req, res) => {
     res.json(getCostSummary());
 });
 
-// Full saved record for one scan — no ownership check (see getScanById: any authenticated user can
-// view any scan, same as the "All scans" listing above). Cost is still admin-only, so costUsd is
-// omitted entirely for a non-admin rather than sent and merely hidden client-side. Image fields are
-// rewritten from their stored {ref} markers to this route's own URLs at READ time (not persist
-// time), so the route prefix never gets baked into stored data.
-app.get("/api/history/:id", (req, res) => {
+// Full saved claim, every scan type it contains at once — no ownership check (see
+// getClaimGroupAny: any authenticated user can view any claim, same as the "All claims" listing
+// above). Cost is still admin-only, so costUsd is omitted entirely for a non-admin rather than
+// sent and merely hidden client-side. Image fields are rewritten from their stored {ref} markers
+// to this route's own URLs at READ time (not persist time), so the route prefix never gets baked
+// into stored data — keyed by each underlying SCAN's own id (not the claim's groupId), since each
+// scan type within a combined claim still has its own separate on-disk image directory.
+app.get("/api/claims/:groupId", (req, res) => {
     const authedUser = getAuthedUser(req);
-    const scan = getScanById(req.params.id);
-    if (!scan) return res.status(404).json({ error: "scan not found" });
-    const result = rehydrateImageRefs(scan.id, JSON.parse(scan.result_json));
+    const group = getClaimGroupAny(req.params.groupId);
+    if (!group) return res.status(404).json({ error: "claim not found" });
+    const types: Partial<Record<ScanType, unknown>> = {};
+    let totalCostUsd = 0;
+    for (const scan of group.scans) {
+        types[scan.scan_type] = {
+            id: scan.id,
+            title: scan.title,
+            createdAt: scan.created_at,
+            durationMs: scan.duration_ms,
+            userId: scan.user_id,
+            userFullname: scan.user_fullname,
+            result: rehydrateImageRefs(scan.id, JSON.parse(scan.result_json)),
+        };
+        totalCostUsd += scan.cost_usd ?? 0;
+    }
     res.json({
-        id: scan.id,
-        scanType: scan.scan_type,
-        title: scan.title,
-        createdAt: scan.created_at,
-        costUsd: authedUser.isAdmin ? scan.cost_usd : undefined,
-        durationMs: scan.duration_ms,
-        userId: scan.user_id,
-        userFullname: scan.user_fullname,
-        result,
+        groupId: req.params.groupId,
+        title: group.claim?.title ?? group.scans.find(s => s.title)?.title ?? null,
+        notes: group.claim?.notes ?? null,
+        createdAt: group.claim?.created_at ?? group.scans.map(s => s.created_at).sort().pop() ?? null,
+        costUsd: authedUser.isAdmin ? totalCostUsd : undefined,
+        types,
     });
 });
 
 // Streams one page image from a saved scan — no ownership check, same as the route above (any
-// authenticated user can view any scan's images). :ref is whitelisted before being joined into a
-// path even though it's always server-generated (see persistScan's writeImage helper), never taken
-// directly off a client-controlled value.
+// authenticated user can view any scan's images). Keyed by the SCAN's own id (not a claim
+// groupId) — see getClaimGroup/:groupId route's own comment on why. :ref is whitelisted before
+// being joined into a path even though it's always server-generated (see persistScan's writeImage
+// helper), never taken directly off a client-controlled value.
 app.get("/api/history/:scanId/image/:ref", (req, res) => {
     const scan = getScanById(req.params.scanId);
     if (!scan) return res.status(404).json({ error: "scan not found" });
@@ -707,33 +750,242 @@ app.get("/api/history/:scanId/image/:ref", (req, res) => {
     });
 });
 
-// Persists an edit made while viewing a history record — e.g. fixing a misread clock time on a
-// reopened claim — so it survives leaving the page, same durability the live review already has
-// once you click Generate. Scoped to just the one editable array each scan type actually has
-// (reviewRows/transactions/entries — see lib/history.ts's EDITABLE_FIELD_BY_SCAN_TYPE); nothing
-// else in a saved record (images, scan_type, cost) can be touched through this route.
-app.put("/api/history/:id", express.json({ limit: "5mb" }), (req, res) => {
+// Persists an edit made while viewing a claim — e.g. fixing a misread clock time on one of its
+// scan types, and/or updating its case note — so it survives leaving the page, same durability the
+// live review already has once you click Generate. Scoped per scan type to just the one editable
+// array that type actually has (reviewRows/transactions/entries — see lib/history.ts's
+// EDITABLE_FIELD_BY_SCAN_TYPE); nothing else in a saved scan (images, scan_type, cost) can be
+// touched through this route. `types` only needs to include whichever scan types are actually
+// present/edited on screen — a type this claim doesn't have is silently ignored.
+app.put("/api/claims/:groupId", express.json({ limit: "5mb" }), (req, res) => {
     const userId = getAuthedUser(req).id;
-    const rows = req.body?.rows;
-    if (!Array.isArray(rows)) return res.status(400).json({ error: "rows (array) required" });
-    // Only a timesheet scan has a second editable thing alongside its rows (the IPA fields —
-    // worker/employer/salary/rate — editable in the same review card); undefined for every other
-    // scan type, and updateScanEditableFields ignores it unless the scan is actually a timesheet.
-    const ipa = req.body?.ipa;
-    const updated = updateScanEditableFields(req.params.id, userId, rows, ipa);
-    if (!updated) return res.status(404).json({ error: "scan not found" });
+    const rawTypes = req.body?.types;
+    const perTypeRows: Partial<Record<ScanType, { rows: unknown[]; ipa?: unknown }>> = {};
+    if (rawTypes && typeof rawTypes === "object") {
+        for (const [scanType, edit] of Object.entries(rawTypes)) {
+            if (edit && typeof edit === "object" && Array.isArray((edit as any).rows)) {
+                perTypeRows[scanType as ScanType] = { rows: (edit as any).rows, ipa: (edit as any).ipa };
+            }
+        }
+    }
+    // A caseworker's own free-text annotation/title, independent of scan_type — undefined when the
+    // client genuinely didn't send the field at all (leaves the stored value untouched); an
+    // explicit "" clears it. See updateClaimFields's own comment on the same distinction.
+    const notes = typeof req.body?.notes === "string" ? req.body.notes : undefined;
+    const title = typeof req.body?.title === "string" ? req.body.title : undefined;
+    const updated = updateClaimFields(req.params.groupId, userId, perTypeRows, notes, title);
+    if (!updated) return res.status(404).json({ error: "claim not found" });
     res.json({ success: true });
 });
 
-// Deletes a scan a caseworker performed themselves — owner-scoped only, same as the edit route
-// above (no admin bypass; being able to VIEW any scan via the "All scans" dashboard doesn't imply
-// being able to delete someone else's). 404s identically whether the id doesn't exist at all or
-// just isn't owned by this user, same no-existence-leak behavior as every other owner-scoped route.
-app.delete("/api/history/:id", async (req, res) => {
+// Deletes a claim (every scan type it contains) a caseworker performed themselves — owner-scoped
+// only, same as the edit route above (no admin bypass; being able to VIEW any claim via the "All
+// claims" dashboard doesn't imply being able to delete someone else's). 404s identically whether
+// the id doesn't exist at all or just isn't owned by this user, same no-existence-leak behavior as
+// every other owner-scoped route.
+app.delete("/api/claims/:groupId", async (req, res) => {
     const userId = getAuthedUser(req).id;
-    const deleted = await deleteScanForOwner(req.params.id, userId);
-    if (!deleted) return res.status(404).json({ error: "scan not found" });
+    const deleted = await deleteClaim(req.params.groupId, userId);
+    if (!deleted) return res.status(404).json({ error: "claim not found" });
     res.json({ success: true });
+});
+
+// "Add more X files" against an EXISTING claim — lets a caseworker reopen a saved claim (from
+// history, or right after it just finished live) and attach one more document, either for a scan
+// type the claim already has (merged into that scan's own existing rows via appendScanPages) or a
+// type it doesn't have yet (a fresh scan row, same as a normal submit, just tagged with this
+// claim's groupId instead of minting a new one). One route for all 5 scan types — `scanType` in
+// the body picks which. Owner-scoped (getClaimGroup, not getClaimGroupAny) — this is an edit-class
+// action, same trust boundary as PUT/DELETE above, explicitly NOT the open-to-every-authenticated-
+// user GET routes.
+//
+// Timesheet's append reuses runProcessJob WHOLESALE (same agentic discovery, same IPA-untouched
+// behavior since `ipaFile` is always undefined here) rather than a bespoke lighter path — appending
+// is structurally "scan these new files, merge the resulting pages/rows into the existing scan",
+// exactly what appendScanPages already does (see lib/history.ts, whose timesheet branch was
+// written to support this from the start). What's genuinely NOT supported here: RESCANNING one
+// already-persisted timesheet PAGE in place (as opposed to appending whole new pages) — unlike the
+// other 4 types' flat per-page transactions/entries array, a timesheet page's rows don't carry a
+// stable identifier back to "replace this exact page" without re-deriving a matching `source`
+// string, which only a real multi-page file (not a single reconstructed page image) can reproduce
+// correctly — see POST /api/claims/:groupId/rescan-page, which only accepts the other 4 types.
+app.post(
+    "/api/claims/:groupId/append",
+    upload.fields([
+        { name: "pdfs", maxCount: 10 },
+        { name: "statements", maxCount: 10 },
+        { name: "medicalBills", maxCount: 10 },
+        { name: "medicalCertificates", maxCount: 10 },
+        { name: "payslips", maxCount: 10 },
+    ]),
+    enforceTotalUploadSize,
+    (req, res) => {
+        const userId = getAuthedUser(req).id;
+        const scanType = req.body?.scanType;
+        const FIELD_BY_SCAN_TYPE: Record<string, string> = {
+            timesheet: "pdfs",
+            bank_statement: "statements",
+            medical_bills: "medicalBills",
+            medical_certificates: "medicalCertificates",
+            payslips: "payslips",
+        };
+        const fieldName = FIELD_BY_SCAN_TYPE[scanType];
+        if (!fieldName) return res.status(400).json({ error: `Unknown or unsupported scanType: ${scanType}` });
+
+        // Express 5's path-to-regexp-derived param typing infers `string | string[]` for this
+        // route's `:groupId` (a quirk of the trailing `/append` segment, unlike the simpler
+        // "/api/claims/:groupId" GET/PUT/DELETE routes above) — it's always a plain string at
+        // runtime for a route with no repeating segments; narrowed once here.
+        const groupId = req.params.groupId as string;
+        const group = getClaimGroup(groupId, userId);
+        if (!group) return res.status(404).json({ error: "claim not found" });
+        const appendToScanId = group.scans.find(s => s.scan_type === scanType)?.id;
+
+        const uploadedFields = req.files as { [field: string]: Express.Multer.File[] } | undefined;
+        const files = uploadedFields?.[fieldName];
+        if (!files || files.length === 0) return res.status(400).json({ error: "No files uploaded." });
+
+        // Same staging-confirmed rotation/exclusion/interpretation-hint parsing every normal scan
+        // POST route already uses — see e.g. /api/bank-statement above.
+        let rotations: Record<string, number> = {};
+        try {
+            const parsed = JSON.parse(req.body.rotations ?? "{}");
+            if (parsed && typeof parsed === "object") rotations = parsed;
+        } catch {
+            // ignore — fall through with no rotations applied
+        }
+        let excludedPages = new Set<string>();
+        try {
+            const parsed = JSON.parse(req.body.excludedPages ?? "[]");
+            if (Array.isArray(parsed)) excludedPages = new Set(parsed);
+        } catch {
+            // ignore — fall through with no exclusions applied
+        }
+        const interpretationHint = typeof req.body.interpretationHint === "string" && req.body.interpretationHint.trim() ? req.body.interpretationHint.trim() : undefined;
+
+        const jobId = randomUUID();
+        const claimId = groupId;
+        const authedUser = getAuthedUser(req);
+
+        if (scanType === "timesheet") {
+            // runProcessJob expects RotationMap's nested `{pdfs:{...}, ipa:{...}}` shape, unlike the
+            // flat `Record<string, number>` the other 4 types' `rotations` variable above was
+            // already parsed as — re-parsed here specifically for this branch.
+            let timesheetRotations: RotationMap = {};
+            try {
+                const parsed = JSON.parse(req.body.rotations ?? "{}");
+                if (parsed && typeof parsed === "object") timesheetRotations = parsed;
+            } catch {
+                // ignore — fall through with no rotations applied
+            }
+            // Same parsing as the main /api/process route's standardBreakHours/fallbackYear/
+            // claimStartDate/claimEndDate — ipaFile is always undefined here (appending more
+            // timesheet pages never re-sends/replaces the IPA letter this claim already has) and
+            // excludedIpaPages is always empty for the same reason.
+            const parsedBreakHours = Number(req.body.standardBreakHours);
+            const standardBreakHours = Number.isFinite(parsedBreakHours) && parsedBreakHours >= 0 ? parsedBreakHours : 1;
+            const parsedFallbackYear = Number(req.body.fallbackYear);
+            const fallbackYear = Number.isFinite(parsedFallbackYear) && SUPPORTED_YEARS.includes(parsedFallbackYear) ? parsedFallbackYear : undefined;
+            const isYmd = (v: unknown): v is string => typeof v === "string" && /^\d{4}-\d{2}-\d{2}$/.test(v);
+            const claimStartDate = isYmd(req.body.claimStartDate) ? req.body.claimStartDate : undefined;
+            const claimEndDate = isYmd(req.body.claimEndDate) ? req.body.claimEndDate : undefined;
+
+            const controller = new AbortController();
+            processJobs.set(jobId, {
+                status: "running", pages: [], result: null, error: null, events: [], controller,
+                userId: authedUser.id, userFullname: authedUser.fullname, userEmail: authedUser.email,
+            });
+            acquireJobSlot()
+                .then(() => runProcessJob(jobId, claimId, appendToScanId, files, undefined, timesheetRotations, excludedPages, new Set(), standardBreakHours, fallbackYear, controller.signal, interpretationHint, claimStartDate, claimEndDate))
+                .catch(e => { const job = processJobs.get(jobId); if (job && job.status === "running") { job.status = "error"; job.error = e.message; } })
+                .finally(() => { releaseJobSlot(); scheduleJobCleanup(jobId); });
+            return res.json({ jobId });
+        }
+
+        if (scanType === "bank_statement") {
+            bankJobs.set(jobId, { status: "running", pages: [], result: null, error: null, userId: authedUser.id, userFullname: authedUser.fullname, userEmail: authedUser.email });
+            acquireJobSlot()
+                .then(() => runBankStatementJob(jobId, claimId, appendToScanId, files, rotations, excludedPages, interpretationHint))
+                .catch(e => { const job = bankJobs.get(jobId); if (job) { job.status = "error"; job.error = e.message; } })
+                .finally(() => { releaseJobSlot(); scheduleBankJobCleanup(jobId); });
+        } else if (scanType === "medical_bills") {
+            medicalJobs.set(jobId, { status: "running", pages: [], result: null, error: null, userId: authedUser.id, userFullname: authedUser.fullname, userEmail: authedUser.email });
+            acquireJobSlot()
+                .then(() => runMedicalBillsJob(jobId, claimId, appendToScanId, files, rotations, excludedPages, interpretationHint))
+                .catch(e => { const job = medicalJobs.get(jobId); if (job) { job.status = "error"; job.error = e.message; } })
+                .finally(() => { releaseJobSlot(); scheduleMedicalJobCleanup(jobId); });
+        } else if (scanType === "medical_certificates") {
+            medicalCertJobs.set(jobId, { status: "running", pages: [], result: null, error: null, userId: authedUser.id, userFullname: authedUser.fullname, userEmail: authedUser.email });
+            acquireJobSlot()
+                .then(() => runMedicalCertificateJob(jobId, claimId, appendToScanId, files, rotations, excludedPages, interpretationHint))
+                .catch(e => { const job = medicalCertJobs.get(jobId); if (job) { job.status = "error"; job.error = e.message; } })
+                .finally(() => { releaseJobSlot(); scheduleMedicalCertJobCleanup(jobId); });
+        } else {
+            payslipJobs.set(jobId, { status: "running", pages: [], result: null, error: null, userId: authedUser.id, userFullname: authedUser.fullname, userEmail: authedUser.email });
+            acquireJobSlot()
+                .then(() => runPayslipJob(jobId, claimId, appendToScanId, files, rotations, excludedPages, interpretationHint))
+                .catch(e => { const job = payslipJobs.get(jobId); if (job) { job.status = "error"; job.error = e.message; } })
+                .finally(() => { releaseJobSlot(); schedulePayslipJobCleanup(jobId); });
+        }
+
+        res.json({ jobId });
+    }
+);
+
+// Rescans ONE already-persisted page image against a claim's existing scan — e.g. a caseworker
+// reopens a saved claim and wants to re-read a page the model misread, without re-uploading
+// anything (the original file is long gone; the stored PNG is all that's left, and all that's
+// actually needed — every scan primitive these 4 types use already operates on a rendered image
+// buffer, never the original PDF). Single request/response (no background job + polling) since
+// this is only ever ONE page's worth of vision calls, not a whole batch. Owner-scoped
+// (getClaimGroup) — an edit-class action, same trust boundary as append/PUT/DELETE above.
+// Timesheet is NOT supported here (see replaceScanPage's own comment) — Phase 5 territory.
+app.post("/api/claims/:groupId/rescan-page", express.json({ limit: "1mb" }), async (req, res) => {
+    const userId = getAuthedUser(req).id;
+    const scanType = req.body?.scanType;
+    const RESCAN_FN_BY_SCAN_TYPE: Record<string, (img: string, hint?: string) => Promise<{ transactions?: unknown[]; entries?: unknown[]; costUsd: number }>> = {
+        bank_statement: rescanPersistedBankPage as any,
+        medical_bills: rescanPersistedMedicalBillsPage as any,
+        medical_certificates: rescanPersistedMedicalCertPage as any,
+        payslips: rescanPersistedPayslipPage as any,
+    };
+    const rescanFn = RESCAN_FN_BY_SCAN_TYPE[scanType];
+    if (!rescanFn) return res.status(400).json({ error: `Unknown or unsupported scanType for rescan: ${scanType}` });
+
+    const pageIndex = Number(req.body?.pageIndex);
+    if (!Number.isInteger(pageIndex) || pageIndex < 0) return res.status(400).json({ error: "pageIndex (non-negative integer) required" });
+
+    const group = getClaimGroup(req.params.groupId as string, userId);
+    if (!group) return res.status(404).json({ error: "claim not found" });
+    const scan = group.scans.find(s => s.scan_type === scanType);
+    if (!scan) return res.status(404).json({ error: `this claim has no ${scanType} scan to rescan a page of` });
+
+    const imagePath = path.join(HISTORY_IMAGES_DIR, scan.id, `page-${pageIndex}.png`);
+    if (!existsSync(imagePath)) return res.status(404).json({ error: "page image not found" });
+    let pageImageBase64 = readFileSync(imagePath).toString("base64");
+
+    const rotationDeg = Number(req.body?.rotationDeg) || 0;
+    let rotated = false;
+    if (rotationDeg % 360 !== 0) {
+        pageImageBase64 = await rotateImage(pageImageBase64, rotationDeg);
+        rotated = true;
+    }
+    const interpretationHint = typeof req.body?.interpretationHint === "string" && req.body.interpretationHint.trim() ? req.body.interpretationHint.trim() : undefined;
+
+    try {
+        const result = await rescanFn(pageImageBase64, interpretationHint);
+        const pageEntries = result.transactions ?? result.entries ?? [];
+        const updated = replaceScanPage(scan.id, userId, pageIndex, {
+            newImageBase64: rotated ? pageImageBase64 : undefined,
+            pageEntries,
+            costUsd: result.costUsd,
+            durationMs: 0,
+        });
+        if (!updated) return res.status(404).json({ error: "page not found on this scan" });
+        res.json({ success: true });
+    } catch (e: any) {
+        res.status(500).json({ error: e?.message ?? "rescan failed" });
+    }
 });
 
 // Same naming convention as the caseworker's own hand-copied breakdowns (e.g. "419K_Breakdown.pdf")

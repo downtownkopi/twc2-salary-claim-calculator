@@ -19,7 +19,7 @@ import { buildPrompt } from "../timesheetPrompt";
 import { buildRosterPrompt } from "../rosterPrompt";
 import { runAgentLoop, type AgentEvent, type AgentLoopResult, type ShapeFamily } from "../ocr/agentLoop";
 import type { WorkerMatchConfidence } from "../workerMatch";
-import { persistScan } from "../history";
+import { persistScan, appendScanPages } from "../history";
 import {
     loadPagesForFile,
     SUPPORTED_YEARS,
@@ -131,6 +131,9 @@ export function scheduleJobCleanup(jobId: string) {
  * `processJobs.get(jobId)`.
  *
  * @param jobId - The job's id in {@link processJobs} (already set to `"running"` by the caller).
+ * @param claimId - Groups this scan together with any other scan types submitted in the same
+ * combined "Extract details" click (see lib/history.ts's `claims` table) — forwarded straight into
+ * persistScan at the end of this function.
  * @param files - The uploaded timesheet files.
  * @param ipaFile - The uploaded IPA letter, if any.
  * @param rotations - Human-confirmed page rotations from the pre-scan staging step.
@@ -163,6 +166,12 @@ export function scheduleJobCleanup(jobId: string) {
  */
 export async function runProcessJob(
     jobId: string,
+    claimId: string,
+    // Set only by `POST /api/claims/:groupId/append` when this claim already has a timesheet scan —
+    // merges these newly-scanned pages/rows into that EXISTING scan row (via `appendScanPages`)
+    // instead of inserting a brand-new one. `undefined` for every normal fresh "Extract details"
+    // submit, which always inserts.
+    appendToScanId: string | undefined,
     files: Express.Multer.File[],
     ipaFile: Express.Multer.File | undefined,
     rotations: RotationMap,
@@ -1920,17 +1929,26 @@ export async function runProcessJob(
     // Only a genuine successful completion gets saved to history — a cancelled run's partial
     // result is still useful to render live, but isn't worth persisting as a "scan".
     if (job.status === "done") {
-        persistScan({
-            id: jobId,
-            scanType: "timesheet",
-            userId: job.userId,
-            userFullname: job.userFullname,
-            userEmail: job.userEmail,
-            title: ipa?.workerName ?? null,
-            costUsd: job.result.costUsd as number,
-            durationMs: job.result.durationMs as number,
-            result: job.result,
-            ipaImage,
-        });
+        if (appendToScanId) {
+            appendScanPages(appendToScanId, job.userId, {
+                result: job.result,
+                costUsd: job.result.costUsd as number,
+                durationMs: job.result.durationMs as number,
+            });
+        } else {
+            persistScan({
+                id: jobId,
+                claimId,
+                scanType: "timesheet",
+                userId: job.userId,
+                userFullname: job.userFullname,
+                userEmail: job.userEmail,
+                title: ipa?.workerName ?? null,
+                costUsd: job.result.costUsd as number,
+                durationMs: job.result.durationMs as number,
+                result: job.result,
+                ipaImage,
+            });
+        }
     }
 }

@@ -1,7 +1,7 @@
 import * as path from "path";
 import { resizeForDisplay, rotateImage, type PagedImages } from "../ocr";
 import { extractMedicalCertificateEntries, mergeMedicalCertificateEntries, type MedicalCertificateEntry } from "../medicalCertificates";
-import { persistScan } from "../history";
+import { persistScan, appendScanPages } from "../history";
 import {
     loadPagesForFile,
     SCAN_TEMPERATURES,
@@ -32,6 +32,28 @@ export type MedicalCertificateJob = {
     userEmail: string;
 };
 export const medicalCertJobs = new Map<string, MedicalCertificateJob>();
+
+/**
+ * Rescans ONE already-rendered page image — same SCAN_TEMPERATURES multi-attempt +
+ * mergeMedicalCertificateEntries voting as the main per-page loop above, scoped to a single page
+ * with no file/PDF-rendering step. Used by `POST /api/claims/:groupId/rescan-page`.
+ */
+export async function rescanPersistedMedicalCertPage(pageImageBase64: string, interpretationHint?: string): Promise<{ entries: MedicalCertificateEntry[]; costUsd: number }> {
+    const results = await runSequentially(
+        SCAN_TEMPERATURES.map(({ temperature, seed }) => () => extractMedicalCertificateEntries(pageImageBase64, temperature, seed, interpretationHint))
+    );
+    let costUsd = 0;
+    const attempts: MedicalCertificateEntry[][] = [];
+    for (const result of results) {
+        if (result.status === "fulfilled") {
+            attempts.push(result.value.entries);
+            costUsd += result.value.cost;
+        } else {
+            console.error("medical certificate single-page rescan attempt failed:", result.reason);
+        }
+    }
+    return { entries: mergeMedicalCertificateEntries(attempts), costUsd };
+}
 /** Schedules a medical-certificate job's entry to be evicted from {@link medicalCertJobs} after {@link JOB_TTL_MS}, and reclaims its temp page dir immediately. */
 export function scheduleMedicalCertJobCleanup(jobId: string) {
     cleanupJobDir(jobPagesDir(jobId));
@@ -44,6 +66,9 @@ export function scheduleMedicalCertJobCleanup(jobId: string) {
  * pattern, and writes the final result into `medicalCertJobs.get(jobId)`.
  *
  * @param jobId - The job's id in {@link medicalCertJobs} (already set to `"running"` by the caller).
+ * @param claimId - Groups this scan together with any other scan types submitted in the same
+ * combined "Extract details" click (see lib/history.ts's `claims` table) — forwarded straight into
+ * persistScan at the end of this function.
  * @param files - The uploaded medical certificate files.
  * @param rotations - Human-confirmed page rotations, keyed `"<fileIndex>-<pageIndex>"`.
  * @param excludedPages - Pages dropped by the caseworker in staging, same keying as `rotations`.
@@ -53,6 +78,8 @@ export function scheduleMedicalCertJobCleanup(jobId: string) {
  */
 export async function runMedicalCertificateJob(
     jobId: string,
+    claimId: string,
+    appendToScanId: string | undefined,
     files: Express.Multer.File[],
     rotations: Record<string, number>,
     excludedPages: Set<string>,
@@ -159,16 +186,26 @@ export async function runMedicalCertificateJob(
     job.pages = orderedPages;
     job.result = { entries, costUsd: totalCostUsd, durationMs: Date.now() - startedAt };
     job.status = "done";
-    persistScan({
-        id: jobId,
-        scanType: "medical_certificates",
-        userId: job.userId,
-        userFullname: job.userFullname,
-        userEmail: job.userEmail,
-        title: null,
-        costUsd: job.result.costUsd,
-        durationMs: job.result.durationMs,
-        result: job.result,
-        pages: job.pages,
-    });
+    if (appendToScanId) {
+        appendScanPages(appendToScanId, job.userId, {
+            result: job.result,
+            pages: job.pages,
+            costUsd: job.result.costUsd,
+            durationMs: job.result.durationMs,
+        });
+    } else {
+        persistScan({
+            id: jobId,
+            claimId,
+            scanType: "medical_certificates",
+            userId: job.userId,
+            userFullname: job.userFullname,
+            userEmail: job.userEmail,
+            title: null,
+            costUsd: job.result.costUsd,
+            durationMs: job.result.durationMs,
+            result: job.result,
+            pages: job.pages,
+        });
+    }
 }

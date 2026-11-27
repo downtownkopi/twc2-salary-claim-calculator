@@ -1,7 +1,7 @@
 import * as path from "path";
 import { resizeForDisplay, rotateImage, type PagedImages } from "../ocr";
 import { extractMedicalBillEntries, mergeMedicalBillEntries, type MedicalBillEntry } from "../medicalbills";
-import { persistScan } from "../history";
+import { persistScan, appendScanPages } from "../history";
 import {
     loadPagesForFile,
     SCAN_TEMPERATURES,
@@ -32,6 +32,29 @@ export type MedicalBillsJob = {
     userEmail: string;
 };
 export const medicalJobs = new Map<string, MedicalBillsJob>();
+
+/**
+ * Rescans ONE already-rendered page image — same SCAN_TEMPERATURES multi-attempt +
+ * mergeMedicalBillEntries voting as the main per-page loop above, scoped to a single page with no
+ * file/PDF-rendering step. Used by `POST /api/claims/:groupId/rescan-page`.
+ */
+export async function rescanPersistedMedicalBillsPage(pageImageBase64: string, interpretationHint?: string): Promise<{ entries: MedicalBillEntry[]; costUsd: number }> {
+    const results = await runSequentially(
+        SCAN_TEMPERATURES.map(({ temperature, seed }) => () => extractMedicalBillEntries(pageImageBase64, temperature, seed, interpretationHint))
+    );
+    let costUsd = 0;
+    const attempts: MedicalBillEntry[][] = [];
+    for (const result of results) {
+        if (result.status === "fulfilled") {
+            attempts.push(result.value.entries);
+            costUsd += result.value.cost;
+        } else {
+            console.error("medical bills single-page rescan attempt failed:", result.reason);
+        }
+    }
+    return { entries: mergeMedicalBillEntries(attempts), costUsd };
+}
+
 /** Schedules a medical-bills job's entry to be evicted from {@link medicalJobs} after {@link JOB_TTL_MS}, and reclaims its temp page dir immediately. */
 export function scheduleMedicalJobCleanup(jobId: string) {
     cleanupJobDir(jobPagesDir(jobId));
@@ -44,6 +67,13 @@ export function scheduleMedicalJobCleanup(jobId: string) {
  * final result into `medicalJobs.get(jobId)`.
  *
  * @param jobId - The job's id in {@link medicalJobs} (already set to `"running"` by the caller).
+ * @param claimId - Groups this scan together with any other scan types submitted in the same
+ * combined "Extract details" click (see lib/history.ts's `claims` table) — forwarded straight into
+ * persistScan at the end of this function (unless `appendToScanId` is set, see below).
+ * @param appendToScanId - Set only by `POST /api/claims/:groupId/append` when this claim already
+ * has a medical_bills scan — merges these newly-scanned pages/entries into that EXISTING scan row
+ * (via `appendScanPages`) instead of inserting a brand-new one. `undefined` for every normal fresh
+ * "Extract details" submit, which always inserts.
  * @param files - The uploaded medical bill files.
  * @param rotations - Human-confirmed page rotations, keyed `"<fileIndex>-<pageIndex>"`.
  * @param excludedPages - Pages dropped by the caseworker in staging, same keying as `rotations`.
@@ -53,6 +83,8 @@ export function scheduleMedicalJobCleanup(jobId: string) {
  */
 export async function runMedicalBillsJob(
     jobId: string,
+    claimId: string,
+    appendToScanId: string | undefined,
     files: Express.Multer.File[],
     rotations: Record<string, number>,
     excludedPages: Set<string>,
@@ -159,16 +191,26 @@ export async function runMedicalBillsJob(
     job.pages = orderedPages;
     job.result = { entries, costUsd: totalCostUsd, durationMs: Date.now() - startedAt };
     job.status = "done";
-    persistScan({
-        id: jobId,
-        scanType: "medical_bills",
-        userId: job.userId,
-        userFullname: job.userFullname,
-        userEmail: job.userEmail,
-        title: null,
-        costUsd: job.result.costUsd,
-        durationMs: job.result.durationMs,
-        result: job.result,
-        pages: job.pages,
-    });
+    if (appendToScanId) {
+        appendScanPages(appendToScanId, job.userId, {
+            result: job.result,
+            pages: job.pages,
+            costUsd: job.result.costUsd,
+            durationMs: job.result.durationMs,
+        });
+    } else {
+        persistScan({
+            id: jobId,
+            claimId,
+            scanType: "medical_bills",
+            userId: job.userId,
+            userFullname: job.userFullname,
+            userEmail: job.userEmail,
+            title: null,
+            costUsd: job.result.costUsd,
+            durationMs: job.result.durationMs,
+            result: job.result,
+            pages: job.pages,
+        });
+    }
 }
