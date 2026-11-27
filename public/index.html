@@ -2310,11 +2310,18 @@
     // enterHistoryDetailView to skip its own history.pushState, since the browser's navigation
     // already put the URL there; pushing again would duplicate the entry and break back/forward.
     let openingFromUrlSync = false;
-    // True only when a history detail view was opened from the ADMIN dashboard (openAdminScanDetail)
-    // rather than the caseworker's own history list — hides "Save changes" regardless of who owns
-    // the scan (viewing another caseworker's case data is in scope for the admin dashboard, editing
-    // it is not) and points "Back" at the admin dashboard instead of the personal history list.
+    // True whenever the currently-open claim does NOT belong to the logged-in caseworker (computed
+    // fresh from the fetched claim's own userId in openHistoryDetail's claimOwnedByCurrentUser
+    // check) — hides "Save changes"/the case note/append controls. Independent of which list the
+    // claim was found through: your own claim is editable whether opened from your personal history
+    // list, the "All scans" cross-caseworker dashboard, or a shared ?claim= link; someone else's
+    // claim is read-only everywhere, same rule.
     let viewingAsAdminReadOnly = false;
+    // True only when the currently-open claim was reached via the ADMIN dashboard's "View" button
+    // (openAdminScanDetail) — purely routes "Back" to the admin dashboard instead of the personal
+    // history list; NOT the same thing as viewingAsAdminReadOnly (editability), which is ownership-
+    // based regardless of this flag.
+    let viewedFromAdminDashboard = false;
     // Populated once from GET /api/me on page load — gates whether the cost cards/tables/column show
     // in the "All scans" dashboard (that view itself is open to everyone; only its cost figures are
     // admin-only — see GET /api/admin/cost-summary and the cost_usd stripping in GET /api/admin/scans,
@@ -3187,7 +3194,12 @@
         document.getElementById('saveHistoryChangesBtn').style.display = '';
         document.getElementById('saveHistoryChangesStatus').textContent = '';
         document.getElementById('caseNoteWrap').style.display = '';
-        document.getElementById('caseNoteInput').value = ''; // a brand-new claim never has a note yet
+        // Prefilled with whatever "Reading notes for this scan" the caseworker typed before
+        // submitting (already sent to the server as interpretationHint and persisted server-side
+        // as this claim's initial note, see ensureClaim in lib/history.ts) — so it's still visible
+        // when this claim is reopened later, instead of being a one-time instruction that vanishes
+        // the moment the scan finishes.
+        document.getElementById('caseNoteInput').value = document.getElementById('scanHint').value.trim();
         document.getElementById('copyHistoryLinkBtn').style.display = '';
         if (!openingFromUrlSync) {
           const linkUrl = new URL(location.href);
@@ -9669,6 +9681,7 @@
       currentHistoryScanId = null;
       currentHistoryPresentTypes = new Set();
       viewingAsAdminReadOnly = false;
+      viewedFromAdminDashboard = false;
       document.getElementById('saveHistoryChangesBtn').style.display = 'none';
       document.getElementById('caseNoteWrap').style.display = 'none';
       clearHistoryLinkUrl();
@@ -9688,6 +9701,7 @@
       currentHistoryScanId = null;
       currentHistoryPresentTypes = new Set();
       viewingAsAdminReadOnly = false;
+      viewedFromAdminDashboard = false;
       document.getElementById('saveHistoryChangesBtn').style.display = 'none';
       document.getElementById('caseNoteWrap').style.display = 'none';
       viewingHistoryRecord = false;
@@ -9780,34 +9794,36 @@
       }
     }
 
-    /** Fetches one saved claim's full record (every scan type it contains) and renders them all together. */
-    /** Whether any scan in a fetched claim belongs to the current user — the real ownership check, independent of which view (list/admin/deep link) led here. */
+    /** Whether any scan in a fetched claim belongs to the current user — the real ownership check, same regardless of which view (list/admin/deep link) led here. */
     function claimOwnedByCurrentUser(data) {
       return Object.values(data.types || {}).some(t => t.userId === currentUserId);
     }
     /**
-     * Fetches one saved claim and renders it.
+     * Fetches one saved claim and renders it. Save/append/notes are shown whenever the fetched
+     * claim actually belongs to the current user — same rule everywhere (personal history list,
+     * "All scans" cross-caseworker dashboard, or a shared ?claim= link) — a claim someone else
+     * scanned is always read-only, your own is always editable, regardless of which list you found
+     * it through.
      * @param {string} groupId
-     * @param {{forceReadOnly?: boolean}} [opts] - `forceReadOnly: true` (used only by
-     * openAdminScanDetail) keeps the admin dashboard's own "view only, even your own records,
-     * editing stays out of scope here" policy regardless of actual ownership. Omitted everywhere
-     * else — real ownership (compared against the fetched claim's own userId) decides whether Save
-     * shows, so a caseworker revisiting their OWN claim via a ?claim= deep link (e.g. their own
-     * "Copy link", or a bookmark) still gets to edit it, not just non-owners viewing a shared link.
+     * @param {{fromAdminDashboard?: boolean}} [opts] - `fromAdminDashboard: true` (set only by
+     * openAdminScanDetail) only affects where the loading/error status text is shown — it does NOT
+     * affect editability.
      */
     async function openHistoryDetail(groupId, opts) {
-      // Whichever list is currently on screen — the caseworker's own history list, or (if
-      // opts.forceReadOnly was just set by openAdminScanDetail) the admin dashboard's scans
-      // table — gets the loading/error message; writing it to the other, hidden one would leave
-      // the visible view showing no feedback at all.
-      const statusEl = (opts && opts.forceReadOnly) ? adminScansStatusEl : historyListStatusEl;
+      // Always set here (not just by openAdminScanDetail) so a STALE true from a PRIOR admin-
+      // dashboard visit in this same tab doesn't leak into a later personal-list/deep-link visit —
+      // "Back" would otherwise incorrectly point at the admin dashboard for an unrelated claim.
+      viewedFromAdminDashboard = !!(opts && opts.fromAdminDashboard);
+      // Whichever list is currently on screen gets the loading/error message; writing it to the
+      // other, hidden one would leave the visible view showing no feedback at all.
+      const statusEl = (opts && opts.fromAdminDashboard) ? adminScansStatusEl : historyListStatusEl;
       statusEl.className = 'status loading';
       statusEl.textContent = 'Loading…';
       try {
         const res = await fetch(`/api/claims/${groupId}`);
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || `Server returned ${res.status}`);
-        viewingAsAdminReadOnly = (opts && opts.forceReadOnly) ? true : !claimOwnedByCurrentUser(data);
+        viewingAsAdminReadOnly = !claimOwnedByCurrentUser(data);
         enterHistoryDetailView(data);
       } catch (err) {
         statusEl.className = 'status error';
@@ -9857,11 +9873,11 @@
       // path (appendFilesToCurrentClaim/rescanCurrentClaimPage — posting against this claim's own
       // persisted pages) instead of the live-session path that needs a real in-browser File object.
       viewingHistoryRecord = true;
-      // Opened from the admin dashboard: no Save (editing another caseworker's case data is out of
-      // scope — see viewingAsAdminReadOnly's own comment), and "Back" returns to the admin scans
-      // table instead of the personal history list.
-      document.getElementById('backToFormBtn').style.display = viewingAsAdminReadOnly ? 'none' : '';
-      document.getElementById('backToAdminDashboardBtn').style.display = viewingAsAdminReadOnly ? '' : 'none';
+      // "Back" returns to wherever this claim was actually found (admin dashboard vs personal
+      // list) — independent of editability (viewedFromAdminDashboard vs viewingAsAdminReadOnly are
+      // deliberately separate flags; see their own declarations).
+      document.getElementById('backToFormBtn').style.display = viewedFromAdminDashboard ? 'none' : '';
+      document.getElementById('backToAdminDashboardBtn').style.display = viewedFromAdminDashboard ? '' : 'none';
       document.getElementById('saveHistoryChangesBtn').style.display = viewingAsAdminReadOnly ? 'none' : '';
       document.getElementById('saveHistoryChangesStatus').textContent = '';
       document.getElementById('caseNoteWrap').style.display = viewingAsAdminReadOnly ? 'none' : '';
@@ -10066,6 +10082,7 @@
       currentHistoryScanId = null;
       currentHistoryPresentTypes = new Set();
       viewingAsAdminReadOnly = false;
+      viewedFromAdminDashboard = false;
       document.getElementById('saveHistoryChangesBtn').style.display = 'none';
       document.getElementById('caseNoteWrap').style.display = 'none';
       clearHistoryLinkUrl();
@@ -10187,8 +10204,12 @@
     }
 
     /** Opens a claim from the admin dashboard — same combined detail view as the personal history list, just read-only (see viewingAsAdminReadOnly). */
+    // Same real ownership check as every other path — a claim YOU scanned stays editable even
+    // when found via the "All scans" cross-caseworker oversight list, not just your own personal
+    // history list; only someone else's record is read-only here. fromAdminDashboard only routes
+    // the loading/error status text to this dashboard's own status element, nothing else.
     function openAdminScanDetail(groupId) {
-      openHistoryDetail(groupId, { forceReadOnly: true });
+      openHistoryDetail(groupId, { fromAdminDashboard: true });
     }
 
     document.getElementById('copyHistoryLinkBtn').addEventListener('click', async () => {

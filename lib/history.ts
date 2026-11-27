@@ -184,11 +184,23 @@ export function persistScan(opts: PersistScanOpts): void {
  * IGNORE` (not an existence check + conditional insert) deliberately makes the race between two of
  * those concurrent POSTs harmless — whichever lands first wins, the rest are no-ops against the
  * same row.
+ *
+ * @param notes - A caseworker's "Reading notes for this scan" text (the OCR-convention hint typed
+ * before submitting — see server.ts's /api/process route), carried over as the claim's initial
+ * case note so it's still visible/editable when the claim is reopened later, instead of a
+ * separate note the caseworker would have to re-type from scratch. Only ever passed by the
+ * timesheet route (the only one this textarea applies to) — every other scan type's own call
+ * passes nothing, and the second statement below only fills `notes` if it's still unset (handles
+ * the race where a non-timesheet type's own ensureClaim call creates the row first, before
+ * timesheet's call — with its real hint — arrives), never overwrites an already-set note.
  */
-export function ensureClaim(claimId: string, userId: number, userFullname: string, userEmail: string): void {
+export function ensureClaim(claimId: string, userId: number, userFullname: string, userEmail: string, notes?: string | null): void {
     db.prepare(
-        `INSERT OR IGNORE INTO claims (id, user_id, user_fullname, user_email) VALUES (@id, @userId, @userFullname, @userEmail)`
-    ).run({ id: claimId, userId, userFullname, userEmail });
+        `INSERT OR IGNORE INTO claims (id, user_id, user_fullname, user_email, notes) VALUES (@id, @userId, @userFullname, @userEmail, @notes)`
+    ).run({ id: claimId, userId, userFullname, userEmail, notes: notes ?? null });
+    if (notes) {
+        db.prepare(`UPDATE claims SET notes = COALESCE(notes, @notes) WHERE id = @id`).run({ id: claimId, notes });
+    }
 }
 
 // Keyed by a SCAN's own id (not a claim groupId) — used only by the image-serving route, which

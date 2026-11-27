@@ -305,7 +305,9 @@ app.post(
         const claimId = resolveClaimId(req);
         const controller = new AbortController();
         const authedUser = getAuthedUser(req);
-        ensureClaim(claimId, authedUser.id, authedUser.fullname, authedUser.email);
+        // The "Reading notes for this scan" text, if any, becomes the claim's initial case note —
+        // see ensureClaim's own comment on why.
+        ensureClaim(claimId, authedUser.id, authedUser.fullname, authedUser.email, interpretationHint);
         processJobs.set(jobId, {
             status: "running",
             pages: [],
