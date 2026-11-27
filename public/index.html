@@ -1412,8 +1412,7 @@
         dashboard</button>
       <button type="button" class="generate-btn" id="viewHistoryBtn">My scans</button>
       <button type="button" class="generate-btn" id="viewAdminDashboardBtn">All scans</button>
-      <button type="button" class="generate-btn" id="saveHistoryChangesBtn" style="display:none">Save changes</button>
-      <button type="button" class="generate-btn" id="copyHistoryLinkBtn" style="display:none">Copy link</button>
+      <button type="button" class="generate-btn" id="saveHistoryChangesBtn" style="display:none; margin-left:auto;">Save changes</button>
       <span class="status" id="saveHistoryChangesStatus"></span>
     </div>
     <!-- A caseworker's own free-text case note, independent of any one scan type — one per claim
@@ -3238,7 +3237,6 @@
         }).catch(() => {
           document.getElementById('claimTitleDisplay').textContent = '';
         });
-        document.getElementById('copyHistoryLinkBtn').style.display = '';
         if (!openingFromUrlSync) {
           const linkUrl = new URL(location.href);
           linkUrl.search = `?claim=${encodeURIComponent(currentSubmitClaimId)}`;
@@ -9728,7 +9726,6 @@
       historyListViewEl.style.display = 'block';
       document.getElementById('backToFormBtn').style.display = '';
       document.getElementById('backToAdminDashboardBtn').style.display = 'none';
-      document.getElementById('copyHistoryLinkBtn').style.display = 'none';
       currentHistoryScanId = null;
       currentHistoryPresentTypes = new Set();
       viewingAsAdminReadOnly = false;
@@ -9749,7 +9746,6 @@
       document.getElementById('scanFormWrap').style.display = '';
       document.getElementById('backToFormBtn').style.display = 'none';
       document.getElementById('backToAdminDashboardBtn').style.display = 'none';
-      document.getElementById('copyHistoryLinkBtn').style.display = 'none';
       currentHistoryScanId = null;
       currentHistoryPresentTypes = new Set();
       viewingAsAdminReadOnly = false;
@@ -9912,9 +9908,9 @@
       document.getElementById('scanFormWrap').style.display = 'none';
       currentHistoryScanId = group.groupId;
       currentHistoryPresentTypes = new Set(Object.keys(group.types));
-      // Puts the claim's groupId in the URL so the address bar is a shareable link back to this
-      // exact claim (see copyHistoryLinkBtn below, and the location.search check on page load) —
-      // any other logged-in caseworker opening it hits the same GET /api/claims/:groupId this click
+      // Puts the claim's groupId in the URL so the address bar itself is a shareable link back to
+      // this exact claim (see the location.search check on page load) — any other logged-in
+      // caseworker opening it hits the same GET /api/claims/:groupId this click
       // just did, which is open to every authenticated user (not just admins or the original
       // scanner). pushState, not assigning location.search directly, so this doesn't trigger a page
       // reload. Skipped when this render was reached via openHistoryDetailFromUrl (page load or a
@@ -9926,7 +9922,6 @@
         linkUrl.search = `?claim=${encodeURIComponent(group.groupId)}`;
         history.pushState({ claim: group.groupId }, '', linkUrl);
       }
-      document.getElementById('copyHistoryLinkBtn').style.display = '';
       // Set here so every section rendered below renders its claim-scoped "Add more X files"/rescan
       // path (appendFilesToCurrentClaim/rescanCurrentClaimPage — posting against this claim's own
       // persisted pages) instead of the live-session path that needs a real in-browser File object.
@@ -10176,7 +10171,6 @@
       document.getElementById('adminDashboardView').style.display = 'block';
       document.getElementById('backToFormBtn').style.display = '';
       document.getElementById('backToAdminDashboardBtn').style.display = 'none';
-      document.getElementById('copyHistoryLinkBtn').style.display = 'none';
       currentHistoryScanId = null;
       currentHistoryPresentTypes = new Set();
       viewingAsAdminReadOnly = false;
@@ -10314,22 +10308,10 @@
       openHistoryDetail(groupId, { fromAdminDashboard: true });
     }
 
-    document.getElementById('copyHistoryLinkBtn').addEventListener('click', async () => {
-      const btn = document.getElementById('copyHistoryLinkBtn');
-      try {
-        await navigator.clipboard.writeText(location.href);
-        const original = btn.textContent;
-        btn.textContent = 'Copied!';
-        setTimeout(() => { btn.textContent = original; }, 1500);
-      } catch (err) {
-        alert('Could not copy link: ' + err.message);
-      }
-    });
-
     // Opens whatever claim the URL's ?claim= points at — same loader either a "View" click or this
     // deep link ends up calling (openHistoryDetail), just reached on page load instead of a click.
     // NOT forced read-only — openHistoryDetail compares the fetched claim's own userId against
-    // currentUserId, so the owner reopening their own "Copy link"/bookmark still gets Save, while a
+    // currentUserId, so the owner reopening their own bookmarked link still gets Save, while a
     // shared link's non-owner recipient still only gets a read-only view (PUT/DELETE
     // /api/claims/:groupId is owner-scoped regardless; this just avoids showing a Save button that
     // would merely 404 for them). Awaits adminAccessPromise first since currentUserId isn't known
