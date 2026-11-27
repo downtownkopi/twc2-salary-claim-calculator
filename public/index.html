@@ -708,7 +708,8 @@
 
     .page-rotate-btn,
     .page-rescan-btn,
-    .page-revert-btn {
+    .page-revert-btn,
+    .page-reset-default-btn {
       background: var(--panel);
       color: var(--text);
       border: 1px solid var(--border);
@@ -1012,6 +1013,24 @@
     }
 
     .row-delete-btn:hover {
+      opacity: 0.85;
+    }
+
+    .row-reset-default-btn {
+      background: var(--panel);
+      color: var(--text);
+      border: 1px solid var(--border);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 5px 7px;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 11px;
+      white-space: nowrap;
+    }
+
+    .row-reset-default-btn:hover {
       opacity: 0.85;
     }
 
@@ -2608,6 +2627,18 @@
       }
     });
 
+    // Page-level sibling of the per-row "Default" button (resetRowToDefault) — resets every
+    // extracted/added date row on this one page in one click, for a page where the caseworker has
+    // decided the whole thing should just be the standard shift (e.g. a month with no usable
+    // timing evidence at all) rather than clicking "Default" on each row individually.
+    document.addEventListener('click', (e) => {
+      const btn = e.target.closest('.page-reset-default-btn');
+      if (!btn) return;
+      const cardRoot = btn.closest('.page-review-row');
+      if (!cardRoot) return;
+      for (const li of cardRoot.querySelectorAll('.review-row')) resetRowToDefault(li);
+    });
+
     pdfsInput.addEventListener('change', () => {
       updateFileListLabel();
       refreshPdfsPreview();
@@ -3737,6 +3768,7 @@
     <div class="field-group"><span class="field-label">Out</span><input type="text" inputmode="numeric" maxlength="4" placeholder="1700" class="f-end time-input" value="${hhmmToTimeInput(row.clockOut)}"></div>
     <div class="field-group"><span class="field-label">Break</span><input type="number" step="0.25" min="0" class="f-break" value="${row.breakHours ?? ''}"></div>
     <div class="field-group"><span class="field-label">OT</span><span class="ot-hours-display">—</span></div>
+    <button type="button" class="row-reset-default-btn" title="Reset this row to the default 08:00–17:00 shift, no OT">Default</button>
     <button type="button" class="row-delete-btn" title="Remove" aria-label="Remove"><svg viewBox="0 0 16 16" style="width:13px;height:13px;flex-shrink:0;" fill="currentColor" aria-hidden="true"><path d="M6 1a1 1 0 0 0-1 1v1H2.5a.5.5 0 0 0 0 1h.55l.65 9.1A1.5 1.5 0 0 0 5.2 15h5.6a1.5 1.5 0 0 0 1.5-1.4l.65-9.1h.55a.5.5 0 0 0 0-1H11V2a1 1 0 0 0-1-1H6zm0 2V2h4v1H6zM4.55 4h6.9l-.64 9h-5.62l-.64-9zM6.5 6a.5.5 0 0 1 .5.5v5a.5.5 0 0 1-1 0v-5a.5.5 0 0 1 .5-.5zm3 0a.5.5 0 0 1 .5.5v5a.5.5 0 0 1-1 0v-5a.5.5 0 0 1 .5-.5z"/></svg></button>
     ${row.notes ? `<div class="row-notes">${escapeHtml(row.notes)}</div>` : ''}
     <div class="row-notes break-mismatch-note" style="display:none"></div>
@@ -3784,11 +3816,46 @@
       const restInitGroup = li.querySelector('.rest-init-group');
       wireRadioGroupHighlight(restInitGroup); // dynamically added after page load, so not covered by the initial document.querySelectorAll('.radio-group') pass
       restInitGroup.addEventListener('change', () => recomputeRowGuardrails(li));
+      li.querySelector('.row-reset-default-btn').addEventListener('click', () => resetRowToDefault(li));
       li.querySelector('.row-delete-btn').addEventListener('click', () => { li.remove(); recomputeMonthlyOtCap(); });
       li.addEventListener('mouseenter', () => showRowSourceHighlight(li));
       li.addEventListener('mouseleave', () => hideRowSourceHighlight(li));
       container.insertBefore(li, beforeEl || null);
       onRowChanged();
+    }
+
+    // A caseworker's explicit override for a row whose true timing isn't worth chasing (or can't
+    // be determined) — snaps it to the standard 08:00-17:00 shift with the configured standard
+    // break, and ALWAYS zeroes OT the same unconditional way an auto-inserted missing-day row does
+    // (li.dataset.autoInserted='1', read by rowOtHours above) regardless of what the normal
+    // netHours-vs-threshold calc would otherwise produce on a 6-day week or half-day date — the
+    // caseworker is asserting a known default, not an observed shift worth crediting overtime
+    // against.
+    /** Resets one review row's Start/End/Break/Rest-day to the standard default shift, with OT forced to 0. */
+    function resetRowToDefault(li) {
+      const startEl = li.querySelector('.f-start');
+      const endEl = li.querySelector('.f-end');
+      const breakEl = li.querySelector('.f-break');
+      if (!startEl || !endEl || !breakEl) return; // not a timesheet-shaped row — nothing to reset
+      startEl.value = hhmmToTimeInput(800);
+      endEl.value = hhmmToTimeInput(1700);
+      breakEl.value = getStandardBreakHours();
+      li.dataset.restDay = '';
+      li.dataset.autoInserted = '1';
+      li.dataset.guessed = '1';
+      li.classList.add('flagged-row');
+      const resetNote = 'Reset to the default 08:00–17:00 shift by caseworker — not an actual observed reading, no OT credited.';
+      li.dataset.notes = resetNote;
+      let notesEl = li.querySelector('.row-notes:not(.break-mismatch-note):not(.hours-cap-note):not(.ph-work-note):not(.mc-cert-note)');
+      if (!notesEl) {
+        notesEl = document.createElement('div');
+        notesEl.className = 'row-notes';
+        li.querySelector('.row-delete-btn').insertAdjacentElement('afterend', notesEl);
+      }
+      notesEl.textContent = resetNote;
+      checkBreakMismatch(li);
+      recomputeRowGuardrails(li);
+      recomputeMonthlyOtCap();
     }
 
     // ===== Employment Act 1968 wage-claim assumptions — see docs/employment-act-1968-rules.md =====
@@ -5818,6 +5885,7 @@
       </div>
       <div class="page-review-details">
         <div class="page-review-source"><span>${escapeHtml(page.source)}</span></div>
+        <button type="button" class="page-reset-default-btn" title="Reset every date on this page to the default 08:00–17:00 shift, no OT">Reset page to 08:00–17:00</button>
         ${hoursOnlyHtml ? `<ul class="inline-review-list">${hoursOnlyHtml}</ul>` : ''}
         ${modelsUsedHtml}
         ${rosterHtml}
