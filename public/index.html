@@ -1415,26 +1415,6 @@
       <button type="button" class="generate-btn" id="saveHistoryChangesBtn" style="display:none; margin-left:auto;">Save changes</button>
       <span class="status" id="saveHistoryChangesStatus"></span>
     </div>
-    <!-- A caseworker's own free-text case note, independent of any one scan type — one per claim
-         (lib/history.ts's `claims.notes`), editable from both right after a live scan finishes and
-         from reopening the same claim in history later (see the main submit handler's success
-         branch and enterHistoryDetailView). Shown whenever a claim actually exists to attach a note
-         to; hidden on the blank form / history list, same as saveHistoryChangesBtn. Saved via the
-         same "Save changes" button, not a separate one — see saveHistoryChangesBtn's handler. -->
-    <div class="history-nav-row" id="caseNoteWrap" style="display:none">
-      <textarea id="caseNoteInput" placeholder="Reading notes for this scan (visible to any caseworker who opens this claim)…" rows="2" style="flex:1; min-width:240px; resize:vertical;"></textarea>
-    </div>
-    <!-- Caseworker-typed "Case label" ("456K-Hamid") -> an auto-generated tracking id
-         ("456K-Hamid-20261127-01", today's date + an auto-incrementing counter scoped to that
-         exact prefix — see lib/history.ts's nextTitleForPrefix). Shown/editable here (post-scan or
-         reopened from history) in addition to the main form's own pre-scan "Case label" field —
-         can be (re)generated at any point. -->
-    <div class="history-nav-row" id="claimTitleWrap" style="display:none">
-      <span id="claimTitleDisplay" class="muted"></span>
-      <input type="text" id="titlePrefixRegenerateInput" placeholder="Case label e.g. 456K-Hamid" style="min-width:160px;">
-      <button type="button" class="generate-btn" id="generateTitleBtn">Generate ID</button>
-      <span class="status" id="generateTitleStatus"></span>
-    </div>
 
     <div id="scanFormWrap">
       <div class="rules-summary">
@@ -1708,6 +1688,35 @@
             <textarea id="nonFixedAllowanceText" rows="3" style="width:100%;margin-top:10px"
               placeholder="e.g. Add $5 if the worker clocked out past 5pm. On Sundays, add another $10. Always add a flat $2 transport allowance."></textarea>
             <div id="nonFixedAllowanceParsedSummary" class="file-list" style="display:none"></div>
+          </div>
+        </div>
+
+        <!-- A caseworker's own free-text case note, independent of any one scan type — one per
+             claim (lib/history.ts's `claims.notes`), editable from both right after a live scan
+             finishes and from reopening the same claim in history later (see the main submit
+             handler's success branch and enterHistoryDetailView). Shown whenever a claim actually
+             exists to attach a note to; hidden on the blank form / history list. Saved via the
+             "Save changes" button in the nav row above, not a separate one. Positioned here (end
+             of "Worker's schedule", right before the pre-scan upload section) to match where its
+             pre-scan counterpart ("Reading notes for this scan", below in #scanUploadSection) sits
+             on the live form, instead of floating at the top of the page. -->
+        <div class="field" id="caseNoteWrap" style="display:none">
+          <h4>Reading notes</h4>
+          <textarea id="caseNoteInput" placeholder="Reading notes for this scan (visible to any caseworker who opens this claim)…" rows="2" style="width:100%; resize:vertical;"></textarea>
+        </div>
+        <!-- Caseworker-typed "Case label" ("456K-Hamid") -> an auto-generated tracking id
+             ("456K-Hamid-20261127-01", today's date + an auto-incrementing counter scoped to that
+             exact prefix — see lib/history.ts's nextTitleForPrefix). Shown/editable here (post-scan
+             or reopened from history) in addition to the main form's own pre-scan "Case label"
+             field — can be (re)generated at any point. Same positioning reasoning as caseNoteWrap
+             above. -->
+        <div class="field" id="claimTitleWrap" style="display:none">
+          <h4>Case label</h4>
+          <div class="file-list" id="claimTitleDisplay"></div>
+          <div class="history-nav-row">
+            <input type="text" id="titlePrefixRegenerateInput" placeholder="Case label e.g. 456K-Hamid" style="min-width:160px;">
+            <button type="button" class="generate-btn" id="generateTitleBtn">Generate ID</button>
+            <span class="status" id="generateTitleStatus"></span>
           </div>
         </div>
 
@@ -10141,6 +10150,18 @@
         statusEl.textContent = 'Error: ' + err.message;
       } finally {
         btn.disabled = false;
+      }
+    });
+
+    // titlePrefixRegenerateInput now lives inside <form id="form"> (moved there to match the main
+    // page's own "Case label" field position, right before the pre-scan upload section) — a plain
+    // text input's default Enter behavior submits its enclosing form, which here would mean
+    // accidentally kicking off a brand-new "Extract details" scan instead of generating an id.
+    // Enter now triggers "Generate ID" directly instead, same as clicking the button.
+    document.getElementById('titlePrefixRegenerateInput').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        document.getElementById('generateTitleBtn').click();
       }
     });
 
